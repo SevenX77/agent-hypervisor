@@ -1864,7 +1864,74 @@ pub(crate) fn validate_claude_shared_credentials_dir(path: &Path) -> Result<Path
             ),
         });
     }
+    if let Some(mount) = windows_interop_mount_for_path(path, &read_mount_table()) {
+        return Err(CcbdError::EnvironmentNotSupported {
+            details: format!(
+                "providers.claude.shared_credentials_dir is on a Windows interop filesystem \
+                 ({} mounted at {}): {}. A token refresh rewrites this store in place, which \
+                 needs POSIX ownership and atomic rename; keep it on the Linux filesystem, \
+                 e.g. ~/.claude",
+                mount.filesystem,
+                mount.mount_point,
+                path.display()
+            ),
+        });
+    }
     Ok(path.to_path_buf())
+}
+
+/// A mount that ah refuses to host credentials on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WindowsInteropMount {
+    pub(crate) mount_point: String,
+    pub(crate) filesystem: String,
+}
+
+fn read_mount_table() -> String {
+    fs::read_to_string("/proc/self/mounts").unwrap_or_default()
+}
+
+/// Returns the mount backing `path` when that mount is a Windows drive exposed
+/// into Linux (WSL's `drvfs`, whether carried over `9p` or mounted directly).
+///
+/// The decision is made from the live mount table rather than from how the path
+/// is spelled: `/mnt/anything` is only suspicious by convention, while the mount
+/// table is the fact. A Linux directory that merely lives under `/mnt` is
+/// therefore accepted, and a Windows drive mounted somewhere unusual is still
+/// caught.
+pub(crate) fn windows_interop_mount_for_path(
+    path: &Path,
+    mount_table: &str,
+) -> Option<WindowsInteropMount> {
+    let path = path.to_string_lossy();
+    let mut best: Option<WindowsInteropMount> = None;
+    let mut best_len = 0usize;
+    for line in mount_table.lines() {
+        let mut fields = line.split_whitespace();
+        let (_device, mount_point, filesystem) = match (fields.next(), fields.next(), fields.next())
+        {
+            (Some(device), Some(mount_point), Some(filesystem)) => (device, mount_point, filesystem),
+            _ => continue,
+        };
+        let options = fields.next().unwrap_or("");
+        let covers = path == mount_point
+            || mount_point == "/"
+            || path.starts_with(&format!("{mount_point}/"));
+        if !covers || mount_point.len() < best_len {
+            continue;
+        }
+        // WSL exposes Windows drives as drvfs, nowadays transported over 9p with
+        // `aname=drvfs` in the options. A 9p mount without that marker is an
+        // ordinary network share and is left alone.
+        let is_windows_interop =
+            filesystem == "drvfs" || (filesystem == "9p" && options.contains("aname=drvfs"));
+        best_len = mount_point.len();
+        best = is_windows_interop.then(|| WindowsInteropMount {
+            mount_point: mount_point.to_string(),
+            filesystem: filesystem.to_string(),
+        });
+    }
+    best
 }
 
 fn claude_home_env(
@@ -2226,7 +2293,7 @@ impl AntigravityHomeLayout {
 #[cfg(test)]
 mod tests {
     use super::{HomeLayoutRole, builtin, resolve_materialization_source_home};
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
     #[test]
     fn test_materialization_source_home_keeps_normal_home() {
@@ -2388,6 +2455,49 @@ mod tests {
             assert!(content.contains("ah Worker Coordination Kernel"));
             assert!(content.contains("CUSTOM SLOT A1"));
         }
+    }
+
+    /// Verbatim excerpt of a real WSL2 mount table (Ubuntu-24.04): the Linux root
+    /// is ext4, Windows drives arrive as 9p carrying `aname=drvfs`.
+    const WSL_MOUNTS: &str = "/dev/sdd / ext4 rw,relatime,discard,errors=remount-ro,data=ordered 0 0\n\
+C:\\134 /mnt/c 9p rw,noatime,aname=drvfs;path=C:\\;uid=0;gid=0;symlinkroot=/mnt/,cache=0x5 0 0\n\
+D:\\134 /mnt/d 9p rw,noatime,aname=drvfs;path=D:\\;uid=0;gid=0;symlinkroot=/mnt/,cache=0x5 0 0\n\
+share /mnt/linux-share 9p rw,relatime,trans=virtio,version=9p2000.L 0 0\n";
+
+    #[test]
+    fn credentials_on_a_windows_drive_are_identified_by_the_mount_table() {
+        for path in [
+            "/mnt/c/Users/alice/.claude",
+            "/mnt/d/coding/creds",
+            "/mnt/d",
+        ] {
+            let mount = super::windows_interop_mount_for_path(Path::new(path), WSL_MOUNTS)
+                .unwrap_or_else(|| panic!("{path} sits on a Windows drive"));
+            assert_eq!(mount.filesystem, "9p");
+        }
+    }
+
+    #[test]
+    fn credentials_on_the_linux_filesystem_are_accepted() {
+        // Including a path under /mnt that is not a Windows drive: the mount
+        // table decides, not the spelling.
+        for path in ["/root/.claude", "/home/alice/.claude", "/mnt/linux-share/x"] {
+            assert_eq!(
+                super::windows_interop_mount_for_path(Path::new(path), WSL_MOUNTS),
+                None,
+                "{path} is on the Linux filesystem"
+            );
+        }
+    }
+
+    #[test]
+    fn shared_credentials_dir_on_a_windows_drive_is_refused_with_a_reason() {
+        let mount = super::windows_interop_mount_for_path(
+            Path::new("/mnt/c/Users/alice/.claude"),
+            WSL_MOUNTS,
+        )
+        .expect("windows drive");
+        assert_eq!(mount.mount_point, "/mnt/c");
     }
 
     #[test]
