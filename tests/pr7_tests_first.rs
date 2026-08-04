@@ -599,10 +599,43 @@ async fn pr7_agent_watch_killed_path_deletes_codex_home() {
     });
 
     assert!(wait_for_agent_state(&db, &agent_id, "KILLED").await);
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // Poll instead of sleeping a fixed 300ms: the deletion happens on the watch
+    // task, which loses races to a loaded machine and made this test flaky.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while home.exists() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     assert!(
         !home.exists(),
         "explicit KILLED path should keep deleting recoverable-provider home"
+    );
+}
+
+/// Sandboxes now hold links to the operator's real credential files, so the
+/// cleanup that runs on every kill must unlink the entry and never follow it.
+/// Getting this wrong would delete the host login the whole fleet shares.
+#[test]
+fn pr7_removing_a_sandbox_home_never_deletes_the_linked_host_credential() {
+    let temp = tempfile::tempdir().unwrap();
+    let host_home = temp.path().join("host");
+    let sandbox_home = temp.path().join("sandbox");
+    std::fs::create_dir_all(host_home.join(".codex")).unwrap();
+    std::fs::create_dir_all(sandbox_home.join(".codex")).unwrap();
+    let host_credential = host_home.join(".codex/auth.json");
+    std::fs::write(&host_credential, "host-token").unwrap();
+
+    materialize_auth_file_with_ladder(&host_home, &sandbox_home, ".codex/auth.json").unwrap();
+    assert!(is_symlink(&sandbox_home.join(".codex/auth.json")));
+
+    std::fs::remove_dir_all(&sandbox_home).unwrap();
+
+    assert!(
+        host_credential.is_file(),
+        "removing a sandbox must not follow the credential link into the host store"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&host_credential).unwrap(),
+        "host-token"
     );
 }
 
@@ -764,7 +797,7 @@ fn assert_adjacent_setenv(cmd: &[String], expected: &str) {
 }
 
 #[test]
-fn pr7_auth_ladder_symlink_failure_falls_back_to_copy() {
+fn pr7_auth_ladder_replaces_a_stale_private_copy_with_the_shared_store() {
     let temp = tempfile::tempdir().unwrap();
     let source_home = temp.path().join("src");
     let sandbox_home = temp.path().join("home");
@@ -778,8 +811,8 @@ fn pr7_auth_ladder_symlink_failure_falls_back_to_copy() {
 
     assert_eq!(std::fs::read_to_string(&sandbox_path).unwrap(), "{}");
     assert!(
-        !is_symlink(&sandbox_path),
-        "symlink failure fallback must leave a real copied file"
+        is_symlink(&sandbox_path),
+        "a sandbox carried over from the copying era must be migrated onto the shared store"
     );
 }
 
