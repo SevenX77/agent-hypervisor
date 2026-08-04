@@ -240,9 +240,12 @@ pub fn prepare_home_layout_with_extensions_for_slot_and_claude_credentials(
         ),
         _ => {
             materialize_unwired_provider_skills(provider, &extensions.skills)?;
+            // No provider-specific layout is wired, but the seat still runs in
+            // its own sandbox home, so HOME must point there.
+            let extra_env = home_env(&home_root, []);
             Ok(HomeOverrides {
                 home_root,
-                extra_env: HashMap::new(),
+                extra_env,
             })
         }
     }?;
@@ -551,12 +554,13 @@ fn materialize_builtin_rules(
     slot_id: &str,
     bundle_layers: &[String],
 ) -> Result<(), CcbdError> {
+    // Role rules land wherever the provider declares a rules target. The master
+    // role is not special-cased by provider name: a master on any provider with
+    // a rules target receives the master kernel, which is what teaches it the
+    // role contract including how to report cutover readiness.
     let Some(target) = builtin_rules_target(provider, home_root) else {
         return Ok(());
     };
-    if role == HomeLayoutRole::Master && provider != "claude" {
-        return Ok(());
-    }
     let content = composed_rules_for_slot(role, project_root, slot_id, bundle_layers)?;
     write_builtin_rules(&target, &content)
 }
@@ -1795,6 +1799,20 @@ fn env_home() -> Result<PathBuf, CcbdError> {
         })
 }
 
+/// Environment that points a provider at an already materialized sandbox home.
+///
+/// This is the same mapping the materialization functions apply, exposed for
+/// callers that re-enter an existing home instead of building one — the master
+/// revive path in particular. Provider-specific home variables live here only,
+/// so no caller spells `CLAUDE_CONFIG_DIR` or `CODEX_HOME` on its own.
+pub fn provider_home_env(provider: &str, home_root: &Path) -> HashMap<String, String> {
+    match crate::provider::manifest::canonicalize_provider_name(provider) {
+        "claude" => home_env(home_root, [("CLAUDE_CONFIG_DIR", ".claude")]),
+        "codex" => home_env(home_root, [("CODEX_HOME", ".codex")]),
+        _ => home_env(home_root, []),
+    }
+}
+
 fn home_env<const N: usize>(
     home_root: &Path,
     entries: [(&str, &str); N],
@@ -2369,6 +2387,41 @@ mod tests {
             let content = std::fs::read_to_string(path).unwrap();
             assert!(content.contains("ah Worker Coordination Kernel"));
             assert!(content.contains("CUSTOM SLOT A1"));
+        }
+    }
+
+    #[test]
+    fn master_rules_land_on_every_provider_with_a_rules_target() {
+        let project = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(project.path().join(".ah/rules")).unwrap();
+        std::fs::write(project.path().join(".ah/rules/master.md"), "CUSTOM MASTER").unwrap();
+
+        for (provider, rules_path) in [
+            ("claude", ".claude/CLAUDE.md"),
+            ("codex", ".codex/AGENTS.md"),
+            ("antigravity", ".gemini/AGENTS.md"),
+        ] {
+            let home = tempfile::TempDir::new().unwrap();
+            super::materialize_builtin_rules(
+                HomeLayoutRole::Master,
+                provider,
+                home.path(),
+                project.path(),
+                "master",
+                &[],
+            )
+            .unwrap();
+
+            let content = std::fs::read_to_string(home.path().join(rules_path))
+                .unwrap_or_else(|err| panic!("{provider} master rules missing: {err}"));
+            assert!(
+                content.contains("ah master ack-ready"),
+                "{provider} master must receive the kernel that defines cutover readiness"
+            );
+            assert!(
+                content.contains("CUSTOM MASTER"),
+                "{provider} master must receive the project's master slot rules"
+            );
         }
     }
 
