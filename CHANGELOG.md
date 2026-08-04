@@ -7,6 +7,21 @@ All notable changes to `ah` are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- `providers.claude.shared_credentials_dir` accepts a leading `~`, expanded at
+  config load to the home of whoever runs `ah`. A committed `ah.toml` no longer
+  has to hardcode one machine's absolute path to stay valid. Without a resolvable
+  home the path is left alone and rejected as non-absolute rather than guessed at.
+- The shared credentials directory is refused when it sits on a Windows drive
+  mounted into WSL. A token refresh rewrites that store in place, which needs
+  POSIX ownership and atomic rename; the check reads `/proc/self/mounts` and
+  reports the mount point and filesystem it found, so a Linux directory that
+  merely lives under `/mnt` is unaffected.
+- `scripts/ci/check_state_write_gate.sh`, the CI grep rule the perception write
+  arbiter has specified since 1.6.0 but never shipped: `agents.state` may only be
+  written by `db/perception/gate.rs`. Pre-migration call sites are baselined as a
+  ratchet — new or grown direct writes fail, and a shrunk baseline fails until it
+  is lowered, so migration progress is recorded instead of silently stalling. Now
+  a CI step, and the two acceptance tests that assert it exists finally pass.
 - The master seat runs any provider that declares the capabilities the role
   needs, instead of being wired to Claude. Provider manifests now declare
   `rules_target`, `completion_signal`, `readiness_ack`, `bundles` and
@@ -32,6 +47,9 @@ All notable changes to `ah` are documented here. The format is based on
   the last route by which pane text re-entered lifecycle state after 1.5.0.
 
 ### Fixed
+- CLI errors from the daemon render the daemon's explanation, not just the error
+  code: `ENVIRONMENT_NOT_SUPPORTED` alone said a guard fired without saying which
+  one or what to change.
 - Config and docs caught up with the shared-credentials requirement shipped in
   1.7.0. The project's own `ah.toml` and the `examples/ah.toml` template now
   declare `[providers.claude] shared_credentials_dir`; both previously failed
