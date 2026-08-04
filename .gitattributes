@@ -1,0 +1,13 @@
+# Shell scripts must keep LF endings in every checkout. A Windows clone that
+# rewrites them to CRLF produces `set: pipefail: invalid option name` the moment
+# the script runs under bash — including in WSL, where the same working tree is
+# both a Windows checkout and the Linux runtime.
+*.sh text eol=lf
+*.txt text eol=lf
+
+# The daemon reads these at runtime on Linux; keep them byte-identical across
+# checkouts for the same reason.
+*.toml text eol=lf
+*.md text eol=lf
+*.rs text eol=lf
+*.yml text eol=lf

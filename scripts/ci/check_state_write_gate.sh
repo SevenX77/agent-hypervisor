@@ -103,7 +103,10 @@ if [ ! -f "$BASELINE_FILE" ]; then
   exit 2
 fi
 
-BASELINE="$(grep -v '^[[:space:]]*#' "$BASELINE_FILE" | grep -v '^[[:space:]]*$' || true)"
+# `tr -d '\r'` keeps the checker working on a tree checked out with CRLF, where a
+# trailing carriage return would otherwise make every baseline path fail to match
+# and report the whole baseline as both new and removed.
+BASELINE="$(tr -d '\r' < "$BASELINE_FILE" | grep -v '^[[:space:]]*#' | grep -v '^[[:space:]]*$' || true)"
 
 failed=0
 
