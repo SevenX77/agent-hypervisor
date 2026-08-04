@@ -37,6 +37,11 @@ jobs:
       - name: Build
         run: cargo build
 
+      # 感知写入仲裁的 grep 闸:agents.state 只允许 db/perception/gate.rs 写。
+      # 单独成步是为了让越权写入在日志里一眼可见,而不是淹没在测试输出里。
+      - name: Check agents.state write gate
+        run: bash scripts/ci/check_state_write_gate.sh
+
       - name: Test
         run: cargo test --all-targets
 
