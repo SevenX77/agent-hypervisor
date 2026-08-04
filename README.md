@@ -68,7 +68,7 @@ version = "1"
 # Required whenever a seat runs `claude` — see below. The master runs `claude`
 # by default, so most configs need this even with no claude agent.
 [providers.claude]
-shared_credentials_dir = "/home/you/.claude"
+shared_credentials_dir = "~/.claude"
 
 [agents.a1]
 provider = "codex"
@@ -116,14 +116,14 @@ What a master gets depends on what its provider declares it supports:
 
 ### Claude seats share one login
 
-Every seat that runs `claude` needs `providers.claude.shared_credentials_dir`. That means each `provider = "claude"` agent — **and the master, when it runs Claude, which it does by default**. The value is an absolute path to your host Claude login directory, normally `~/.claude` spelled out in full:
+Every seat that runs `claude` needs `providers.claude.shared_credentials_dir`. That means each `provider = "claude"` agent — **and the master, when it runs Claude, which it does by default**. The value points at your host Claude login directory, normally `~/.claude`:
 
 ```toml
 [providers.claude]
-shared_credentials_dir = "/home/you/.claude"
+shared_credentials_dir = "~/.claude"
 ```
 
-A leading `~` is expanded to the home of whoever runs `ah`, so `shared_credentials_dir = "~/.claude"` keeps the config portable across machines. Otherwise it must be an absolute path. Either way it has to resolve to a directory that already exists and is not a symlink. Log in once on the host (run `claude`, then `/login`) before `ah start`.
+A leading `~` is expanded to the home of whoever runs `ah`, which keeps a committed config portable across machines; anything else must be an absolute path. Either way it has to resolve to a directory that already exists and is not a symlink. Log in once on the host (run `claude`, then `/login`) before `ah start`.
 
 Every sandbox still gets its own `CLAUDE_CONFIG_DIR`, but all of them — and the host — are pointed at this one credential store through `CLAUDE_SECURESTORAGE_CONFIG_DIR`. So a single host login covers every seat without mutual logout, and when a token refreshes it is written back in place instead of leaving the other seats holding a copy that just went stale.
 
@@ -325,7 +325,7 @@ Provider fields:
 
 ```toml
 [providers.claude]
-shared_credentials_dir = "/home/you/.claude"
+shared_credentials_dir = "~/.claude"
 ```
 
 | Field | Type | Notes |
