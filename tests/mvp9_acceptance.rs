@@ -740,7 +740,10 @@ provider = "bash"
 
     assert_eq!(summary.agents.len(), 3);
     let expected_sessions = ["agent_a1", "agent_a2", "agent_a3"];
-    let sessions = wait_for_tmux_sessions(&h, &expected_sessions, Duration::from_secs(5)).await;
+    // 20s, not 5s: the wait returns as soon as every session exists, so the
+    // budget only matters when the full suite is competing for the machine —
+    // where a slow tmux spawn was reading as a missing session.
+    let sessions = wait_for_tmux_sessions(&h, &expected_sessions, Duration::from_secs(20)).await;
     for agent_id in ["a1", "a2", "a3"] {
         assert!(
             sessions
@@ -787,7 +790,10 @@ async fn test_concurrent_agent_spawn_serializes_window_creation() {
     r3.unwrap();
 
     let expected_sessions = ["agent_ag_c1", "agent_ag_c2", "agent_ag_c3"];
-    let sessions = wait_for_tmux_sessions(&h, &expected_sessions, Duration::from_secs(5)).await;
+    // 20s, not 5s: the wait returns as soon as every session exists, so the
+    // budget only matters when the full suite is competing for the machine —
+    // where a slow tmux spawn was reading as a missing session.
+    let sessions = wait_for_tmux_sessions(&h, &expected_sessions, Duration::from_secs(20)).await;
     for agent_id in ["ag_c1", "ag_c2", "ag_c3"] {
         assert!(
             sessions
