@@ -31,7 +31,7 @@ use crate::tmux::{
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, LazyLock, Mutex};
 use tokio::sync::Mutex as AsyncMutex;
@@ -341,6 +341,10 @@ pub(super) fn stop_session_anchor(unit_name: &str) {
 pub(crate) struct SpawnMasterPaneParams {
     pub(crate) session_id: String,
     pub(crate) cmd: String,
+    /// Provider that runs this master seat, as resolved by the config layer.
+    /// `None` means the caller did not resolve one, and the daemon derives it
+    /// from `cmd` the same way the config layer would.
+    pub(crate) provider: Option<String>,
     pub(crate) tmux_window_size: TmuxWindowSize,
     pub(crate) extensions: ExtensionConfig,
     pub(crate) extra_env: HashMap<String, String>,
@@ -379,11 +383,18 @@ pub async fn handle_session_spawn_master_pane(
     let extensions = extension_config_from_params(&params)?;
     let extra_env = parse_extra_env(&params)?;
     let claude_shared_credentials_dir = optional_pathbuf(&params, "claude_shared_credentials_dir")?;
+    let provider = params
+        .get("provider")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(str::to_string);
     let outcome = spawn_master_pane_inner(
         ctx,
         SpawnMasterPaneParams {
             session_id: session_id.to_string(),
             cmd: cmd.to_string(),
+            provider,
             tmux_window_size,
             extensions,
             extra_env,
@@ -435,9 +446,10 @@ pub(super) async fn prepare_master_pane_plan(
             CcbdError::IpcInvalidRequest(format!("session not found: {}", params.session_id))
         })?;
     let master_cwd: std::path::PathBuf = session.absolute_path.clone().into();
+    let provider = params.resolved_provider();
     let resolved_bundles = resolve_bundles_for_provider(
         &master_cwd,
-        "claude",
+        &provider,
         BundleRole::Master,
         &params.extensions,
     )?;
@@ -471,19 +483,22 @@ pub(super) async fn prepare_master_pane_plan(
     if let Some(dir) = master_sandbox_dir.as_ref() {
         let hook_push_ctx = HookPushContext {
             agent_id: format!("master:{}:{hook_generation}", params.session_id),
-            provider: "claude".to_string(),
+            provider: provider.clone(),
             ahd_socket_path: ctx.state_dir.join("ahd.sock"),
             enabled: true,
         };
         let home_overrides = prepare_home_layout_with_extensions_for_slot_and_claude_credentials(
-            "claude",
+            &provider,
             dir,
             &master_cwd,
             HomeLayoutRole::Master,
             "master",
             &extensions,
             Some(&hook_push_ctx),
-            params.claude_shared_credentials_dir.as_deref(),
+            claude_shared_credentials_dir_for_provider(
+                &provider,
+                params.claude_shared_credentials_dir.as_deref(),
+            ),
         )?;
         home_root = Some(home_overrides.home_root);
         master_env_vars.extend(home_overrides.extra_env);
@@ -497,6 +512,26 @@ pub(super) async fn prepare_master_pane_plan(
         home_root,
         extensions,
     })
+}
+
+impl SpawnMasterPaneParams {
+    /// Provider that runs this master seat. The caller's resolved value wins;
+    /// otherwise the provider is derived from `cmd`, falling back to the default
+    /// master provider exactly as the config layer does.
+    pub(crate) fn resolved_provider(&self) -> String {
+        crate::cli::config::resolve_master_provider(self.provider.as_deref(), &self.cmd)
+    }
+}
+
+/// The shared Claude credentials directory only travels to a Claude seat; every
+/// other provider must never receive it.
+pub(crate) fn claude_shared_credentials_dir_for_provider<'a>(
+    provider: &str,
+    shared_credentials_dir: Option<&'a Path>,
+) -> Option<&'a Path> {
+    (crate::provider::manifest::canonicalize_provider_name(provider) == "claude")
+        .then_some(shared_credentials_dir)
+        .flatten()
 }
 
 fn build_master_spawn_env_vars(
@@ -958,6 +993,55 @@ mod master_cutover_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn master_pane_plan_materializes_the_declared_provider_not_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_ctx(tmp.path().join("state"));
+        create_session(
+            ctx.db.clone(),
+            "s_codex_master".to_string(),
+            "p_codex_master".to_string(),
+            tmp.path().display().to_string(),
+        )
+        .await
+        .unwrap();
+        let params = SpawnMasterPaneParams {
+            session_id: "s_codex_master".to_string(),
+            cmd: "codex".to_string(),
+            provider: Some("codex".to_string()),
+            tmux_window_size: TmuxWindowSize::Fixed,
+            extensions: ExtensionConfig::default(),
+            extra_env: HashMap::new(),
+            claimed_master_generation: None,
+            // A stray Claude credentials directory must not reach a codex seat.
+            claude_shared_credentials_dir: Some(tmp.path().to_path_buf()),
+        };
+
+        let plan = prepare_master_pane_plan(&ctx, &params).await.unwrap();
+        let home_root = plan.home_root.expect("master home root");
+
+        assert_eq!(
+            plan.master_env_vars.get("CODEX_HOME").map(String::as_str),
+            Some(home_root.join(".codex").display().to_string().as_str())
+        );
+        assert!(!plan.master_env_vars.contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(
+            !plan
+                .master_env_vars
+                .contains_key("CLAUDE_SECURESTORAGE_CONFIG_DIR")
+        );
+        assert!(
+            !home_root.join(".claude").exists(),
+            "a codex master must not be given a Claude home"
+        );
+        let rules = std::fs::read_to_string(home_root.join(".codex/AGENTS.md"))
+            .expect("codex master rules document");
+        assert!(
+            rules.contains("ah master ack-ready"),
+            "codex master must receive the master kernel"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn initial_master_spawn_env_contains_process_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let mut ctx = test_ctx(tmp.path().join("state"));
@@ -973,6 +1057,7 @@ mod master_cutover_tests {
         let params = SpawnMasterPaneParams {
             session_id: "s_master_identity".to_string(),
             cmd: "sleep 60".to_string(),
+            provider: None,
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::from([
@@ -1027,6 +1112,7 @@ mod master_cutover_tests {
         let params = SpawnMasterPaneParams {
             session_id: "s_cutover_identity".to_string(),
             cmd: "claude --continue".to_string(),
+            provider: None,
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::from([
@@ -1613,6 +1699,7 @@ mod master_cutover_tests {
         let params = SpawnMasterPaneParams {
             session_id: "s_watch_delay".to_string(),
             cmd: "sleep 60".to_string(),
+            provider: None,
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::new(),

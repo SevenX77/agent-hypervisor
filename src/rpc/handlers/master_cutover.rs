@@ -391,6 +391,7 @@ where
         let spawn_params = SpawnMasterPaneParams {
             session_id: session_id.clone(),
             cmd: request.master.cmd.clone(),
+            provider: request.master.provider.clone(),
             tmux_window_size: request.master.tmux_window_size,
             extensions: ExtensionConfig {
                 hooks: request.master.hooks.clone(),
