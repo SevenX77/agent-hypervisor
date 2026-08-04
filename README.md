@@ -26,12 +26,23 @@ That is all you need — see [Quick Start](#quick-start) below. (Building from s
 | `tmux` | every agent runs in its own tmux-backed workspace | `tmux -V` |
 | systemd with a user session | agent process trees run in systemd user scopes, so crashed daemons never leak orphans | `systemctl --user is-system-running` |
 | The provider CLIs you configure | `ah` orchestrates them, it does not bundle them — install and log in to the provider CLIs yourself first | see table below |
+| Network reachability to your providers | agents call the provider APIs directly; where that needs a proxy, see [Network access](#network-access) | `curl -sS -o /dev/null -w '%{http_code}\n' https://api.anthropic.com/` |
 
 ### One login per provider, shared by every agent
 
 Log in to each provider CLI once, on the host, the normal way (`claude` → `/login`, `codex login`, `agy` → sign in). Every agent `ah` spawns then shares that same login: the credential file in each sandbox points at the host's, so when a provider refreshes its token the new one is immediately in effect for the host and for every other agent. Nothing drifts onto a private copy that only one agent can renew.
 
-If your machine reaches the internet through a proxy, `ah` passes `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and their lowercase forms) into every agent — an agent that cannot reach its provider is reported by most CLIs as "not signed in", which sends you looking in the wrong place. You do not need to repeat those variables in `[env]`.
+### Network access
+
+Agents run in their own sandbox with a filtered environment, but `ah` passes your proxy settings through: `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY`, and their lowercase forms. If your shell can reach your providers, so can every agent — you do not need to repeat those variables under `[env]` in `ah.toml`.
+
+This matters more than it looks, because of how the failure presents itself. **A provider CLI that cannot reach its API reports "you are not signed in", not a network error.** So if an agent sits at a login prompt while the same CLI works in your own shell, check connectivity before you touch credentials:
+
+```bash
+curl -sS -o /dev/null -w '%{http_code}\n' https://api.anthropic.com/
+```
+
+If that fails in your shell but succeeds with `--proxy`, export the proxy variables in the shell you start `ahd` from (or in your shell profile) and restart the daemon — `ah stop`, then `ah start`.
 
 Provider names in `ah.toml` do not always match the binary they launch — check the binary, not the provider name:
 
