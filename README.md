@@ -123,7 +123,7 @@ Every seat that runs `claude` needs `providers.claude.shared_credentials_dir`. T
 shared_credentials_dir = "/home/you/.claude"
 ```
 
-It must be an absolute path to a directory that already exists and is not a symlink. Log in once on the host (run `claude`, then `/login`) before `ah start`.
+A leading `~` is expanded to the home of whoever runs `ah`, so `shared_credentials_dir = "~/.claude"` keeps the config portable across machines. Otherwise it must be an absolute path. Either way it has to resolve to a directory that already exists and is not a symlink. Log in once on the host (run `claude`, then `/login`) before `ah start`.
 
 Every sandbox still gets its own `CLAUDE_CONFIG_DIR`, but all of them — and the host — are pointed at this one credential store through `CLAUDE_SECURESTORAGE_CONFIG_DIR`. So a single host login covers every seat without mutual logout, and when a token refreshes it is written back in place instead of leaving the other seats holding a copy that just went stale.
 
@@ -135,7 +135,7 @@ providers.claude.shared_credentials_dir is required when master or agents use pr
 
 If nothing in your project runs Claude, set `[master] enabled = false` (or point `master.cmd` at another CLI) and the requirement goes away.
 
-On WSL2, keep this directory on the Linux filesystem (`/home/you/.claude`). A path under a Windows mount such as `/mnt/c/Users/you/.claude` is not a safe place for credential writes, and `ah` does not currently reject one here.
+On WSL2 this directory must live on the Linux filesystem. A token refresh rewrites the credential store in place, which needs POSIX ownership and atomic rename — neither of which a Windows drive mounted into WSL provides. `ah` refuses such a directory at spawn time and names the mount it found, so `/mnt/c/Users/you/.claude` fails fast instead of corrupting your login later. The check reads the live mount table, so a Linux directory that merely lives under `/mnt` is fine.
 
 ### Everything runs in the background
 
@@ -330,7 +330,7 @@ shared_credentials_dir = "/home/you/.claude"
 
 | Field | Type | Notes |
 |---|---|---|
-| `shared_credentials_dir` | string (path) | Required when the master or any agent runs `claude`. Absolute path to an existing, non-symlink directory holding the host Claude login. Injected into every claude seat as `CLAUDE_SECURESTORAGE_CONFIG_DIR`, while `CLAUDE_CONFIG_DIR` stays per-sandbox. See [Claude seats share one login](#claude-seats-share-one-login). |
+| `shared_credentials_dir` | string (path) | Required when the master or any agent runs `claude`. Absolute path (or `~/...`) to an existing, non-symlink directory holding the host Claude login; a directory on a Windows drive mounted into WSL is refused. Injected into every claude seat as `CLAUDE_SECURESTORAGE_CONFIG_DIR`, while `CLAUDE_CONFIG_DIR` stays per-sandbox. See [Claude seats share one login](#claude-seats-share-one-login). |
 
 Completion fields:
 
