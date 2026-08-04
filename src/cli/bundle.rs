@@ -162,7 +162,7 @@ impl LoadedBundleConfig {
         let mut references = BTreeMap::<String, BTreeSet<String>>::new();
         let mut provider_checks = BTreeMap::<String, Vec<ProviderCheck>>::new();
 
-        let master_provider = config.master.provider.as_deref().unwrap_or("claude");
+        let master_provider = config.master.resolved_provider();
         for name in &config.master.bundle {
             references
                 .entry(name.clone())

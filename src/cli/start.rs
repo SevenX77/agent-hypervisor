@@ -69,6 +69,7 @@ pub async fn start_from_options(
         None => find_config(&options.cwd)?,
     };
     let config = load_project_config(&config_path)?;
+    crate::cli::config::warn_config_diagnostics(&config);
     start_project(client, config, &config_path, options.cwd, options.wait).await
 }
 
@@ -136,6 +137,7 @@ pub async fn start_project(
                 json!({
                     "session_id": session_id,
                     "cmd": config.master.cmd.clone(),
+                    "provider": config.master.resolved_provider(),
                     "hooks": config.master.hooks,
                     "plugins": config.master.plugins,
                     "skills": config.master.skills,
@@ -271,6 +273,7 @@ fn build_realign_payload(session_id: &str, config: &ProjectConfig, force: bool) 
         "config_env": config.env,
         "master": {
             "cmd": config.master.cmd,
+            "provider": config.master.resolved_provider(),
             "hooks": config.master.hooks,
             "plugins": config.master.plugins,
             "skills": config.master.skills,
@@ -623,6 +626,7 @@ provider = "gemini"
             version: "1".to_string(),
             master: MasterConfig {
                 cmd: "claude".to_string(),
+                cmd_explicit: false,
                 provider: None,
                 readiness_timeout_s: 120,
                 enabled: master_enabled,
