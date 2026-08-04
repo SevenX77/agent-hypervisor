@@ -243,7 +243,7 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     })?;
     reject_removed_layout_field(&raw)?;
     let mut config: ProjectConfig = toml::from_str(&raw)?;
-    canonicalize_project_config_providers(&mut config);
+    normalize_project_config(&mut config, std::env::var_os("HOME").map(PathBuf::from).as_deref());
     let diagnostics = validate_project_config(&config);
     if let Some(diagnostic) = diagnostics
         .iter()
@@ -581,7 +581,14 @@ fn reject_removed_layout_field(raw: &str) -> Result<(), CliError> {
     Ok(())
 }
 
-fn canonicalize_project_config_providers(config: &mut ProjectConfig) {
+/// Brings a freshly parsed config to its resolved form before anything reads it:
+/// provider aliases become canonical names, and `~` in a path becomes the
+/// invoking user's home. Everything downstream — validation included — sees only
+/// resolved values, so no consumer has to repeat this work or guess.
+///
+/// `home` is passed in rather than read here so the rule is testable without
+/// mutating process environment.
+fn normalize_project_config(config: &mut ProjectConfig, home: Option<&Path>) {
     if let Some(provider) = config.master.provider.as_mut() {
         let canonical = canonicalize_provider_name(provider);
         if canonical != provider {
@@ -593,6 +600,32 @@ fn canonicalize_project_config_providers(config: &mut ProjectConfig) {
         if canonical != agent.provider {
             agent.provider = canonical.to_string();
         }
+    }
+    if let Some(path) = config.providers.claude.shared_credentials_dir.as_mut() {
+        *path = expand_home_prefix(path, home);
+    }
+}
+
+/// Expands a leading `~` to `home`. Everything else is returned unchanged,
+/// including `~user` forms, which name a different user's home and are not
+/// something ah resolves.
+///
+/// This exists so a committed `ah.toml` can name the host login store without
+/// hardcoding one machine's absolute path, which is what the config being
+/// "safe to commit and share" requires. With no home available the path is left
+/// alone and validation rejects it as non-absolute, rather than silently
+/// resolving to something surprising.
+fn expand_home_prefix(path: &Path, home: Option<&Path>) -> PathBuf {
+    let text = path.to_string_lossy();
+    let Some(home) = home else {
+        return path.to_path_buf();
+    };
+    if text == "~" {
+        return home.to_path_buf();
+    }
+    match text.strip_prefix("~/") {
+        Some(rest) => home.join(rest),
+        None => path.to_path_buf(),
     }
 }
 
@@ -625,6 +658,7 @@ mod tests {
     };
     use crate::tmux::TmuxWindowSize;
     use std::ffi::OsString;
+    use std::path::Path;
 
     #[test]
     fn test_load_valid_config_without_layout() {
@@ -786,6 +820,82 @@ provider = "claude"
             .filter(|diagnostic| diagnostic.severity == super::DiagnosticSeverity::Warning)
             .map(|diagnostic| diagnostic.message)
             .collect()
+    }
+
+    #[test]
+    fn shared_credentials_dir_expands_a_leading_tilde_to_the_invoking_home() {
+        let mut config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[providers.claude]
+shared_credentials_dir = "~/.claude"
+
+[agents.a1]
+provider = "claude"
+"#,
+        )
+        .unwrap();
+
+        super::normalize_project_config(&mut config, Some(Path::new("/home/alice")));
+
+        assert_eq!(
+            config.providers.claude.shared_credentials_dir.as_deref(),
+            Some(Path::new("/home/alice/.claude"))
+        );
+        assert!(
+            errors(&config).is_empty(),
+            "an expanded ~ path is absolute and must validate: {:?}",
+            errors(&config)
+        );
+    }
+
+    #[test]
+    fn shared_credentials_dir_without_a_home_stays_unexpanded_and_is_rejected() {
+        let mut config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[providers.claude]
+shared_credentials_dir = "~/.claude"
+
+[agents.a1]
+provider = "claude"
+"#,
+        )
+        .unwrap();
+
+        super::normalize_project_config(&mut config, None);
+
+        assert_eq!(
+            config.providers.claude.shared_credentials_dir.as_deref(),
+            Some(Path::new("~/.claude")),
+            "no home means no guessing"
+        );
+        assert!(
+            errors(&config)
+                .iter()
+                .any(|message| message.contains("must be an absolute path")),
+            "an unexpanded ~ path must still be rejected: {:?}",
+            errors(&config)
+        );
+    }
+
+    #[test]
+    fn shared_credentials_dir_leaves_other_tilde_forms_alone() {
+        assert_eq!(
+            super::expand_home_prefix(Path::new("~bob/.claude"), Some(Path::new("/home/alice"))),
+            Path::new("~bob/.claude"),
+            "~user names another user's home, which ah does not resolve"
+        );
+        assert_eq!(
+            super::expand_home_prefix(Path::new("/srv/.claude"), Some(Path::new("/home/alice"))),
+            Path::new("/srv/.claude")
+        );
+        assert_eq!(
+            super::expand_home_prefix(Path::new("~"), Some(Path::new("/home/alice"))),
+            Path::new("/home/alice")
+        );
     }
 
     #[test]
