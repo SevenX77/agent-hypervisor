@@ -327,6 +327,19 @@ pub const ENV_PASSTHROUGH: &[&str] = &[
     "GOOGLE_API_KEY",
     "GOOGLE_GENAI_USE_VERTEXAI",
     "HOME",
+    // Proxy settings decide whether a sandboxed agent can reach its provider at
+    // all. Dropping them leaves the agent offline on any machine that routes
+    // through a proxy, where a provider CLI reports it as "not signed in"
+    // rather than as a network failure. Both cases are honoured because
+    // different runtimes read different ones.
+    "ALL_PROXY",
+    "all_proxy",
+    "HTTP_PROXY",
+    "http_proxy",
+    "HTTPS_PROXY",
+    "https_proxy",
+    "NO_PROXY",
+    "no_proxy",
     "LANG",
     "LC_ALL",
     "LC_MESSAGES",
@@ -654,6 +667,32 @@ mod tests {
     }
 
     #[test]
+    /// An agent that cannot reach the network cannot authenticate, and the
+    /// provider CLIs report that as "not signed in" rather than as a network
+    /// failure — so proxy settings have to survive the spawn env filter on every
+    /// provider that talks to a remote API.
+    #[test]
+    fn every_networked_provider_passes_proxy_settings_into_the_sandbox() {
+        for provider in ["claude", "codex", "antigravity"] {
+            let passthrough = get_manifest(provider).env_passthrough;
+            for key in [
+                "HTTP_PROXY",
+                "http_proxy",
+                "HTTPS_PROXY",
+                "https_proxy",
+                "ALL_PROXY",
+                "all_proxy",
+                "NO_PROXY",
+                "no_proxy",
+            ] {
+                assert!(
+                    passthrough.contains(&key),
+                    "{provider} must pass {key} through; without it the agent is offline"
+                );
+            }
+        }
+    }
+
     fn canonicalize_provider_name_maps_gemini_alias_only() {
         assert_eq!(canonicalize_provider_name("gemini"), "antigravity");
         assert_eq!(canonicalize_provider_name("antigravity"), "antigravity");
