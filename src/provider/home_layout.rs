@@ -68,11 +68,11 @@ pub fn materialize_auth_file_with_ladder(
         return Err(AuthMaterializationErrorCode::AuthProviderTokenMissing);
     }
     let target = home_root.join(relative_path);
-    if is_dynamic_oauth_auth_file(relative_path) {
-        copy_auth_file(&source, &target, true)?;
-        return Ok(());
-    }
-
+    // Every seat points at the host's single credential file. A provider that
+    // refreshes its token rewrites that one file in place, so the new token is
+    // immediately shared by the host and every other seat — the property a
+    // per-sandbox copy cannot have, where each seat silently drifts onto its own
+    // token and a rotation elsewhere strands it.
     match symlink_auth_file_checked(&source, &target) {
         Ok(()) => Ok(()),
         Err(err) => {
@@ -691,10 +691,6 @@ fn link_auth_file_into_sandbox(source_home: &Path, home_root: &Path, relative: &
             );
         }
     }
-}
-
-fn is_dynamic_oauth_auth_file(relative: &str) -> bool {
-    matches!(relative, ".gemini/antigravity-cli/antigravity-oauth-token")
 }
 
 fn materialize_trust(
@@ -2099,6 +2095,17 @@ fn symlink_auth_file_checked(source: &Path, target: &Path) -> Result<(), std::io
     if target.is_symlink() && same_resolved_path(target, source) {
         return Ok(());
     }
+    // A sandbox left over from a version that copied credentials still holds a
+    // private file here. Leaving it would keep that seat on a token nobody else
+    // can refresh, so the copy is replaced by the shared link; the host store is
+    // the one source of truth the operator logs into.
+    if target.is_symlink() || target.exists() {
+        tracing::info!(
+            target = %target.display(),
+            "replacing a private provider credential copy with the shared host store"
+        );
+        fs::remove_file(target)?;
+    }
     #[cfg(unix)]
     {
         std::os::unix::fs::symlink(source, target)
@@ -2463,6 +2470,71 @@ mod tests {
 C:\\134 /mnt/c 9p rw,noatime,aname=drvfs;path=C:\\;uid=0;gid=0;symlinkroot=/mnt/,cache=0x5 0 0\n\
 D:\\134 /mnt/d 9p rw,noatime,aname=drvfs;path=D:\\;uid=0;gid=0;symlinkroot=/mnt/,cache=0x5 0 0\n\
 share /mnt/linux-share 9p rw,relatime,trans=virtio,version=9p2000.L 0 0\n";
+
+    /// Every provider credential ah materializes must stay one shared file.
+    ///
+    /// A per-sandbox copy drifts the moment the provider refreshes its token:
+    /// the new token lands in that sandbox only, while the host and every other
+    /// seat keep a token that a rotation can invalidate. Sharing one file means a
+    /// refresh by any seat is a refresh for all of them.
+    #[cfg(unix)]
+    #[test]
+    fn provider_credentials_are_shared_with_the_host_not_copied_per_sandbox() {
+        for relative in [
+            ".codex/auth.json",
+            ".gemini/antigravity-cli/antigravity-oauth-token",
+        ] {
+            let source_home = tempfile::TempDir::new().unwrap();
+            let sandbox_home = tempfile::TempDir::new().unwrap();
+            let source = source_home.path().join(relative);
+            std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+            std::fs::write(&source, "{\"token\":\"original\"}").unwrap();
+
+            super::materialize_auth_file_with_ladder(
+                source_home.path(),
+                sandbox_home.path(),
+                relative,
+            )
+            .unwrap();
+
+            let target = sandbox_home.path().join(relative);
+            assert!(
+                target.is_symlink(),
+                "{relative} must be shared with the host, not copied"
+            );
+
+            // A refresh inside the sandbox rewrites the file in place, the way
+            // the provider CLIs do; the host must see the new token.
+            std::fs::write(&target, "{\"token\":\"refreshed\"}").unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&source).unwrap(),
+                "{\"token\":\"refreshed\"}",
+                "{relative}: a refresh in the sandbox must reach the host store"
+            );
+        }
+    }
+
+    /// Upgrading must not leave old sandboxes on their private copies, or the
+    /// seats that already exist keep exactly the drift this change removes.
+    #[cfg(unix)]
+    #[test]
+    fn a_legacy_private_credential_copy_is_migrated_to_the_shared_store() {
+        let relative = ".gemini/antigravity-cli/antigravity-oauth-token";
+        let source_home = tempfile::TempDir::new().unwrap();
+        let sandbox_home = tempfile::TempDir::new().unwrap();
+        let source = source_home.path().join(relative);
+        std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+        std::fs::write(&source, "host-token").unwrap();
+        let target = sandbox_home.path().join(relative);
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "stale-private-copy").unwrap();
+
+        super::materialize_auth_file_with_ladder(source_home.path(), sandbox_home.path(), relative)
+            .unwrap();
+
+        assert!(target.is_symlink(), "the private copy must be replaced");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "host-token");
+    }
 
     #[test]
     fn credentials_on_a_windows_drive_are_identified_by_the_mount_table() {

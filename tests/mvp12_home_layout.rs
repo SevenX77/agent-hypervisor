@@ -199,7 +199,7 @@ fn antigravity_trusts_workspace_without_overwriting_settings() {
 
 #[test]
 #[serial_test::serial(global_env)]
-fn antigravity_oauth_token_is_private_0600_copy() {
+fn antigravity_oauth_token_is_shared_with_the_host_store() {
     let host_home = tempfile::tempdir().unwrap();
     let cache_home = tempfile::tempdir().unwrap();
     let sandbox_root = tempfile::tempdir().unwrap();
@@ -207,6 +207,12 @@ fn antigravity_oauth_token_is_private_0600_copy() {
     let source_agy = host_home.path().join(".gemini/antigravity-cli");
     std::fs::create_dir_all(&source_agy).unwrap();
     std::fs::write(source_agy.join("antigravity-oauth-token"), "host-token\n").unwrap();
+    std::fs::set_permissions(
+        source_agy.join("antigravity-oauth-token"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let source_mode = 0o600;
     let _env = EnvGuard::set(host_home.path(), cache_home.path());
 
     let antigravity =
@@ -218,18 +224,33 @@ fn antigravity_oauth_token_is_private_0600_copy() {
         .join(".gemini/antigravity-cli/antigravity-oauth-token");
     let metadata = std::fs::symlink_metadata(&target).unwrap();
     assert!(
-        !metadata.file_type().is_symlink(),
-        "{} must be a private copy, not a symlink",
+        metadata.file_type().is_symlink(),
+        "{} must share the host login store, not hold a private copy",
         target.display()
     );
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "host-token\n");
-    assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+    // With one shared file there is no second copy to protect, and ah must not
+    // loosen the permissions of the store the operator owns.
+    assert_eq!(
+        std::fs::metadata(&source).unwrap().permissions().mode() & 0o777,
+        source_mode,
+        "materialization must leave the host store's permissions alone"
+    );
 
+    // A private copy went stale the moment any seat refreshed its token, which
+    // is what stranded antigravity seats on credentials nobody else could renew.
+    // One shared file makes every refresh visible everywhere.
     std::fs::write(&source, "host-token-refreshed\n").unwrap();
-    assert_ne!(
+    assert_eq!(
         std::fs::read_to_string(&target).unwrap(),
+        "host-token-refreshed\n",
+        "the seat must see a refresh performed anywhere else"
+    );
+    std::fs::write(&target, "seat-refreshed\n").unwrap();
+    assert_eq!(
         std::fs::read_to_string(&source).unwrap(),
-        "sandbox antigravity token copy must not track later host refreshes"
+        "seat-refreshed\n",
+        "a refresh by this seat must reach the host store"
     );
 }
 
