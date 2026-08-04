@@ -1,10 +1,10 @@
 [package]
 name = "ah"
-version = "1.8.0"
+version = "1.8.1"
 edition = "2024"
 authors = ["sevenx"]
 description = "L2 Scheduling Daemon for Agent Hypervisor"
-repository = "https://github.com/SevenX77/ccbd-rust"
+repository = "https://github.com/SevenX77/ah"
 
 [dependencies]
 # 异步运行时

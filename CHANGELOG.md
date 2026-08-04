@@ -6,6 +6,15 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-04
+
+### Fixed
+- The published installer downloads from this repository. `Cargo.toml` still
+  named the pre-rename repository, so the generated `ah-installer.sh` requested
+  `SevenX77/ccbd-rust` and every one-line install failed with a 404 — the entry
+  point in the README has been broken since the rename, in 1.7.0 as well. The
+  release archive itself was always correct; only the installer's URL was wrong.
+
 ## [1.8.0] - 2026-08-04
 
 The provider-parity release: what used to be true only for Claude is now true
