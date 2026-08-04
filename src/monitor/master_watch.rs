@@ -368,7 +368,7 @@ fn resolve_master_cmd_for_watch(row: &ActiveMasterWatchRow) -> String {
     let config_cmd =
         crate::cli::config::load_project_config(&PathBuf::from(&row.absolute_path).join("ah.toml"))
             .map(|config| config.master.cmd)
-            .unwrap_or_else(|_| "claude".to_string());
+            .unwrap_or_else(|_| crate::cli::config::default_master_cmd());
     tracing::warn!(
         session_id = %row.session_id,
         fallback_cmd = %config_cmd,
@@ -1029,11 +1029,9 @@ async fn resume_master_recovery_readiness(
     if !revive_master_readiness_ready(
         &readiness_check,
         &ctx.db,
-        ctx.tmux_server.as_ref(),
         session_id,
         expected_pid,
         runtime_expected_generation,
-        pane,
         readiness_timeout,
     )
     .await?
@@ -1191,46 +1189,50 @@ async fn recovered_worker_gate_ready(
 async fn revive_master_readiness_ready(
     check: &ReviveMasterReadinessCheck,
     db: &Db,
-    tmux_server: &TmuxServer,
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-    pane: &TmuxPaneId,
     timeout: Duration,
 ) -> Result<bool, CcbdError> {
     match check {
-        ReviveMasterReadinessCheck::Ack { log_root, cursors } => {
+        ReviveMasterReadinessCheck::Ack {
+            provider,
+            log_root,
+            cursors,
+        } => {
             revive_master_readiness_ack(
                 db,
                 session_id,
                 expected_pid,
                 expected_generation,
+                provider,
                 log_root,
                 cursors,
                 timeout,
             )
             .await
         }
-        ReviveMasterReadinessCheck::Probe => {
-            revive_master_readiness_probe(
-                db,
-                tmux_server,
-                session_id,
-                expected_pid,
-                expected_generation,
-                pane,
-                timeout,
-            )
-            .await
+        // Declared degradation: this master cannot report readiness itself, so
+        // the only claim ah makes is that the replacement process is alive and
+        // still the runtime's master. Nothing is read from the pane.
+        ReviveMasterReadinessCheck::Started => {
+            #[cfg(test)]
+            if let Some(ready) = revive_master_readiness_ack_override(session_id) {
+                return Ok(ready);
+            }
+            Ok(master_runtime_matches(db, session_id, expected_pid, expected_generation)?
+                && master_process_is_alive(expected_pid))
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn revive_master_readiness_ack(
     db: &Db,
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
+    provider: &str,
     log_root: &Path,
     cursors: &LogCursorMap,
     timeout: Duration,
@@ -1248,8 +1250,12 @@ async fn revive_master_readiness_ack(
         if !master_process_is_alive(expected_pid) {
             return Ok(false);
         }
-        if read_provider_assistant_progress_after_cursors("claude", log_root, cursors).map_err(
-            |err| CcbdError::PtyIoError(format!("read Claude revive readiness transcript: {err}")),
+        if read_provider_assistant_progress_after_cursors(provider, log_root, cursors).map_err(
+            |err| {
+                CcbdError::PtyIoError(format!(
+                    "read {provider} revive readiness transcript: {err}"
+                ))
+            },
         )? {
             return Ok(true);
         }
@@ -1260,70 +1266,9 @@ async fn revive_master_readiness_ack(
     }
 }
 
-#[derive(Debug, Default)]
-struct ReviveMasterReadinessProbeState {
-    last_capture: Option<String>,
-    steady_captures: usize,
-}
-
-impl ReviveMasterReadinessProbeState {
-    fn observe_capture(&mut self, capture: &str) -> bool {
-        if capture.trim().is_empty() {
-            self.last_capture = None;
-            self.steady_captures = 0;
-            return false;
-        }
-        if self.last_capture.as_deref() == Some(capture) {
-            self.steady_captures += 1;
-        } else {
-            self.last_capture = Some(capture.to_string());
-            self.steady_captures = 1;
-        }
-        self.steady_captures >= 3
-    }
-}
-
-async fn revive_master_readiness_probe(
-    db: &Db,
-    tmux_server: &TmuxServer,
-    session_id: &str,
-    expected_pid: i64,
-    expected_generation: i64,
-    pane: &TmuxPaneId,
-    timeout: Duration,
-) -> Result<bool, CcbdError> {
-    #[cfg(test)]
-    if let Some(ready) = revive_master_readiness_probe_override(session_id) {
-        return Ok(ready);
-    }
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut probe = ReviveMasterReadinessProbeState::default();
-    loop {
-        if !master_runtime_matches(db, session_id, expected_pid, expected_generation)? {
-            return Ok(false);
-        }
-        if !master_process_is_alive(expected_pid) {
-            return Ok(false);
-        }
-        match tmux_server.get_pane_pid(pane.clone()).await {
-            Ok(pid) if i64::from(pid) == expected_pid => {}
-            Ok(_) | Err(_) => return Ok(false),
-        }
-        match tmux_server.capture_pane(pane.clone()).await {
-            Ok(capture) if probe.observe_capture(&capture) => return Ok(true),
-            Ok(_) | Err(_) => {}
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return Ok(false);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-}
-
-#[cfg(test)]
-static REVIVE_MASTER_READINESS_PROBE_OVERRIDES: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, bool>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+// Pane-text readiness probing was removed: a settled pane reports that the
+// screen stopped changing, not that the revived master resumed work. The only
+// readiness signal is the provider's own transcript progress above.
 
 #[cfg(test)]
 static REVIVE_MASTER_READINESS_ACK_OVERRIDES: std::sync::LazyLock<
@@ -1341,15 +1286,6 @@ fn master_revive_readiness_timeout_secs(_session_id: &str) -> i64 {
         return timeout_secs;
     }
     resolve_master_revive_readiness_timeout_secs()
-}
-
-#[cfg(test)]
-fn revive_master_readiness_probe_override(session_id: &str) -> Option<bool> {
-    REVIVE_MASTER_READINESS_PROBE_OVERRIDES
-        .lock()
-        .expect("revive master readiness probe override mutex poisoned")
-        .get(session_id)
-        .copied()
 }
 
 #[cfg(test)]
@@ -1371,11 +1307,6 @@ fn revive_master_readiness_timeout_override(session_id: &str) -> Option<i64> {
 }
 
 #[cfg(test)]
-struct ReviveMasterReadinessProbeOverrideGuard {
-    session_id: String,
-}
-
-#[cfg(test)]
 struct ReviveMasterReadinessAckOverrideGuard {
     session_id: String,
 }
@@ -1383,16 +1314,6 @@ struct ReviveMasterReadinessAckOverrideGuard {
 #[cfg(test)]
 struct ReviveMasterReadinessTimeoutOverrideGuard {
     session_id: String,
-}
-
-#[cfg(test)]
-impl Drop for ReviveMasterReadinessProbeOverrideGuard {
-    fn drop(&mut self) {
-        REVIVE_MASTER_READINESS_PROBE_OVERRIDES
-            .lock()
-            .expect("revive master readiness probe override mutex poisoned")
-            .remove(&self.session_id);
-    }
 }
 
 #[cfg(test)]
@@ -1412,20 +1333,6 @@ impl Drop for ReviveMasterReadinessTimeoutOverrideGuard {
             .lock()
             .expect("revive master readiness timeout override mutex poisoned")
             .remove(&self.session_id);
-    }
-}
-
-#[cfg(test)]
-fn set_revive_master_readiness_probe_override(
-    session_id: &str,
-    ready: bool,
-) -> ReviveMasterReadinessProbeOverrideGuard {
-    REVIVE_MASTER_READINESS_PROBE_OVERRIDES
-        .lock()
-        .expect("revive master readiness probe override mutex poisoned")
-        .insert(session_id.to_string(), ready);
-    ReviveMasterReadinessProbeOverrideGuard {
-        session_id: session_id.to_string(),
     }
 }
 
@@ -1487,7 +1394,7 @@ fn unixepoch() -> i64 {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{
-        ReviveMasterReadinessProbeState, begin_master_recovery_window_for_snapshot,
+        begin_master_recovery_window_for_snapshot,
         complete_master_recovery_window_for_master_watch, mark_master_recovery_non_revive_terminal,
         mark_master_recovery_phase, patrol_active_masters_once,
         rearm_active_master_watches_on_startup, recovered_workers_ready_sync,
@@ -1981,19 +1888,6 @@ mod tests {
     }
 
     #[test]
-    fn revive_probe_passes_stable_nonempty_documents_content_blind_gap() {
-        let mut probe = ReviveMasterReadinessProbeState::default();
-
-        assert!(!probe.observe_capture(""));
-        assert!(!probe.observe_capture("first-run onboarding prompt"));
-        assert!(!probe.observe_capture("first-run onboarding prompt"));
-        assert!(
-            probe.observe_capture("first-run onboarding prompt"),
-            "probe mode is deliberately content-blind/degraded; R3 ack must close this gap"
-        );
-    }
-
-    #[test]
     fn revive_worker_spawning_timeout_blocks_completed() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = db::init(file.path()).unwrap();
@@ -2071,7 +1965,7 @@ provider = "bash"
         }
 
         let tmux = Arc::new(TmuxServer::new(&state_dir));
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, false);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, false);
         revive_master_after_exit(
             session_id.clone(),
             111,
@@ -2146,7 +2040,7 @@ provider = "bash"
         }
 
         let tmux = Arc::new(TmuxServer::new(&state_dir));
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, true);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, true);
         revive_master_after_exit(
             session_id.clone(),
             111,
@@ -2324,18 +2218,15 @@ provider = "bash"
     }
 
     #[test]
-    fn revive_ack_does_not_falsely_pass_on_injected_pane_echo() {
-        let mut probe = super::ReviveMasterReadinessProbeState::default();
-
-        assert!(!probe.observe_capture("继续"));
-        assert!(!probe.observe_capture("继续"));
+    fn revive_readiness_never_accepts_injected_pane_echo() {
+        // The revive-continue instruction echoes back into the pane verbatim.
+        // Readiness reads transcript semantics, so that echo is not progress.
         assert!(
-            probe.observe_capture("继续"),
-            "R2 degraded probe is content-blind and would accept stable injected echo"
-        );
-        assert!(
-            !crate::completion::parser::provider_log_line_has_assistant_progress("claude", "继续"),
-            "R3 ack uses transcript semantics, not pane text"
+            !crate::completion::parser::provider_log_line_has_assistant_progress(
+                "claude",
+                super::super::master_reaper::MASTER_REVIVE_CONTINUE_INSTRUCTION
+            ),
+            "readiness ack uses transcript semantics, not pane text"
         );
     }
 
@@ -2720,15 +2611,37 @@ provider = "bash"
     }
 
     #[test]
-    fn master_revive_lifecycle_non_claude_uses_probe_readiness_mode() {
+    fn master_revive_without_readiness_ack_degrades_to_started_not_pane_text() {
         let temp = tempfile::TempDir::new().unwrap();
 
         let check =
-            prepare_revive_master_readiness_check("s_probe_mode", "bash -lc true", temp.path())
+            prepare_revive_master_readiness_check("s_started_mode", "bash -lc true", temp.path())
                 .unwrap();
 
-        assert_eq!(check.mode_name(), "probe");
-        assert_eq!(check.ready_reason(), "probe-ready");
+        assert_eq!(check.mode_name(), "started");
+        assert_eq!(check.strength(), "degraded");
+        assert_eq!(check.ready_reason(), "started-process-alive");
+    }
+
+    #[test]
+    fn master_revive_with_readiness_ack_provider_uses_transcript_ack() {
+        let temp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".codex/sessions")).unwrap();
+
+        let check = prepare_revive_master_readiness_check("s_ack_mode", "codex", temp.path())
+            .unwrap();
+
+        assert_eq!(check.mode_name(), "ack");
+        assert_eq!(check.strength(), "semantic");
+        match check {
+            super::ReviveMasterReadinessCheck::Ack {
+                provider, log_root, ..
+            } => {
+                assert_eq!(provider, "codex");
+                assert_eq!(log_root, temp.path().join(".codex/sessions"));
+            }
+            other => panic!("expected transcript ack readiness, got {other:?}"),
+        }
     }
 
     fn seed_failed_revive_master_runtime(
@@ -3074,7 +2987,7 @@ provider = "bash"
         }
         let ctx = test_ctx(db.clone(), state_dir.path());
         let (events, _guard) = set_failed_revive_master_reap_recorder(session_id);
-        let _probe = super::set_revive_master_readiness_probe_override(session_id, true);
+        let _probe = super::set_revive_master_readiness_ack_override(session_id, true);
 
         super::resume_master_recovery_readiness(
             &ctx,
@@ -3084,7 +2997,11 @@ provider = "bash"
             5,
             &pane,
             Some("s_happy_no_reap:6".to_string()),
-            ReviveMasterReadinessCheck::Probe,
+            ReviveMasterReadinessCheck::Ack {
+                provider: "claude".to_string(),
+                log_root: state_dir.path().join("transcripts"),
+                cursors: crate::completion::reader::LogCursorMap::new(),
+            },
         )
         .await
         .unwrap();
@@ -3254,7 +3171,7 @@ provider = "bash"
             "printf ready; sleep 30",
         )
         .await;
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, true);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, true);
 
         {
             let now = super::unixepoch();
@@ -3318,7 +3235,7 @@ provider = "bash"
             "i=0; while true; do i=$((i+1)); printf '\\033[2J\\033[H%s' \"$i\"; sleep 0.1; done",
         )
         .await;
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, false);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, false);
 
         {
             let now = super::unixepoch();
@@ -4352,7 +4269,7 @@ provider = "bash"
 
         let spawn_marker = state_dir.join("master-readiness-spawned");
         let tmux = Arc::new(TmuxServer::new(&state_dir));
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, true);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, true);
         revive_master_after_exit(
             session_id.clone(),
             111,
@@ -4484,7 +4401,7 @@ provider = "bash"
 
         let spawn_marker = state_dir.join("master-stale-pane-spawned");
         let tmux = Arc::new(TmuxServer::new(&state_dir));
-        let _probe = super::set_revive_master_readiness_probe_override(&session_id, true);
+        let _probe = super::set_revive_master_readiness_ack_override(&session_id, true);
         revive_master_after_exit(
             session_id.clone(),
             111,

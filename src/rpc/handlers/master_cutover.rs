@@ -161,38 +161,27 @@ fn default_master_readiness_timeout_s() -> u64 {
     120
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum MasterReadinessMode {
-    Ack,
-    Probe,
-}
+/// Master readiness has exactly one form: the successor master reports it
+/// itself by running `ah master ack-ready`. Terminal output is never a readiness
+/// signal — a settled pane says the screen stopped changing, not that the
+/// successor loaded the handoff.
+pub(super) const MASTER_READINESS_MODE: &str = "ack";
 
-impl MasterReadinessMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Ack => "ack",
-            Self::Probe => "probe",
-        }
+/// Fails when the master's provider cannot report readiness, naming the missing
+/// capability instead of falling back to a guess.
+fn ensure_master_can_ack_readiness(provider: Option<&str>, cmd: &str) -> Result<(), CcbdError> {
+    let provider = crate::cli::config::resolve_master_provider(provider, cmd);
+    let can_ack = crate::provider::manifest::provider_capabilities(&provider)
+        .is_some_and(|capabilities| capabilities.readiness_ack);
+    if can_ack {
+        return Ok(());
     }
-}
-
-fn master_readiness_mode(provider: Option<&str>, cmd: &str) -> MasterReadinessMode {
-    let provider = provider
-        .filter(|value| !value.trim().is_empty())
-        .map(str::trim)
-        .map(crate::provider::manifest::canonicalize_provider_name)
-        .map(str::to_string)
-        .unwrap_or_else(|| {
-            crate::provider::manifest::canonicalize_provider_name(
-                cmd.split_whitespace().next().unwrap_or("custom"),
-            )
-            .to_string()
-        });
-    if provider == "claude" {
-        MasterReadinessMode::Ack
-    } else {
-        MasterReadinessMode::Probe
-    }
+    Err(CcbdError::EnvironmentNotSupported {
+        details: format!(
+            "master cutover needs readiness reported by the master seat, but provider \
+             '{provider}' does not declare the 'readiness_ack' capability"
+        ),
+    })
 }
 
 fn readiness_timeout(readiness_timeout_s: u64) -> Duration {
@@ -202,12 +191,9 @@ fn readiness_timeout(readiness_timeout_s: u64) -> Duration {
 pub(super) async fn wait_for_master_readiness(
     ctx: &Ctx,
     cutover_id: &str,
-    mode: MasterReadinessMode,
     timeout: Duration,
 ) -> Result<String, CcbdError> {
     let deadline = tokio::time::Instant::now() + timeout;
-    let mut last_probe_capture: Option<String> = None;
-    let mut steady_probe_captures = 0usize;
     loop {
         let cutover = get_master_cutover(&ctx.db, cutover_id)?.ok_or_else(|| {
             CcbdError::IpcInvalidRequest(format!("master cutover not found: {cutover_id}"))
@@ -220,7 +206,7 @@ pub(super) async fn wait_for_master_readiness(
         if cutover.ack_ready_at.is_some() {
             return Ok(cutover
                 .readiness_mode
-                .unwrap_or_else(|| mode.as_str().to_string()));
+                .unwrap_or_else(|| MASTER_READINESS_MODE.to_string()));
         }
         if cutover
             .new_master_pid
@@ -229,48 +215,6 @@ pub(super) async fn wait_for_master_readiness(
             return Err(CcbdError::IpcInvalidRequest(format!(
                 "master cutover {cutover_id} master process exited before readiness"
             )));
-        }
-        if mode == MasterReadinessMode::Probe
-            && let Some(pane_id) = cutover.new_master_pane_id.as_deref()
-        {
-            match TmuxPaneId::parse(pane_id) {
-                Ok(parsed_pane_id) => match ctx.tmux_server.capture_pane(parsed_pane_id).await {
-                    Ok(capture) if !capture.trim().is_empty() => {
-                        if last_probe_capture.as_deref() == Some(capture.as_str()) {
-                            steady_probe_captures += 1;
-                        } else {
-                            last_probe_capture = Some(capture);
-                            steady_probe_captures = 1;
-                        }
-                        if steady_probe_captures >= 3 {
-                            return match mark_master_cutover_ack_ready(
-                                &ctx.db,
-                                cutover_id,
-                                mode.as_str(),
-                            )? {
-                                MasterCutoverUpdate::Updated => Ok(mode.as_str().to_string()),
-                                MasterCutoverUpdate::Stale => Err(CcbdError::IpcInvalidRequest(
-                                    format!("master cutover {cutover_id} not in VERIFYING"),
-                                )),
-                            };
-                        }
-                    }
-                    Ok(_) => {
-                        last_probe_capture = None;
-                        steady_probe_captures = 0;
-                    }
-                    Err(err) => {
-                        tracing::debug!(%cutover_id, pane_id, error = %err, "master readiness probe capture failed");
-                        last_probe_capture = None;
-                        steady_probe_captures = 0;
-                    }
-                },
-                Err(err) => {
-                    tracing::warn!(%cutover_id, pane_id, error = %err, "invalid master readiness probe pane id");
-                    last_probe_capture = None;
-                    steady_probe_captures = 0;
-                }
-            }
         }
         if tokio::time::Instant::now() >= deadline {
             return Err(CcbdError::IpcInvalidRequest(format!(
@@ -334,6 +278,9 @@ pub(super) async fn run_master_cutover_with_spawn<S>(
 where
     S: for<'a> Fn(&'a Ctx, SpawnMasterPaneParams, MasterPanePlan) -> SpawnMasterFuture<'a>,
 {
+    // Refuse before creating any state: a master that cannot report readiness
+    // would leave the cutover stuck in VERIFYING until it timed out.
+    ensure_master_can_ack_readiness(request.master.provider.as_deref(), &request.master.cmd)?;
     let session_id = format!("sess_{}", Uuid::new_v4());
     let cutover_id = format!("cutover-{session_id}");
     let state_dir = request
@@ -495,12 +442,9 @@ where
             return Err(CcbdError::IpcInvalidRequest("master cutover stale after spawn".into()));
         }
         current_state = "VERIFYING";
-        let readiness_mode =
-            master_readiness_mode(request.master.provider.as_deref(), &request.master.cmd);
         let readiness_mode = wait_for_master_readiness(
             ctx,
             &cutover_id,
-            readiness_mode,
             readiness_timeout(request.master.readiness_timeout_s),
         )
         .await?;

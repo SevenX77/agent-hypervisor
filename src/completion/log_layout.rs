@@ -47,17 +47,26 @@ pub fn resolve_agent_log_root(
         Ok(path) => path,
         Err(_) => return unavailable("sandbox_home_unavailable"),
     };
-    let root = match provider {
-        "codex" => home_root.join(".codex/sessions"),
-        "claude" => home_root.join(".claude/projects"),
-        "antigravity" => home_root.join(".gemini/antigravity-cli"),
-        _ => return unavailable("unsupported_provider"),
+    let Some(root) = provider_log_root_in_home(provider, &home_root) else {
+        return unavailable("unsupported_provider");
     };
 
     match std::fs::read_dir(&root) {
         Ok(_) => LogRootResolution::Available(root),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => unavailable("log_root_missing"),
         Err(_) => unavailable("log_root_unreadable"),
+    }
+}
+
+/// Where a provider writes its session transcripts inside a sandbox home. This
+/// is the single owner of that fact; both worker completion and master revive
+/// readiness read it from here rather than spelling the path themselves.
+pub fn provider_log_root_in_home(provider: &str, home_root: &Path) -> Option<PathBuf> {
+    match crate::provider::manifest::canonicalize_provider_name(provider) {
+        "codex" => Some(home_root.join(".codex/sessions")),
+        "claude" => Some(home_root.join(".claude/projects")),
+        "antigravity" => Some(home_root.join(".gemini/antigravity-cli")),
+        _ => None,
     }
 }
 
