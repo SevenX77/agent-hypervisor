@@ -183,20 +183,43 @@ pub fn rpc_call(socket: &Path, method: &str, params: Value) -> Result<Value, Cli
 
         if let Some(error) = response.get("error") {
             let code = error.get("code").and_then(Value::as_i64).unwrap_or(-32000);
-            let message = error
-                .get("data")
-                .and_then(|data| data.get("error_code"))
-                .and_then(Value::as_str)
-                .or_else(|| error.get("message").and_then(Value::as_str))
-                .unwrap_or("unknown RPC error")
-                .to_string();
-            return Err(CliError::Rpc { code, message });
+            return Err(CliError::Rpc {
+                code,
+                message: rpc_error_message(error),
+            });
         }
 
         response
             .get("result")
             .cloned()
             .ok_or_else(|| CliError::InvalidResponse("missing result field".into()))
+    }
+}
+
+/// Renders a daemon error for a human.
+///
+/// The error code alone ("ENVIRONMENT_NOT_SUPPORTED") says a guard fired but not
+/// which one or what to change, so the daemon's `details` — the sentence that
+/// names the offending value and the fix — is what the operator actually needs.
+/// The code is kept as a prefix so log greps and existing habits still work.
+pub(crate) fn rpc_error_message(error: &Value) -> String {
+    let data = error.get("data");
+    let code = data
+        .and_then(|data| data.get("error_code"))
+        .and_then(Value::as_str);
+    let details = data
+        .and_then(|data| data.get("details"))
+        .and_then(Value::as_str)
+        .filter(|details| !details.trim().is_empty());
+    match (code, details) {
+        (Some(code), Some(details)) => format!("{code}: {details}"),
+        (Some(code), None) => code.to_string(),
+        (None, Some(details)) => details.to_string(),
+        (None, None) => error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown RPC error")
+            .to_string(),
     }
 }
 
@@ -317,8 +340,41 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, parse_rpc_response, resolve_socket_path_for_config_inner};
+    use super::{CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message};
     use crate::state_layout::StateLayout;
+    use serde_json::json;
+
+    #[test]
+    fn rpc_error_message_carries_the_daemon_detail_not_just_the_code() {
+        let error = json!({
+            "code": -32000,
+            "message": "environment not supported",
+            "data": {
+                "error_code": "ENVIRONMENT_NOT_SUPPORTED",
+                "details": "providers.claude.shared_credentials_dir is on a Windows interop filesystem (9p mounted at /mnt/d)"
+            }
+        });
+
+        let rendered = rpc_error_message(&error);
+
+        assert!(rendered.starts_with("ENVIRONMENT_NOT_SUPPORTED: "));
+        assert!(
+            rendered.contains("Windows interop filesystem"),
+            "the operator needs the reason, not only the code: {rendered}"
+        );
+    }
+
+    #[test]
+    fn rpc_error_message_falls_back_to_code_then_message() {
+        assert_eq!(
+            rpc_error_message(&json!({"data": {"error_code": "AGENT_NOT_FOUND"}})),
+            "AGENT_NOT_FOUND"
+        );
+        assert_eq!(
+            rpc_error_message(&json!({"message": "boom"})),
+            "boom"
+        );
+    }
 
     #[test]
     fn parse_rpc_response_reports_closed_connection_for_empty_body() {
