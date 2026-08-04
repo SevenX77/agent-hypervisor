@@ -24,11 +24,67 @@ pub struct ProviderManifest {
     pub stability_ms: u64,
     pub idle_anti_pattern: &'static str,
     pub completion_signal: CompletionSignalKind,
+    /// Optional features this provider declares support for. Orchestration gates
+    /// behaviour on these declarations instead of on provider names, so adding a
+    /// provider means declaring what it supports rather than editing branches.
+    pub capabilities: ProviderCapabilities,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompletionSignalKind {
     LogOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProviderCapabilities {
+    /// ah can materialize a role rules document into this provider's home.
+    pub rules_target: bool,
+    /// The provider can push an end-of-turn completion signal back to ahd.
+    pub completion_signal: bool,
+    /// A master seat on this provider reports readiness explicitly: it runs
+    /// `ah master ack-ready` during cutover, and its transcript records
+    /// assistant progress that the revive path can read.
+    pub readiness_ack: bool,
+    /// `bundle` references can be materialized for this provider.
+    pub bundles: bool,
+    /// A `settings` table can be materialized for this provider.
+    pub settings: bool,
+}
+
+impl ProviderCapabilities {
+    const NONE: Self = Self {
+        rules_target: false,
+        completion_signal: false,
+        readiness_ack: false,
+        bundles: false,
+        settings: false,
+    };
+
+    /// Capabilities the master role requires from whichever provider runs it.
+    /// A master without rules never learns the role contract, one without a
+    /// completion signal never reports end of turn, and one without readiness
+    /// ack cannot be handed over by cutover and can only be revived to the
+    /// weaker "process started" claim.
+    pub fn missing_for_master(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if !self.rules_target {
+            missing.push("rules_target");
+        }
+        if !self.completion_signal {
+            missing.push("completion_signal");
+        }
+        if !self.readiness_ack {
+            missing.push("readiness_ack");
+        }
+        missing
+    }
+}
+
+/// Capabilities declared by `provider`, or `None` when the name is unknown.
+pub fn provider_capabilities(provider: &str) -> Option<ProviderCapabilities> {
+    MANIFESTS
+        .get(canonicalize_provider_name(provider))
+        .map(|manifest| manifest.capabilities)
 }
 
 pub fn is_recovery_eligible_provider(provider: &str) -> bool {
@@ -349,6 +405,7 @@ pub static MANIFESTS: LazyLock<HashMap<&'static str, ProviderManifest>> = LazyLo
             stability_ms: 0,
             idle_anti_pattern: "",
             completion_signal: CompletionSignalKind::LogOnly,
+            capabilities: ProviderCapabilities::NONE,
         },
     );
     manifests.insert(
@@ -379,6 +436,13 @@ pub static MANIFESTS: LazyLock<HashMap<&'static str, ProviderManifest>> = LazyLo
             stability_ms: 300,
             idle_anti_pattern: r"(?im)\besc to interrupt\b|Hooks need review|Trust all and continue|Continue without trusting",
             completion_signal: CompletionSignalKind::LogOnly,
+            capabilities: ProviderCapabilities {
+                rules_target: true,
+                completion_signal: true,
+                readiness_ack: true,
+                bundles: false,
+                settings: false,
+            },
         },
     );
     manifests.insert(
@@ -398,6 +462,13 @@ pub static MANIFESTS: LazyLock<HashMap<&'static str, ProviderManifest>> = LazyLo
             stability_ms: 300,
             idle_anti_pattern: r"(?im)\b(?:esc to interrupt|Architecting|Reading\s+\d+\s+files?|ctrl\+o to expand|paste again to expand)\b",
             completion_signal: CompletionSignalKind::LogOnly,
+            capabilities: ProviderCapabilities {
+                rules_target: true,
+                completion_signal: true,
+                readiness_ack: true,
+                bundles: true,
+                settings: true,
+            },
         },
     );
     manifests.insert(
@@ -416,6 +487,13 @@ pub static MANIFESTS: LazyLock<HashMap<&'static str, ProviderManifest>> = LazyLo
             stability_ms: 300,
             idle_anti_pattern: r"(?m)^\s*esc to cancel\b",
             completion_signal: CompletionSignalKind::LogOnly,
+            capabilities: ProviderCapabilities {
+                rules_target: true,
+                completion_signal: true,
+                readiness_ack: true,
+                bundles: false,
+                settings: false,
+            },
         },
     );
     manifests

@@ -43,37 +43,131 @@ impl Default for CompletionConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct MasterConfig {
-    #[serde(
-        default = "default_master_cmd",
-        deserialize_with = "deserialize_master_cmd"
-    )]
     pub cmd: String,
-    #[serde(default)]
+    /// True when `cmd` came from the config file rather than from the resolved
+    /// provider's default. Only an author-written `cmd` can conflict with an
+    /// author-written `provider`.
+    pub cmd_explicit: bool,
     pub provider: Option<String>,
-    #[serde(default = "default_master_readiness_timeout_s")]
     pub readiness_timeout_s: u64,
-    #[serde(default = "default_master_enabled")]
     pub enabled: bool,
-    #[serde(default)]
     pub window_size: TmuxWindowSize,
-    #[serde(default)]
     pub hooks: HashMap<String, Vec<HookGroup>>,
-    #[serde(default)]
     pub plugins: Vec<String>,
-    #[serde(default)]
     pub skills: Vec<String>,
-    #[serde(default, deserialize_with = "deserialize_bundle_refs")]
     pub bundle: Vec<String>,
-    #[serde(default)]
     pub settings: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Wire shape of `[master]`. `cmd` is optional here so that the resolved
+/// provider can supply the launch command when the author did not write one.
+#[derive(Debug, Deserialize)]
+struct MasterConfigWire {
+    #[serde(default)]
+    cmd: Option<String>,
+    #[serde(default)]
+    provider: Option<String>,
+    #[serde(default = "default_master_readiness_timeout_s")]
+    readiness_timeout_s: u64,
+    #[serde(default = "default_master_enabled")]
+    enabled: bool,
+    #[serde(default)]
+    window_size: TmuxWindowSize,
+    #[serde(default)]
+    hooks: HashMap<String, Vec<HookGroup>>,
+    #[serde(default)]
+    plugins: Vec<String>,
+    #[serde(default)]
+    skills: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_bundle_refs")]
+    bundle: Vec<String>,
+    #[serde(default)]
+    settings: serde_json::Map<String, serde_json::Value>,
+}
+
+impl<'de> Deserialize<'de> for MasterConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = MasterConfigWire::deserialize(deserializer)?;
+        let written_cmd = wire
+            .cmd
+            .as_deref()
+            .map(str::trim)
+            .filter(|cmd| !cmd.is_empty())
+            .map(str::to_string);
+        let provider = wire
+            .provider
+            .as_deref()
+            .map(str::trim)
+            .filter(|provider| !provider.is_empty())
+            .map(|provider| canonicalize_provider_name(provider).to_string());
+        let cmd_explicit = written_cmd.is_some();
+        let cmd = written_cmd.unwrap_or_else(|| {
+            default_master_cmd_for_provider(provider.as_deref().unwrap_or(DEFAULT_MASTER_PROVIDER))
+        });
+        Ok(Self {
+            cmd,
+            cmd_explicit,
+            provider,
+            readiness_timeout_s: wire.readiness_timeout_s,
+            enabled: wire.enabled,
+            window_size: wire.window_size,
+            hooks: wire.hooks,
+            plugins: wire.plugins,
+            skills: wire.skills,
+            bundle: wire.bundle,
+            settings: wire.settings,
+        })
+    }
+}
+
+impl MasterConfig {
+    /// The provider that actually runs this master. An explicit `provider` wins;
+    /// otherwise it is derived from the first word of `cmd`. Every consumer reads
+    /// this instead of re-deriving the provider from `cmd` or defaulting to a
+    /// provider name of its own.
+    pub fn resolved_provider(&self) -> String {
+        resolve_master_provider(self.provider.as_deref(), &self.cmd)
+    }
+}
+
+/// The one place that answers "which provider runs this master seat".
+///
+/// A declared provider wins. Otherwise the provider is implied by the first word
+/// of the master command, when that word names a provider ah knows. A command
+/// that is a script or an unrelated binary implies nothing, and the master falls
+/// back to the default master provider.
+pub fn resolve_master_provider(provider: Option<&str>, cmd: &str) -> String {
+    provider
+        .map(str::trim)
+        .filter(|provider| !provider.is_empty())
+        .map(|provider| canonicalize_provider_name(provider).to_string())
+        .or_else(|| provider_name_from_command(cmd))
+        .unwrap_or_else(|| DEFAULT_MASTER_PROVIDER.to_string())
+}
+
+/// Provider implied by a master command string, or `None` when its first word is
+/// not a provider ah knows.
+pub fn provider_name_from_command(cmd: &str) -> Option<String> {
+    let binary = cmd
+        .split_whitespace()
+        .next()
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(|binary| binary.to_str())?;
+    let canonical = canonicalize_provider_name(binary);
+    is_valid_provider(canonical).then(|| canonical.to_string())
 }
 
 impl Default for MasterConfig {
     fn default() -> Self {
         Self {
-            cmd: default_master_cmd(),
+            cmd: default_master_cmd_for_provider(DEFAULT_MASTER_PROVIDER),
+            cmd_explicit: false,
             provider: None,
             readiness_timeout_s: default_master_readiness_timeout_s(),
             enabled: default_master_enabled(),
@@ -160,6 +254,20 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     Ok(config)
 }
 
+/// Prints the non-fatal diagnostics of a loaded config to stderr.
+///
+/// Loading only rejects errors, so warnings — a master provider that cannot
+/// carry part of the role, for one — would otherwise stay invisible until the
+/// dependent behaviour silently went missing.
+pub fn warn_config_diagnostics(config: &ProjectConfig) {
+    for diagnostic in validate_project_config(config)
+        .iter()
+        .filter(|diagnostic| diagnostic.severity == DiagnosticSeverity::Warning)
+    {
+        eprintln!("warning: {}", diagnostic.message);
+    }
+}
+
 pub fn find_config(start_dir: &Path) -> Result<PathBuf, CliError> {
     find_config_with_env(start_dir, std::env::var_os("CCB_CONFIG_PATH"))
 }
@@ -183,29 +291,7 @@ pub fn validate_project_config(config: &ProjectConfig) -> Vec<Diagnostic> {
     if let Err(err) = validate_bundle_refs(&config.master.bundle) {
         diagnostics.push(error(format!("invalid master bundle: {err}")));
     }
-    if !config.master.bundle.is_empty()
-        && config
-            .master
-            .provider
-            .as_deref()
-            .is_some_and(|provider| provider != "claude")
-    {
-        diagnostics.push(error(
-            "master uses bundle but PR-1 supports bundles only for provider claude",
-        ));
-    }
-    if !config.master.settings.is_empty()
-        && config
-            .master
-            .provider
-            .as_deref()
-            .is_some_and(|provider| provider != "claude")
-    {
-        diagnostics.push(error(format!(
-            "provider settings are only supported for the 'claude' provider today; master uses '{}'",
-            config.master.provider.as_deref().unwrap_or_default()
-        )));
-    }
+    validate_master_provider_config(config, &mut diagnostics);
     validate_claude_provider_config(config, &mut diagnostics);
     for (agent_id, agent) in &config.agents {
         if !is_valid_agent_id(agent_id) {
@@ -233,14 +319,91 @@ pub fn validate_project_config(config: &ProjectConfig) -> Vec<Diagnostic> {
                 "agent {agent_id:?} has invalid bundle: {err}"
             )));
         }
-        if !agent.settings.is_empty() && agent.provider != "claude" {
+        if !agent.settings.is_empty()
+            && crate::provider::manifest::provider_capabilities(&agent.provider)
+                .is_some_and(|capabilities| !capabilities.settings)
+        {
             diagnostics.push(error(format!(
-                "provider settings are only supported for the 'claude' provider today; agent '{agent_id}' uses '{}'",
+                "agent '{agent_id}' declares settings but provider '{}' does not support the 'settings' capability",
                 agent.provider
             )));
         }
     }
     diagnostics
+}
+
+/// Validates the master seat against the capabilities its provider declares.
+///
+/// Feature gates are per capability, not per provider name: a provider that
+/// declares `bundles` may carry `master.bundle`, one that declares `settings`
+/// may carry `[master.settings]`. Missing master-role capabilities are reported
+/// as warnings listing what stops working, so a degraded master is visible
+/// rather than silent; the operations that need those capabilities fail at their
+/// own call sites.
+fn validate_master_provider_config(config: &ProjectConfig, diagnostics: &mut Vec<Diagnostic>) {
+    if let Some(provider) = config.master.provider.as_deref()
+        && !is_valid_provider(provider)
+    {
+        diagnostics.push(error(format!(
+            "master has {}; fix provider spelling",
+            unknown_provider_message(provider)
+        )));
+        return;
+    }
+
+    let provider = config.master.resolved_provider();
+    if let Some(declared) = config.master.provider.as_deref()
+        && config.master.cmd_explicit
+        && let Some(cmd_provider) = provider_name_from_command(&config.master.cmd)
+        && cmd_provider != declared
+    {
+        diagnostics.push(error(format!(
+            "master declares provider '{declared}' but cmd runs provider '{cmd_provider}'; \
+             drop one of them so the master seat has a single provider"
+        )));
+    }
+
+    let Some(capabilities) = crate::provider::manifest::provider_capabilities(&provider) else {
+        return;
+    };
+
+    if !config.master.bundle.is_empty() && !capabilities.bundles {
+        diagnostics.push(error(format!(
+            "master declares bundle but provider '{provider}' does not support the 'bundles' capability"
+        )));
+    }
+    if !config.master.settings.is_empty() && !capabilities.settings {
+        diagnostics.push(error(format!(
+            "master declares settings but provider '{provider}' does not support the 'settings' capability"
+        )));
+    }
+
+    if !config.master.enabled {
+        return;
+    }
+    let missing = capabilities.missing_for_master();
+    if !missing.is_empty() {
+        diagnostics.push(warning(format!(
+            "master provider '{provider}' is missing master capabilities [{}]: {}",
+            missing.join(", "),
+            missing
+                .iter()
+                .map(|capability| master_capability_consequence(capability))
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+}
+
+fn master_capability_consequence(capability: &str) -> &'static str {
+    match capability {
+        "rules_target" => "no master rules document is materialized",
+        "completion_signal" => "no end-of-turn completion signal is delivered",
+        "readiness_ack" => {
+            "master cutover is refused and master revive readiness degrades to process start"
+        }
+        _ => "the dependent master behaviour is unavailable",
+    }
 }
 
 fn validate_claude_provider_config(config: &ProjectConfig, diagnostics: &mut Vec<Diagnostic>) {
@@ -266,20 +429,7 @@ fn validate_claude_provider_config(config: &ProjectConfig, diagnostics: &mut Vec
 }
 
 fn config_uses_claude_provider(config: &ProjectConfig) -> bool {
-    let master_uses_claude = config.master.enabled
-        && config
-            .master
-            .provider
-            .as_deref()
-            .map(|provider| provider == "claude")
-            .unwrap_or_else(|| {
-                config
-                    .master
-                    .cmd
-                    .split_whitespace()
-                    .next()
-                    .is_some_and(|cmd| cmd == "claude")
-            });
+    let master_uses_claude = config.master.enabled && config.master.resolved_provider() == "claude";
     master_uses_claude
         || config
             .agents
@@ -365,24 +515,53 @@ pub(crate) fn find_config_with_env(
     )))
 }
 
-fn default_master_cmd() -> String {
-    "claude".into()
+/// Provider assumed for a master whose config names neither a provider nor a
+/// command ah recognizes. This keeps the historical default: an untouched
+/// `[master]` runs Claude.
+pub const DEFAULT_MASTER_PROVIDER: &str = "claude";
+
+/// Launch command for a master whose config could not be read at all. Callers
+/// recovering a master without its config use this instead of spelling a
+/// provider binary themselves.
+pub fn default_master_cmd() -> String {
+    default_master_cmd_for_provider(DEFAULT_MASTER_PROVIDER)
+}
+
+/// Launch command used when the author did not write `master.cmd`.
+///
+/// Claude keeps its historical bare-binary default, which is a shipped contract.
+/// Every other provider gets its manifest launch command, because that argument
+/// set is the one ah knows starts the provider correctly inside a sandbox; the
+/// command is shell-quoted since master commands run through `sh -lc`.
+fn default_master_cmd_for_provider(provider: &str) -> String {
+    let canonical = canonicalize_provider_name(provider);
+    if canonical == DEFAULT_MASTER_PROVIDER {
+        return DEFAULT_MASTER_PROVIDER.to_string();
+    }
+    match crate::provider::manifest::try_get_manifest(canonical) {
+        Ok(manifest) => manifest
+            .command
+            .iter()
+            .map(|part| shell_quote_command_part(part))
+            .collect::<Vec<_>>()
+            .join(" "),
+        Err(_) => canonical.to_string(),
+    }
+}
+
+fn shell_quote_command_part(part: &str) -> String {
+    if !part.is_empty()
+        && part
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.' | '/' | '='))
+    {
+        return part.to_string();
+    }
+    format!("'{}'", part.replace('\'', "'\\''"))
 }
 
 fn default_master_readiness_timeout_s() -> u64 {
     120
-}
-
-fn deserialize_master_cmd<'de, D>(deserializer: D) -> Result<String, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let cmd = String::deserialize(deserializer)?;
-    if cmd.trim().is_empty() {
-        Ok("claude".to_string())
-    } else {
-        Ok(cmd)
-    }
 }
 
 fn default_master_enabled() -> bool {
@@ -427,6 +606,13 @@ fn is_valid_agent_id(agent_id: &str) -> bool {
 fn error(message: impl Into<String>) -> Diagnostic {
     Diagnostic {
         severity: DiagnosticSeverity::Error,
+        message: message.into(),
+    }
+}
+
+fn warning(message: impl Into<String>) -> Diagnostic {
+    Diagnostic {
+        severity: DiagnosticSeverity::Warning,
         message: message.into(),
     }
 }
@@ -584,6 +770,181 @@ provider = "claude"
             diagnostic.message.contains("shared_credentials_dir")
                 && diagnostic.message.contains("required")
         }));
+    }
+
+    fn errors(config: &super::ProjectConfig) -> Vec<String> {
+        super::validate_project_config(config)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == super::DiagnosticSeverity::Error)
+            .map(|diagnostic| diagnostic.message)
+            .collect()
+    }
+
+    fn warnings(config: &super::ProjectConfig) -> Vec<String> {
+        super::validate_project_config(config)
+            .into_iter()
+            .filter(|diagnostic| diagnostic.severity == super::DiagnosticSeverity::Warning)
+            .map(|diagnostic| diagnostic.message)
+            .collect()
+    }
+
+    #[test]
+    fn master_provider_codex_needs_no_claude_shared_credentials_dir() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "codex"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.master.resolved_provider(), "codex");
+        assert!(
+            errors(&config).is_empty(),
+            "codex master should validate: {:?}",
+            errors(&config)
+        );
+        assert!(
+            warnings(&config).is_empty(),
+            "codex declares every master capability: {:?}",
+            warnings(&config)
+        );
+    }
+
+    #[test]
+    fn master_provider_without_cmd_takes_its_launch_command_from_the_provider() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "antigravity"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.master.resolved_provider(), "antigravity");
+        assert!(
+            config.master.cmd.starts_with("agy"),
+            "master cmd should come from the antigravity manifest, got {:?}",
+            config.master.cmd
+        );
+        assert!(!config.master.cmd_explicit);
+    }
+
+    #[test]
+    fn master_provider_lacking_capabilities_warns_and_names_them() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "bash"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            errors(&config).is_empty(),
+            "a capability-poor master is allowed to run: {:?}",
+            errors(&config)
+        );
+        let warnings = warnings(&config);
+        assert!(
+            warnings.iter().any(|message| {
+                message.contains("rules_target")
+                    && message.contains("completion_signal")
+                    && message.contains("readiness_ack")
+            }),
+            "warning must name every missing master capability: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn master_provider_conflicting_with_explicit_cmd_is_rejected() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "codex"
+cmd = "claude"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            errors(&config)
+                .iter()
+                .any(|message| message.contains("single provider")),
+            "conflicting provider and cmd must be rejected: {:?}",
+            errors(&config)
+        );
+    }
+
+    #[test]
+    fn master_settings_are_gated_on_the_settings_capability() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "codex"
+
+[master.settings]
+model = "gpt-5.5"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            errors(&config)
+                .iter()
+                .any(|message| message.contains("'settings' capability")),
+            "codex has no settings capability: {:?}",
+            errors(&config)
+        );
+    }
+
+    #[test]
+    fn unknown_master_provider_is_rejected_by_name() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[master]
+provider = "clause"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert!(
+            errors(&config)
+                .iter()
+                .any(|message| message.contains("unknown provider")),
+            "misspelled master provider must be rejected: {:?}",
+            errors(&config)
+        );
     }
 
     #[test]
@@ -777,10 +1138,8 @@ model = "claude-sonnet-4-20250514"
 
         let err = load_project_config(&path).unwrap_err().to_string();
 
-        assert!(
-            err.contains("provider settings are only supported for the 'claude' provider today")
-        );
-        assert!(err.contains("agent 'a1' uses 'codex'"));
+        assert!(err.contains("agent 'a1' declares settings"));
+        assert!(err.contains("provider 'codex' does not support the 'settings' capability"));
     }
 
     #[test]

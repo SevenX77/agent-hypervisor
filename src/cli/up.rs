@@ -15,6 +15,7 @@ pub async fn run_up<C: RpcClient>(client: &C, options: UpOptions) -> Result<(), 
         None => find_config(&options.cwd)?,
     };
     let config = load_project_config(&config_path)?;
+    crate::cli::config::warn_config_diagnostics(&config);
     let result = run_up_with_config(client, config, options.cwd, options.force).await?;
     println!("{result}");
     Ok(())
@@ -39,6 +40,7 @@ async fn run_up_with_config<C: RpcClient>(
                 "config_env": config.env,
                 "master": {
                     "cmd": config.master.cmd,
+                    "provider": config.master.resolved_provider(),
                     "hooks": config.master.hooks,
                     "plugins": config.master.plugins,
                     "skills": config.master.skills,
@@ -262,6 +264,7 @@ mod tests {
             version: "1".to_string(),
             master: MasterConfig {
                 cmd: "claude".to_string(),
+                cmd_explicit: false,
                 provider: None,
                 readiness_timeout_s: 120,
                 enabled: true,

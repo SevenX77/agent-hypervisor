@@ -208,6 +208,13 @@ mod tests {
             stability_ms: 300,
             idle_anti_pattern: "",
             completion_signal: CompletionSignalKind::LogOnly,
+            capabilities: crate::provider::manifest::ProviderCapabilities {
+                rules_target: false,
+                completion_signal: false,
+                readiness_ack: false,
+                bundles: false,
+                settings: false,
+            },
         };
         let matcher = MarkerMatcher::from_manifest(&manifest);
         let mut parser = vt100::Parser::new(200, 200, 0);
