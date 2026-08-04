@@ -4,7 +4,7 @@ version = "1"
 # `claude` unless you set `[master] enabled = false` or change `master.cmd`.
 # Replace with the absolute path of your own host Claude login directory.
 [providers.claude]
-shared_credentials_dir = "/home/you/.claude"
+shared_credentials_dir = "~/.claude"
 
 [env]
 PROJECT_ROOT = "/tmp/ccbd-example"
