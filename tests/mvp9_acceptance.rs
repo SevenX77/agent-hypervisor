@@ -210,11 +210,23 @@ async fn test_launcher_config_parse_and_batch_spawn() {
     let config_fixture = tempfile::TempDir::new().unwrap();
     let shared_credentials_dir = tempfile::TempDir::new().unwrap();
     let config_path = config_fixture.path().join("ah.toml");
-    let mut config_body = std::fs::read_to_string(&source_config_path).unwrap();
-    config_body.push_str(&format!(
-        "\n[providers.claude]\nshared_credentials_dir = \"{}\"\n",
-        shared_credentials_dir.path().display()
-    ));
+    // The shipped template already declares [providers.claude]; repoint it at a
+    // temp directory instead of appending a second table.
+    let config_body = std::fs::read_to_string(&source_config_path)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("shared_credentials_dir") {
+                format!(
+                    "shared_credentials_dir = \"{}\"",
+                    shared_credentials_dir.path().display()
+                )
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
     std::fs::write(&config_path, config_body).unwrap();
     let mut config = load_project_config(&config_path).unwrap();
     config.master.enabled = false;
