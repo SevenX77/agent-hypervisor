@@ -1,0 +1,17 @@
+# Direct `agents.state` writers still outside the gate (ratchet: this list may only shrink).
+# Format: <count> <path relative to src/>
+2 db/agents.rs
+2 db/agents_lifecycle.rs
+1 db/job_state.rs
+7 db/jobs.rs
+13 db/state_machine.rs
+4 db/state_machine_assert.rs
+1 db/system.rs
+1 marker/timer.rs
+1 master_revival.rs
+2 monitor/master_watch.rs
+3 orchestrator/mod.rs
+8 prompt_handler/integration.rs
+1 prompt_handler/resolve.rs
+3 rpc/handlers/ack.rs
+1 rpc/handlers/sessions.rs
