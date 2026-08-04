@@ -62,12 +62,12 @@ pub(crate) async fn spawn_replacement_master_pane(
     } else {
         let sandbox_dir = path::resolve_sandbox_dir(state_dir, session_id, "master")?;
         let home_root = sandbox_home_for_sandbox_dir(&sandbox_dir)?;
-        master_env_vars.insert("HOME".to_string(), home_root.display().to_string());
-        master_env_vars.insert(
-            "CLAUDE_CONFIG_DIR".to_string(),
-            home_root.join(".claude").display().to_string(),
-        );
-        if master_command_uses_claude(master_cmd) {
+        let provider = revive_master_provider(master_cmd);
+        master_env_vars.extend(crate::provider::home_layout::provider_home_env(
+            provider.as_deref().unwrap_or_default(),
+            &home_root,
+        ));
+        if provider.as_deref() == Some("claude") {
             let shared_credentials_dir =
                 revive_claude_shared_credentials_dir(&master_cwd)?.ok_or_else(|| {
                     CcbdError::EnvironmentNotSupported {
@@ -153,48 +153,59 @@ pub(crate) fn register_revived_master_watch_and_prepare_readiness(
     Ok(readiness_check)
 }
 
+/// How a revived master's readiness is established.
+///
+/// `Ack` is the semantic signal: the seat's own transcript shows assistant
+/// progress after the revive instruction. `Started` is the declared degradation
+/// for a master that is not an agent seat at all — a wrapper script or a bare
+/// shell — where the only honest statement is that the process came up. Neither
+/// form reads terminal text: a settled pane says the screen stopped changing,
+/// not that the master resumed work.
 #[derive(Debug, Clone)]
 pub(crate) enum ReviveMasterReadinessCheck {
     Ack {
+        provider: String,
         log_root: PathBuf,
         cursors: LogCursorMap,
     },
-    Probe,
+    /// The master seat cannot report readiness itself; see the warning logged
+    /// when this variant is chosen for which capability was missing.
+    Started,
 }
 
 impl ReviveMasterReadinessCheck {
     pub(crate) fn mode_name(&self) -> &'static str {
         match self {
             Self::Ack { .. } => "ack",
-            Self::Probe => "probe",
+            Self::Started => "started",
         }
     }
 
     pub(crate) fn strength(&self) -> &'static str {
         match self {
             Self::Ack { .. } => "semantic",
-            Self::Probe => "degraded",
+            Self::Started => "degraded",
         }
     }
 
     pub(crate) fn ready_reason(&self) -> &'static str {
         match self {
             Self::Ack { .. } => "ack-assistant-progress",
-            Self::Probe => "probe-ready",
+            Self::Started => "started-process-alive",
         }
     }
 
     pub(crate) fn timeout_reason(&self) -> &'static str {
         match self {
             Self::Ack { .. } => "ack-timeout",
-            Self::Probe => "probe-timeout",
+            Self::Started => "started-timeout",
         }
     }
 
     pub(crate) fn deadline_exhausted_reason(&self) -> &'static str {
         match self {
             Self::Ack { .. } => "ack-deadline-exhausted",
-            Self::Probe => "probe-deadline-exhausted",
+            Self::Started => "started-deadline-exhausted",
         }
     }
 }
@@ -204,36 +215,69 @@ pub(crate) fn prepare_revive_master_readiness_check(
     master_cmd: &str,
     master_sandbox_home: &Path,
 ) -> Result<ReviveMasterReadinessCheck, CcbdError> {
+    let provider = revive_master_provider(master_cmd);
+
     #[cfg(not(test))]
     let _ = session_id;
     #[cfg(test)]
     if crate::monitor::master_watch::revive_master_readiness_ack_override(session_id).is_some() {
+        let provider = provider.unwrap_or_else(|| "claude".to_string());
         return Ok(ReviveMasterReadinessCheck::Ack {
-            log_root: master_sandbox_home.join(".claude/projects"),
+            log_root: crate::completion::log_layout::provider_log_root_in_home(
+                &provider,
+                master_sandbox_home,
+            )
+            .unwrap_or_else(|| master_sandbox_home.to_path_buf()),
+            provider,
             cursors: LogCursorMap::new(),
         });
     }
 
-    if !master_command_uses_claude(master_cmd) {
-        return Ok(ReviveMasterReadinessCheck::Probe);
+    let Some(provider) = provider else {
+        tracing::warn!(
+            master_cmd,
+            "master command names no provider ah knows; revive readiness degrades to process start"
+        );
+        return Ok(ReviveMasterReadinessCheck::Started);
+    };
+    if !crate::provider::manifest::provider_capabilities(&provider)
+        .is_some_and(|capabilities| capabilities.readiness_ack)
+    {
+        tracing::warn!(
+            provider,
+            "master provider does not declare readiness_ack; revive readiness degrades to process start"
+        );
+        return Ok(ReviveMasterReadinessCheck::Started);
     }
 
-    let log_root = master_sandbox_home.join(".claude/projects");
-    let cursors = collect_provider_log_cursors("claude", &log_root).map_err(|err| {
+    let log_root =
+        crate::completion::log_layout::provider_log_root_in_home(&provider, master_sandbox_home)
+            .ok_or_else(|| CcbdError::EnvironmentNotSupported {
+                details: format!(
+                    "provider '{provider}' has no transcript root for master revive readiness"
+                ),
+            })?;
+    let cursors = collect_provider_log_cursors(&provider, &log_root).map_err(|err| {
         CcbdError::PtyIoError(format!(
-            "collect Claude revive readiness transcript cursors: {err}"
+            "collect {provider} revive readiness transcript cursors: {err}"
         ))
     })?;
-    Ok(ReviveMasterReadinessCheck::Ack { log_root, cursors })
+    Ok(ReviveMasterReadinessCheck::Ack {
+        provider,
+        log_root,
+        cursors,
+    })
 }
 
-fn master_command_uses_claude(master_cmd: &str) -> bool {
-    master_cmd
-        .split_whitespace()
-        .next()
-        .and_then(|command| Path::new(command).file_name())
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "claude" || name.starts_with("claude-"))
+/// Provider that runs a revived master.
+///
+/// The revive path knows only the stored master command, so the provider is
+/// whatever that command names — and nothing when it names no provider ah
+/// knows. Unlike the spawn path there is no default: inventing a provider here
+/// would hand a revived seat a home and credentials belonging to a provider it
+/// never ran.
+pub(crate) fn revive_master_provider(master_cmd: &str) -> Option<String> {
+    crate::cli::config::provider_name_from_command(master_cmd)
 }
 
 fn revive_claude_shared_credentials_dir(project_root: &Path) -> Result<Option<PathBuf>, CcbdError> {

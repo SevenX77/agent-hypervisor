@@ -733,8 +733,8 @@ pub async fn handle_session_list(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
 #[cfg(test)]
 mod master_cutover_tests {
     use super::super::master_cutover::{
-        MasterCutoverMasterParams, MasterCutoverRequest, MasterReadinessMode,
-        rollback_master_cutover_scope, run_master_cutover_with_spawn, wait_for_master_readiness,
+        MasterCutoverMasterParams, MasterCutoverRequest, rollback_master_cutover_scope,
+        run_master_cutover_with_spawn, wait_for_master_readiness,
     };
     use super::*;
     use crate::db;
@@ -1597,12 +1597,7 @@ mod master_cutover_tests {
             MasterCutoverUpdate::Updated
         );
 
-        let err = wait_for_master_readiness(
-            &ctx,
-            cutover_id,
-            MasterReadinessMode::Ack,
-            Duration::from_millis(200),
-        )
+        let err = wait_for_master_readiness(&ctx, cutover_id, Duration::from_millis(200))
         .await
         .unwrap_err();
 
@@ -1613,7 +1608,7 @@ mod master_cutover_tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn probe_readiness_times_out_without_stable_capture() {
+    async fn readiness_times_out_without_ack_from_master() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = test_ctx(tmp.path().join("state"));
         let session_id = "s_probe_timeout";
@@ -1662,18 +1657,13 @@ mod master_cutover_tests {
             MasterCutoverUpdate::Updated
         );
 
-        let err = wait_for_master_readiness(
-            &ctx,
-            cutover_id,
-            MasterReadinessMode::Probe,
-            Duration::from_millis(120),
-        )
+        let err = wait_for_master_readiness(&ctx, cutover_id, Duration::from_millis(120))
         .await
         .unwrap_err();
 
         assert!(
             err.to_string().contains("readiness timed out"),
-            "expected probe timeout, got {err}"
+            "expected ack timeout, got {err}"
         );
         let cutover = get_master_cutover(&ctx.db, cutover_id)
             .unwrap()
