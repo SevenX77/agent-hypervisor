@@ -27,6 +27,12 @@ That is all you need — see [Quick Start](#quick-start) below. (Building from s
 | systemd with a user session | agent process trees run in systemd user scopes, so crashed daemons never leak orphans | `systemctl --user is-system-running` |
 | The provider CLIs you configure | `ah` orchestrates them, it does not bundle them — install and log in to the provider CLIs yourself first | see table below |
 
+### One login per provider, shared by every agent
+
+Log in to each provider CLI once, on the host, the normal way (`claude` → `/login`, `codex login`, `agy` → sign in). Every agent `ah` spawns then shares that same login: the credential file in each sandbox points at the host's, so when a provider refreshes its token the new one is immediately in effect for the host and for every other agent. Nothing drifts onto a private copy that only one agent can renew.
+
+If your machine reaches the internet through a proxy, `ah` passes `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, `NO_PROXY` (and their lowercase forms) into every agent — an agent that cannot reach its provider is reported by most CLIs as "not signed in", which sends you looking in the wrong place. You do not need to repeat those variables in `[env]`.
+
 Provider names in `ah.toml` do not always match the binary they launch — check the binary, not the provider name:
 
 | Provider name in `ah.toml` | Binary `ah` launches | Verify with |

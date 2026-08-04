@@ -6,6 +6,24 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Agents inherit proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
+  `NO_PROXY` and their lowercase forms). Without them a sandboxed agent could
+  not reach its provider on any machine that routes through a proxy, and the
+  provider CLIs report that as "not signed in" rather than as a network failure
+  — on the machine this was found on, every project had been hand-copying the
+  same six variables into `[env]` to work around it.
+- Antigravity credentials are shared with the host store instead of copied per
+  sandbox. A copy went stale as soon as any seat refreshed its token: the new
+  token stayed in that one sandbox while the host and every other seat kept a
+  credential that a rotation elsewhere could invalidate. All providers now share
+  one file, so a refresh by any seat is a refresh for all of them, and sandboxes
+  left over from the copying era are migrated on their next materialization.
+- Shell scripts and other text files are pinned to LF via `.gitattributes`. A
+  Windows checkout rewrote them to CRLF, which broke the CI gate script under
+  bash with `set: pipefail: invalid option name` — in WSL the same working tree
+  is both the Windows checkout and the Linux runtime.
+
 ### Added
 - `providers.claude.shared_credentials_dir` accepts a leading `~`, expanded at
   config load to the home of whoever runs `ah`. A committed `ah.toml` no longer
