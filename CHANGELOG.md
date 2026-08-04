@@ -6,6 +6,16 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-04
+
+The provider-parity release: what used to be true only for Claude is now true
+for every provider. The master seat runs whichever provider declares the
+capabilities the role needs, one host login is shared by every seat of every
+provider, and the network configuration an agent needs to reach its provider
+travels with it. Readiness stops being guessed from terminal output anywhere in
+the master lifecycle, and the guard rails the previous releases specified but
+never shipped are now enforced in CI.
+
 ### Fixed
 - Agents inherit proxy settings (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`,
   `NO_PROXY` and their lowercase forms). Without them a sandboxed agent could
