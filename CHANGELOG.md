@@ -6,6 +6,40 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- The master seat runs any provider that declares the capabilities the role
+  needs, instead of being wired to Claude. Provider manifests now declare
+  `rules_target`, `completion_signal`, `readiness_ack`, `bundles` and
+  `settings`; master materialization, revive and config validation gate on those
+  declarations rather than on provider names, so `[master] provider = "codex"`
+  (or `antigravity`) gets that provider's home layout, its rules document
+  carrying the master kernel, its hooks, and no Claude credentials. Adding a
+  provider means declaring what it supports, not editing branches. See
+  `docs/decisions/0001-master-provider-capability-negotiation.md`.
+- `master.provider` is the authoritative field. `master.cmd` defaults to the
+  resolved provider's launch command, and a `cmd` that names a different
+  provider than `provider` is rejected instead of silently winning.
+- `ah config validate` warns, naming each missing capability and what it costs,
+  when the master's provider cannot carry the full role.
+
+### Changed
+- Master readiness is only ever reported by the master itself. The pane-text
+  readiness probe is deleted from both the cutover and revive paths: cutover
+  waits for `ah master ack-ready` and refuses providers without the
+  `readiness_ack` capability, while revive waits for transcript progress and
+  otherwise degrades to an explicitly labelled `started` mode. A settled pane
+  says the screen stopped changing, not that the master is ready — this closes
+  the last route by which pane text re-entered lifecycle state after 1.5.0.
+
+### Fixed
+- Config and docs caught up with the shared-credentials requirement shipped in
+  1.7.0. The project's own `ah.toml` and the `examples/ah.toml` template now
+  declare `[providers.claude] shared_credentials_dir`; both previously failed
+  `ah config validate` with `providers.claude.shared_credentials_dir is
+  required when master or agents use provider claude`, because an enabled
+  master runs `claude` by default. README documents the key, the single shared
+  login store behind it, and the fail-closed validation.
+
 ## [1.7.0] - 2026-07-13
 
 The shared-credentials and modular-decoupling release. Multiple agent

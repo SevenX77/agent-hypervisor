@@ -65,6 +65,11 @@ Create `ah.toml` in a project directory:
 ```toml
 version = "1"
 
+# Required whenever a seat runs `claude` — see below. The master runs `claude`
+# by default, so most configs need this even with no claude agent.
+[providers.claude]
+shared_credentials_dir = "/home/you/.claude"
+
 [agents.a1]
 provider = "codex"
 
@@ -85,6 +90,52 @@ ah --config ./ah.toml start --wait
 ```
 
 `ahd` can also be run directly, but the normal entry point is `ah start` because it performs daemon bootstrap and then drives the project config.
+
+### Choosing the master's provider
+
+The master is a role, not a provider. Point it at whichever agent CLI you want:
+
+```toml
+[master]
+provider = "codex"
+```
+
+`provider` is authoritative. Leave `cmd` out and the master launches with that provider's own command; write both and they must agree, or the config is rejected. With neither set, the master runs `claude`.
+
+What a master gets depends on what its provider declares it supports:
+
+| Capability | What it powers | `claude` | `codex` | `antigravity` | `bash` |
+|---|---|---|---|---|---|
+| `rules_target` | master rules document (`.ah/rules/master.md` + the built-in kernel) | ✅ | ✅ | ✅ | — |
+| `completion_signal` | end-of-turn signal back to `ahd` | ✅ | ✅ | ✅ | — |
+| `readiness_ack` | `ah master cutover` readiness, and semantic revive readiness | ✅ | ✅ | ✅ | — |
+| `bundles` | `master.bundle` | ✅ | — | — | — |
+| `settings` | `[master.settings]` | ✅ | — | — | — |
+
+`ah config validate` warns when the master's provider is missing capabilities and names what stops working. A master that cannot report readiness still starts and still revives — its revive readiness degrades to "the process is running" — but `ah master cutover` refuses, because cutover means the successor accepted the handoff and only the successor can say that. Readiness is never inferred from what the pane displays.
+
+### Claude seats share one login
+
+Every seat that runs `claude` needs `providers.claude.shared_credentials_dir`. That means each `provider = "claude"` agent — **and the master, when it runs Claude, which it does by default**. The value is an absolute path to your host Claude login directory, normally `~/.claude` spelled out in full:
+
+```toml
+[providers.claude]
+shared_credentials_dir = "/home/you/.claude"
+```
+
+It must be an absolute path to a directory that already exists and is not a symlink. Log in once on the host (run `claude`, then `/login`) before `ah start`.
+
+Every sandbox still gets its own `CLAUDE_CONFIG_DIR`, but all of them — and the host — are pointed at this one credential store through `CLAUDE_SECURESTORAGE_CONFIG_DIR`. So a single host login covers every seat without mutual logout, and when a token refreshes it is written back in place instead of leaving the other seats holding a copy that just went stale.
+
+The requirement is fail-closed: a `claude` seat with no configured directory aborts instead of silently falling back to an isolated per-sandbox login. `ah config validate` reports it as:
+
+```text
+providers.claude.shared_credentials_dir is required when master or agents use provider claude
+```
+
+If nothing in your project runs Claude, set `[master] enabled = false` (or point `master.cmd` at another CLI) and the requirement goes away.
+
+On WSL2, keep this directory on the Linux filesystem (`/home/you/.claude`). A path under a Windows mount such as `/mnt/c/Users/you/.claude` is not a safe place for credential writes, and `ah` does not currently reject one here.
 
 ### Everything runs in the background
 
@@ -228,6 +279,7 @@ Top-level fields:
 | `version` | string | Must be `"1"`. |
 | `agents` | table | Required. At least one `[agents.<id>]` entry. |
 | `master` | table | Optional. Defaults are applied when missing. |
+| `providers` | table | Optional container. `[providers.claude]` is required when the master or any agent runs `claude`. |
 | `completion` | table | Optional. |
 | `daemon` | table | Optional, currently empty. |
 | `env` | table of strings | Optional project environment values. |
@@ -263,11 +315,22 @@ plugins = []
 | Field | Type | Notes |
 |---|---|---|
 | `enabled` | bool | Defaults to `true`. |
-| `cmd` | string | Defaults to `claude`. Empty string normalizes to `claude`. |
-| `provider` | optional string | Present in config parsing, but v1 master spawning still uses Claude for the sandbox rules path. |
+| `cmd` | string | Defaults to the resolved provider's launch command (`claude` for Claude). Rejected when it names a different provider than `provider` does. |
+| `provider` | optional string | Authoritative. Valid values: `codex`, `claude`, `antigravity`, `bash`. When unset, the provider is read from the first word of `cmd`, falling back to `claude`. Drives the master's home layout, rules target, hooks, and readiness — see [Choosing the master's provider](#choosing-the-masters-provider). |
 | `readiness_timeout_s` | integer | Defaults to `120`. |
 | `hooks` | table | Optional. |
 | `plugins` | array of strings | Optional. |
+
+Provider fields:
+
+```toml
+[providers.claude]
+shared_credentials_dir = "/home/you/.claude"
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `shared_credentials_dir` | string (path) | Required when the master or any agent runs `claude`. Absolute path to an existing, non-symlink directory holding the host Claude login. Injected into every claude seat as `CLAUDE_SECURESTORAGE_CONFIG_DIR`, while `CLAUDE_CONFIG_DIR` stays per-sandbox. See [Claude seats share one login](#claude-seats-share-one-login). |
 
 Completion fields:
 
