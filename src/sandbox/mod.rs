@@ -1,6 +1,7 @@
 //! Sandbox environment checks and command assembly helpers for MVP2.
 
 pub mod path;
+pub mod session_archive;
 pub mod systemd;
 
 use crate::error::CcbdError;

@@ -47,6 +47,16 @@ ah 运行期创建的一切都是**易耗品**：有明确 owner、明确终点�
 
 规则：**任何销毁沙箱 home 的路径，必须先把该 provider 的会话记录归档到项目目录下，再删。** 归档位置属于项目而非 ah 的状态目录——项目资产跟着项目走，符合 D2 的第二句判据。归档失败时不得静默删除。
 
+四条关键设计决定：
+
+1. **归档的是"记录集"，不是 provider 的整个目录。** 每个 provider 声明一份明确的记录文件清单：codex 是 `.codex/sessions` 与 `.codex/history.jsonl`，claude 是 `.claude/projects`，antigravity 是 `.gemini/antigravity-cli` 下的 `conversations`、`conversation_summaries.db`、`history.jsonl`、`brain`、`knowledge`。这份清单与 `completion::log_layout::provider_log_root_in_home` 是**两个不同的事实**：后者回答"运行期 provider 往哪写"，用于完成信号；前者回答"停止之后什么值得留下"。两者对 antigravity 相差一整份 CLI 安装（单沙箱实测 18 MB 的 `bin/`），把运行期目录当归档源会把二进制一起复制走。
+
+2. **归档路径落在项目里，并自我忽略。** 目标为 `<项目根>/.ah/sessions/<session_id>/<agent_id>/<provider>/`，首次创建时在 `<项目根>/.ah/sessions/` 写入内容为 `*` 的 `.gitignore`。自带忽略文件是 cargo（`target/.gitignore`）、pytest（`.pytest_cache/.gitignore`）等工具的既有做法：工具产生的目录由工具自己声明不入版本库，不修改用户自己的 `.gitignore`。
+
+3. **销毁路径靠标记文件得知项目根，不查数据库。** 沙箱目录创建时（`sandbox::path::resolve_sandbox_dir` 是唯一创建者）写入 `<sandbox_dir>/project-root` 标记，销毁时读取。理由：kill 路径可能先删 session 行再清沙箱，销毁时数据库里未必还有 `sessions.absolute_path`；标记文件让销毁自包含，且对每个调用点一致。标记缺失（旧版本创建的沙箱）视为"无归档目标"而非"归档失败"——跳过并告警后照常销毁，否则升级会让存量沙箱永远删不掉。
+
+4. **复制时不跟随符号链接。** 沙箱 home 里的凭据是指向宿主的符号链接（决议 0003）。归档只复制真实文件与目录，遇到符号链接一律跳过，凭据因此不可能被复制进项目目录。
+
 ### D3 显式回收命令
 
 操作者需要一个不必手工 `rm -rf` 的入口来回收 ah 的存量产物（终态会话的沙箱、已死栈的状态目录）。回收命令只动 ah 自己的产物，且对已归档的会话资产不负责。
@@ -64,7 +74,9 @@ ah 运行期创建的一切都是**易耗品**：有明确 owner、明确终点�
 2. 流水类事件超过上限即被回收；取证类事件在同一次维护中保留。
 3. 维护有界：单次维护的删除量与耗时有上限，不阻塞 RPC。
 4. 销毁沙箱前，provider 的会话记录出现在项目目录下的归档位置；归档失败时沙箱不被删除。
-5. 上述行为由自动化测试覆盖，且在真实机器上以实测数据复核体积变化。
+5. 归档目录带有自己的 `.gitignore`，归档不改变项目的 `git status`。
+6. 沙箱 home 中的凭据符号链接不出现在归档里。
+7. 上述行为由自动化测试覆盖，且在真实机器上以实测数据复核体积变化。
 
 ## 非目标
 

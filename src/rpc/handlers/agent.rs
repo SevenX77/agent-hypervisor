@@ -150,6 +150,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
             &ctx.state_dir,
             session_id,
             agent_id,
+            &agent_cwd,
         )?))
     };
     // ISSUE-13 §3b: capture the bare declared env (config_env ⊕ agent.env) BEFORE any

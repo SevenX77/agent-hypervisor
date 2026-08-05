@@ -508,6 +508,7 @@ pub(super) async fn prepare_master_pane_plan(
             &ctx.state_dir,
             &params.session_id,
             "master",
+            &master_cwd,
         )?)
     };
     if let Some(dir) = master_sandbox_dir.as_ref() {

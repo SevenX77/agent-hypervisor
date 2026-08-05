@@ -937,10 +937,20 @@ fn startup_reconcile_phase_a_select_candidates(
     Ok(candidates)
 }
 
+/// Destroys an agent's sandbox after handing its session records to the
+/// project.
+///
+/// The sandbox home holds the provider's transcripts, which belong to the
+/// project rather than to ah (decision 0004). Archiving happens first and a
+/// failed archive stops the deletion: a sandbox left on disk is recoverable,
+/// a deleted session is not (#27).
 pub fn remove_agent_sandbox_dir_sync(state_dir: &Path, session_id: &str, agent_id: &str) {
     let sandbox_dir = state_dir.join("sandboxes").join(session_id).join(agent_id);
     match crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir) {
         Ok(home_root) => {
+            if !archive_before_destroying_home(&sandbox_dir, &home_root, session_id, agent_id) {
+                return;
+            }
             if let Err(err) = std::fs::remove_dir_all(&home_root)
                 && err.kind() != io::ErrorKind::NotFound
             {
@@ -958,20 +968,91 @@ pub fn remove_agent_sandbox_dir_sync(state_dir: &Path, session_id: &str, agent_i
     }
 }
 
+/// Returns whether destruction may proceed.
+fn archive_before_destroying_home(
+    sandbox_dir: &Path,
+    home_root: &Path,
+    session_id: &str,
+    agent_id: &str,
+) -> bool {
+    use crate::sandbox::session_archive::{ArchiveOutcome, archive_session_records};
+
+    match archive_session_records(sandbox_dir, home_root, session_id, agent_id) {
+        ArchiveOutcome::Archived { destination, files } => {
+            tracing::info!(
+                session_id,
+                agent_id,
+                files,
+                destination = %destination.display(),
+                "archived provider session records to the project before destroying the sandbox"
+            );
+            true
+        }
+        ArchiveOutcome::NothingToArchive => true,
+        ArchiveOutcome::NoProjectRoot => {
+            tracing::warn!(
+                session_id,
+                agent_id,
+                sandbox_dir = %sandbox_dir.display(),
+                "sandbox has no recorded project root; destroying without archiving session records"
+            );
+            true
+        }
+        ArchiveOutcome::Failed(details) => {
+            tracing::error!(
+                session_id,
+                agent_id,
+                home_root = %home_root.display(),
+                details,
+                "refusing to destroy a sandbox whose session records could not be archived"
+            );
+            false
+        }
+    }
+}
+
+/// Clears an agent's sandbox dir while leaving its home for recovery.
+///
+/// The project marker stays: the home it points at is still on disk, and
+/// whoever destroys that home later needs to know which project owns its
+/// session records (#27).
 pub fn remove_agent_sandbox_dir_preserving_home_sync(
     state_dir: &Path,
     session_id: &str,
     agent_id: &str,
 ) {
     let sandbox_dir = state_dir.join("sandboxes").join(session_id).join(agent_id);
-    if let Err(err) = std::fs::remove_dir_all(&sandbox_dir)
-        && err.kind() != io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            ?sandbox_dir,
-            error = %err,
-            "failed to remove preserved-home agent sandbox dir"
-        );
+    let entries = match std::fs::read_dir(&sandbox_dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return,
+        Err(err) => {
+            tracing::warn!(
+                ?sandbox_dir,
+                error = %err,
+                "failed to read preserved-home agent sandbox dir"
+            );
+            return;
+        }
+    };
+    for entry in entries.flatten() {
+        if crate::sandbox::session_archive::is_project_root_marker(&entry.file_name()) {
+            continue;
+        }
+        let path = entry.path();
+        let removed = if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(err) = removed
+            && err.kind() != io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                ?path,
+                error = %err,
+                "failed to remove entry from preserved-home agent sandbox dir"
+            );
+        }
     }
 }
 
@@ -1597,7 +1678,8 @@ mod tests {
         reconcile_master_recovery_windows_with_runner_sync,
         reconcile_orphan_scopes_dry_run_enabled, reconcile_orphan_scopes_with_runner_sync,
         reconcile_startup_sync, reconcile_startup_sync_with_state_dir_and_runner,
-        remove_agent_sandbox_dir_sync, snapshot_master_death_session_activity,
+        remove_agent_sandbox_dir_preserving_home_sync, remove_agent_sandbox_dir_sync,
+        snapshot_master_death_session_activity,
     };
     use crate::db::agents::insert_agent_sync;
     use crate::db::jobs::{insert_job_sync, query_job_sync};
@@ -2844,6 +2926,124 @@ mod tests {
 
         assert!(!sandbox_dir.exists());
         assert!(!materialized_home.exists());
+    }
+
+    /// #27: a normal shutdown used to delete the operator's real session along
+    /// with the sandbox. The records must reach the project first.
+    #[test]
+    fn test_remove_agent_sandbox_dir_archives_session_records_to_the_project() {
+        let state_dir = tempfile::TempDir::new().unwrap();
+        let project = tempfile::TempDir::new().unwrap();
+        let sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
+            state_dir.path(),
+            "s1",
+            "a1",
+            project.path(),
+        )
+        .unwrap();
+        let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+        fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+        fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();
+
+        remove_agent_sandbox_dir_sync(state_dir.path(), "s1", "a1");
+
+        assert!(!home.exists(), "the sandbox is still destroyed");
+        assert!(!sandbox_dir.exists());
+        let archived = project
+            .path()
+            .join(".ah/sessions/s1/a1/codex/.codex/sessions/rollout.jsonl");
+        assert_eq!(
+            fs::read_to_string(&archived).unwrap(),
+            "{\"turn\":1}",
+            "the session record must survive the sandbox at {}",
+            archived.display()
+        );
+    }
+
+    /// Losing a session is unrecoverable; leaving a sandbox on disk is not.
+    #[test]
+    fn test_remove_agent_sandbox_dir_keeps_the_home_when_archiving_fails() {
+        let state_dir = tempfile::TempDir::new().unwrap();
+        let project = tempfile::TempDir::new().unwrap();
+        // A file where the archive root needs a directory makes the copy fail.
+        fs::write(project.path().join(".ah"), b"not a directory").unwrap();
+        let sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
+            state_dir.path(),
+            "s_fail",
+            "a1",
+            project.path(),
+        )
+        .unwrap();
+        let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+        fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+        fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();
+
+        remove_agent_sandbox_dir_sync(state_dir.path(), "s_fail", "a1");
+
+        assert!(
+            home.join(".codex/sessions/rollout.jsonl").is_file(),
+            "an unarchivable session must not be destroyed"
+        );
+        assert!(sandbox_dir.exists(), "the marker must survive for a retry");
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    /// A crash preserves the home for recovery. The record of which project
+    /// owns that home has to survive with it, or the eventual cleanup has
+    /// nowhere to hand the session records.
+    #[test]
+    fn test_preserving_home_cleanup_keeps_the_project_marker() {
+        let state_dir = tempfile::TempDir::new().unwrap();
+        let project = tempfile::TempDir::new().unwrap();
+        let sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
+            state_dir.path(),
+            "s_crash",
+            "a1",
+            project.path(),
+        )
+        .unwrap();
+        fs::create_dir_all(sandbox_dir.join("scratch")).unwrap();
+        let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+        fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+        fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();
+
+        remove_agent_sandbox_dir_preserving_home_sync(state_dir.path(), "s_crash", "a1");
+
+        assert!(!sandbox_dir.join("scratch").exists());
+        assert_eq!(
+            crate::sandbox::session_archive::read_project_root_marker(&sandbox_dir).as_deref(),
+            Some(project.path()),
+            "the preserved home must keep knowing which project owns it"
+        );
+
+        // And the eventual destruction can therefore still archive.
+        remove_agent_sandbox_dir_sync(state_dir.path(), "s_crash", "a1");
+        assert!(
+            project
+                .path()
+                .join(".ah/sessions/s_crash/a1/codex/.codex/sessions/rollout.jsonl")
+                .is_file()
+        );
+    }
+
+    /// Sandboxes created before the marker existed must stay deletable.
+    #[test]
+    fn test_remove_agent_sandbox_dir_destroys_a_sandbox_without_a_project_marker() {
+        let state_dir = tempfile::TempDir::new().unwrap();
+        let sandbox_dir = state_dir
+            .path()
+            .join("sandboxes")
+            .join("s_legacy")
+            .join("a1");
+        fs::create_dir_all(&sandbox_dir).unwrap();
+        let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+        fs::create_dir_all(home.join(".codex/sessions")).unwrap();
+        fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();
+
+        remove_agent_sandbox_dir_sync(state_dir.path(), "s_legacy", "a1");
+
+        assert!(!home.exists());
+        assert!(!sandbox_dir.exists());
     }
 
     #[test]
