@@ -30,7 +30,11 @@ That is all you need — see [Quick Start](#quick-start) below. (Building from s
 
 ### One login per provider, shared by every agent
 
-Log in to each provider CLI once, on the host, the normal way (`claude` → `/login`, `codex login`, `agy` → sign in). Every agent `ah` spawns then shares that same login: the credential file in each sandbox points at the host's, so when a provider refreshes its token the new one is immediately in effect for the host and for every other agent. Nothing drifts onto a private copy that only one agent can renew.
+Log in to each provider CLI once, **in the environment where ah runs**, the normal way (`claude auth login`, `codex login`, `agy` → sign in). Every agent `ah` spawns then shares that same login: the credential file in each sandbox points at the host's, so when a provider refreshes its token the new one is immediately in effect for the host and for every other agent. Nothing drifts onto a private copy that only one agent can renew.
+
+You don't have to remember any of this: **`ah start` checks each provider's login before spawning anything.** In an interactive terminal, a missing login launches the provider's own sign-in flow right there and start continues once you finish in the browser; in scripts it fails with the exact command to run. `ah doctor` prints the same diagnosis per provider.
+
+**An environment is a home directory on one OS — and one login belongs to one environment.** On Windows + WSL that means the Windows profile and the WSL distro each sign in separately. Do not copy an `auth.json` from Windows into WSL or symlink across `/mnt/c`: refresh tokens rotate on every use, so a chain shared by two environments dies on whichever side refreshes less — the file looks fine while the login inside it is already dead. ah refuses a credential store that reaches across the boundary and tells you how to fix it. (Two logins to the same account is the normal OAuth arrangement, same as being signed in on your phone and your laptop.)
 
 ### Network access
 

@@ -88,23 +88,48 @@ pub fn provider_health_checks(home: Option<PathBuf>) -> Vec<DoctorCheck> {
         .collect()
 }
 
+/// Per-provider auth diagnosis with a printed remedy (#4, decision 0006).
+///
+/// The old check only asked "does some auth directory exist", which passed a
+/// store that was logged out, unparseable, or — the dangerous case — a
+/// symlink reaching into the Windows environment, where one refresh forks the
+/// token chain and kills a login.
 fn provider_auth_check(home: &Path, manifest: &ProviderManifest) -> DoctorCheck {
-    let name = format!("provider:{}", manifest.provider_name);
-    let paths = manifest
-        .auth_mount_paths
-        .iter()
-        .map(|path| home.join(path))
-        .collect::<Vec<_>>();
+    use crate::provider::auth_store::{AuthStoreStatus, check_auth_store, login_remedy};
 
-    if let Some(path) = paths.iter().find(|path| path.exists()) {
-        pass(name, path.display().to_string())
-    } else {
-        let detail = paths
-            .iter()
-            .map(|path| format!("{} not found", path.display()))
-            .collect::<Vec<_>>()
-            .join("; ");
-        warn(name, detail, "provider may need login before use")
+    let provider = manifest.provider_name;
+    let name = format!("provider:{provider}");
+    if manifest.auth_mount_paths.is_empty() {
+        return pass(name, "no login required".to_string());
+    }
+    match check_auth_store(provider, home, None) {
+        AuthStoreStatus::Healthy { path } => pass(name, path.display().to_string()),
+        AuthStoreStatus::NotCheckable { reason } => pass(name, reason.to_string()),
+        AuthStoreStatus::Missing { path } => warn(
+            name,
+            format!("no login in this environment ({} is missing)", path.display()),
+            format!("sign in: {}", login_remedy(provider)),
+        ),
+        AuthStoreStatus::LoggedOut { path } => warn(
+            name,
+            format!("logged out ({} holds a logout stub)", path.display()),
+            format!("sign in: {}", login_remedy(provider)),
+        ),
+        AuthStoreStatus::Unreadable { path, details } => warn(
+            name,
+            format!("unreadable credential store ({}: {details})", path.display()),
+            format!("re-create it: {}", login_remedy(provider)),
+        ),
+        AuthStoreStatus::ForeignEnvironment { path, target } => fail(
+            name,
+            format!(
+                "credential store reaches into another environment ({} -> {}); one token chain \
+                 cannot serve two environments — the first refresh on either side kills the other",
+                path.display(),
+                target.display()
+            ),
+            format!("rm {} && {}", path.display(), login_remedy(provider)),
+        ),
     }
 }
 

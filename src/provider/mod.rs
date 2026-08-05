@@ -1,3 +1,4 @@
+pub mod auth_store;
 pub mod builtin;
 pub mod bundles;
 pub mod extensions;

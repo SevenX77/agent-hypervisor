@@ -2,6 +2,7 @@ pub mod bundle;
 pub mod config;
 pub mod config_cmd;
 pub mod doctor;
+pub mod login_gate;
 pub mod logs;
 pub mod master_cutover;
 pub mod output;

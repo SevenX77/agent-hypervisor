@@ -346,6 +346,20 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
         // and its daemon-absent snapshot path needs the config even when no
         // socket answers.
         Some(Cmd::Events { format }) => return cmd_events(config, format).await,
+        // Doctor is diagnostics: it must run from anywhere, including outside
+        // any project. Without a resolvable project it still checks binaries,
+        // WSL onboarding and provider logins; the daemon row then reports
+        // that no stack is addressable from here.
+        Some(Cmd::Doctor) => {
+            let client = match resolve_socket_path_for_config(config.as_deref()) {
+                Ok(socket) => UnixRpcClient::new(socket),
+                Err(err) => {
+                    eprintln!("note: {err}");
+                    UnixRpcClient::new(PathBuf::from("/nonexistent/ahd.sock"))
+                }
+            };
+            return cmd_doctor(&client, config.as_deref()).await;
+        }
         // Hook notifications carry their socket explicitly (--socket or
         // CCB_SOCKET); a hook firing from a sandbox must not depend on the
         // sandbox's directory resolving to a project.
@@ -447,7 +461,6 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             }
             MasterCmd::AckReady { cutover_id } => cmd_master_ack_ready(&client, cutover_id).await,
         },
-        Some(Cmd::Doctor) => cmd_doctor(&client, config.as_deref()).await,
         Some(Cmd::Prompt { cmd }) => match cmd {
             PromptCmd::Resolve {
                 agent_id,
@@ -475,6 +488,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             | Cmd::Config { .. }
             | Cmd::Bundle { .. }
             | Cmd::Events { .. }
+            | Cmd::Doctor
             | Cmd::Agent { .. },
         ) => unreachable!("handled before project resolution"),
     }
@@ -498,8 +512,10 @@ fn cmd_setup(check: bool, fix: bool, yes: bool, json: bool, resume: bool) -> Res
 
 async fn default_action(client: &UnixRpcClient, config: Option<PathBuf>) -> Result<(), CliError> {
     check_nested_environment()?;
-    ensure_daemon_running(client.socket())?;
     let cwd = std::env::current_dir()?;
+    let gate_config_path = resolve_start_config_path(config.clone(), &cwd)?;
+    ensure_provider_logins_for_config(&gate_config_path)?;
+    ensure_daemon_running(client.socket())?;
     let summary = start_from_options(
         client,
         StartOptions {
@@ -1474,6 +1490,7 @@ async fn cmd_start(
 ) -> Result<(), CliError> {
     let cwd = std::env::current_dir()?;
     let config_path = resolve_start_config_path(config, &cwd)?;
+    ensure_provider_logins_for_config(&config_path)?;
     ensure_daemon_running(client.socket())?;
     let summary = start_from_options(
         client,
@@ -1486,6 +1503,24 @@ async fn cmd_start(
     .await?;
     print_start_summary(&summary);
     Ok(())
+}
+
+/// The login doorman (decision 0006): every provider the project uses must
+/// hold a healthy login in this environment before any seat spawns. In an
+/// interactive terminal a missing login launches the provider's own sign-in
+/// flow right here; anywhere else the error carries a pasteable remedy.
+fn ensure_provider_logins_for_config(config_path: &Path) -> Result<(), CliError> {
+    let config = ah::cli::config::load_project_config(config_path)?;
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::Config("HOME is not set".to_string()))?;
+    ah::cli::login_gate::ensure_provider_logins(
+        &config,
+        &home,
+        config.providers.claude.shared_credentials_dir.as_deref(),
+        ah::cli::login_gate::stdin_and_stdout_are_terminal(),
+    )
 }
 
 fn resolve_start_config_path(config: Option<PathBuf>, cwd: &Path) -> Result<PathBuf, CliError> {
