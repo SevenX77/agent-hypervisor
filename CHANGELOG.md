@@ -6,6 +6,23 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-05
+
+### Added
+- Session records are handed to the project before a sandbox is destroyed. A
+  provider writes its transcripts inside the sandbox home — codex rollouts,
+  claude project records, antigravity conversations — and every path that
+  destroyed a sandbox deleted them with it, so closing a window lost a real
+  development session for good while a crash happened to keep it. Destruction
+  now copies each provider's record set to
+  `<project>/.ah/sessions/<session>/<agent>/<provider>/` first, and a sandbox
+  whose records cannot be archived is left on disk rather than deleted: a
+  sandbox is recoverable, a session is not. The archive directory carries its
+  own `.gitignore`, so it never shows up in the project's `git status`, and
+  symlinks are never followed, so the shared credential store cannot be copied
+  into the project. Sandboxes created before this release carry no project
+  marker and are still destroyed, with a warning (#27).
+
 ## [1.9.0] - 2026-08-04
 
 ### Added
