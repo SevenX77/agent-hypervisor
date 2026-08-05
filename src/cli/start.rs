@@ -138,6 +138,10 @@ pub async fn start_project(
                     "session_id": session_id,
                     "cmd": config.master.cmd.clone(),
                     "provider": config.master.resolved_provider(),
+                    // Same two channels the agents get: the master's own env,
+                    // and the project env the server merges in.
+                    "env": config.master.env,
+                    "config_env": config.env,
                     "hooks": config.master.hooks,
                     "plugins": config.master.plugins,
                     "skills": config.master.skills,
@@ -274,6 +278,7 @@ fn build_realign_payload(session_id: &str, config: &ProjectConfig, force: bool) 
         "master": {
             "cmd": config.master.cmd,
             "provider": config.master.resolved_provider(),
+            "env": config.master.env,
             "hooks": config.master.hooks,
             "plugins": config.master.plugins,
             "skills": config.master.skills,
@@ -628,6 +633,7 @@ provider = "gemini"
                 cmd: "claude".to_string(),
                 cmd_explicit: false,
                 provider: None,
+                env: Default::default(),
                 readiness_timeout_s: 120,
                 enabled: master_enabled,
                 window_size: Default::default(),

@@ -8,6 +8,7 @@ use std::collections::HashMap;
 pub enum ConfigRole<'a> {
     Master {
         cmd: &'a str,
+        env: &'a HashMap<String, String>,
     },
     Agent {
         provider: &'a str,
@@ -44,9 +45,10 @@ pub struct BundleDigestEntry {
 
 pub fn compute_config_hash(input: &ConfigFingerprintInput<'_>) -> Result<String, CcbdError> {
     let role = match &input.role {
-        ConfigRole::Master { cmd } => json!({
+        ConfigRole::Master { cmd, env } => json!({
             "kind": "master",
             "cmd": cmd,
+            "env": env,
         }),
         ConfigRole::Agent { provider, env } => json!({
             "kind": "agent",
@@ -128,7 +130,10 @@ mod tests {
         let plugins = Vec::new();
         let skills = Vec::new();
         let without_bundle = compute_config_hash(&ConfigFingerprintInput {
-            role: ConfigRole::Master { cmd: "claude" },
+            role: ConfigRole::Master {
+                cmd: "claude",
+                env: &HashMap::new(),
+            },
             hooks: &hooks,
             plugins: &plugins,
             skills: &skills,
@@ -143,7 +148,10 @@ mod tests {
             }],
         };
         let with_bundle = compute_config_hash(&ConfigFingerprintInput {
-            role: ConfigRole::Master { cmd: "claude" },
+            role: ConfigRole::Master {
+                cmd: "claude",
+                env: &HashMap::new(),
+            },
             hooks: &hooks,
             plugins: &plugins,
             skills: &skills,
@@ -167,7 +175,10 @@ mod tests {
             }],
         };
         let hash = compute_config_hash(&ConfigFingerprintInput {
-            role: ConfigRole::Master { cmd: "claude" },
+            role: ConfigRole::Master {
+                cmd: "claude",
+                env: &HashMap::new(),
+            },
             hooks: &hooks,
             plugins: &plugins,
             skills: &skills,

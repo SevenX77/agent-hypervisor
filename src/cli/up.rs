@@ -41,6 +41,7 @@ async fn run_up_with_config<C: RpcClient>(
                 "master": {
                     "cmd": config.master.cmd,
                     "provider": config.master.resolved_provider(),
+                    "env": config.master.env,
                     "hooks": config.master.hooks,
                     "plugins": config.master.plugins,
                     "skills": config.master.skills,
@@ -266,6 +267,7 @@ mod tests {
                 cmd: "claude".to_string(),
                 cmd_explicit: false,
                 provider: None,
+                env: Default::default(),
                 readiness_timeout_s: 120,
                 enabled: true,
                 window_size: Default::default(),

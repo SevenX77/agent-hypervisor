@@ -152,6 +152,7 @@ async fn test_launcher_config_parse_and_batch_spawn_real() {
             cmd: "claude".to_string(),
             cmd_explicit: false,
             provider: None,
+            env: Default::default(),
             readiness_timeout_s: 120,
             enabled: false,
             window_size: Default::default(),

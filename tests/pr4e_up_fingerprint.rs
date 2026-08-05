@@ -132,7 +132,10 @@ impl MasterSpec {
 
     fn hash(&self) -> String {
         compute_config_hash(&ConfigFingerprintInput {
-            role: ConfigRole::Master { cmd: &self.cmd },
+            role: ConfigRole::Master {
+                cmd: &self.cmd,
+                env: &std::collections::HashMap::new(),
+            },
             hooks: &self.hooks,
             plugins: &self.plugins,
             skills: &self.skills,
