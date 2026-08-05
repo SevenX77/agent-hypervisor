@@ -13,6 +13,112 @@ pub struct StateLayout {
     pub project_id: Option<String>,
 }
 
+/// Why a CLI command could not be pinned to a project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StateLayoutError {
+    /// No `ah.toml` anywhere above the working directory.
+    NoProject { cwd: PathBuf },
+    /// An explicit config path that cannot identify a project.
+    BadConfigPath { path: PathBuf, details: String },
+}
+
+impl std::fmt::Display for StateLayoutError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoProject { cwd } => write!(
+                f,
+                "no ah.toml found in {} or any parent directory; cd into a project or pass --config <path/to/ah.toml>",
+                cwd.display()
+            ),
+            Self::BadConfigPath { path, details } => {
+                write!(f, "--config {}: {details}", path.display())
+            }
+        }
+    }
+}
+
+/// The one answer to "which project's stack is this CLI command talking to".
+///
+/// Modeled on git/cargo project discovery: an explicit config path is made
+/// absolute against the working directory and must exist; without one the
+/// directories above `cwd` are searched for `ah.toml`; and when neither
+/// resolves the command fails instead of falling back to a shared `default`
+/// state dir. That fallback let unrelated projects collide in one database
+/// (#46), and hashing a bare `--config ah.toml`'s empty parent sent every such
+/// invocation to one directory (#43). Environment overrides keep their
+/// priority; `CCB_ENV=dev` keeps the in-repo dev state dir (decision 0005).
+pub fn resolve_cli_state_layout(
+    cwd: &Path,
+    config_path: Option<&Path>,
+) -> Result<StateLayout, StateLayoutError> {
+    if let Some(dir) =
+        non_empty_env_path("AH_STATE_DIR").or_else(|| non_empty_env_path("CCBD_STATE_DIR"))
+    {
+        return Ok(StateLayout {
+            state_dir: dir,
+            project_id: None,
+        });
+    }
+    if let Some(dir) = non_empty_env_path("XDG_STATE_HOME") {
+        return Ok(StateLayout {
+            state_dir: dir.join("ccbd"),
+            project_id: None,
+        });
+    }
+
+    if let Some(path) = config_path {
+        let absolute = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            cwd.join(path)
+        };
+        let config_dir = if absolute.is_dir() {
+            absolute
+        } else if absolute.is_file() {
+            match absolute.parent() {
+                Some(parent) => parent.to_path_buf(),
+                None => {
+                    return Err(StateLayoutError::BadConfigPath {
+                        path: absolute,
+                        details: "has no parent directory".to_string(),
+                    });
+                }
+            }
+        } else {
+            return Err(StateLayoutError::BadConfigPath {
+                path: absolute,
+                details: "does not exist".to_string(),
+            });
+        };
+        // Canonicalization must succeed here: hashing an unresolved path is
+        // exactly how the empty string became a shared project id.
+        let canonical = config_dir.canonicalize().map_err(|err| {
+            StateLayoutError::BadConfigPath {
+                path: config_dir.clone(),
+                details: format!("cannot canonicalize: {err}"),
+            }
+        })?;
+        return Ok(project_layout_for_dir(&canonical));
+    }
+
+    if std::env::var("CCB_ENV").as_deref() == Ok("dev") {
+        return Ok(StateLayout {
+            state_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("target")
+                .join("dev_state"),
+            project_id: None,
+        });
+    }
+
+    if let Some(config_dir) = find_config_dir_from_cwd(cwd) {
+        return Ok(project_layout_for_dir(&config_dir));
+    }
+
+    Err(StateLayoutError::NoProject {
+        cwd: cwd.to_path_buf(),
+    })
+}
+
 pub fn resolve_state_layout(request: &StateLayoutRequest) -> StateLayout {
     if let Some(dir) =
         non_empty_env_path("AH_STATE_DIR").or_else(|| non_empty_env_path("CCBD_STATE_DIR"))

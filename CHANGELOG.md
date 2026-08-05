@@ -6,6 +6,32 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-08-05
+
+### Fixed
+- Every command now answers "which project's stack am I talking to" the same
+  way, modeled on git/cargo project discovery (decision 0005). An explicit
+  `--config` is made absolute against the working directory and must exist —
+  `--config ah.toml` used to hash the empty string, sending every project
+  invoked that way to one shared state dir. Without `--config`, the CLI walks
+  up from the current directory to find `ah.toml`, which the README always
+  claimed and the code never did: instead every such command silently used
+  `~/.local/state/ah/default`, where unrelated projects shared one database —
+  observed as a brand-new project failing `ah start` with
+  `AGENT_ALREADY_EXISTS` because another project's agent id was already there.
+  When no `ah.toml` exists above the working directory, project-scoped commands
+  now fail with an error naming the directory and the fix, the way git reports
+  "not a git repository"; `ah reclaim`, `ah version`, `ah setup`,
+  `ah config validate` and `ah bundle` still run anywhere. Environment
+  overrides (`AH_STATE_DIR`, `XDG_STATE_HOME`, `CCB_SOCKET`) keep their
+  priority, and `CCB_CONFIG_PATH` is honoured everywhere, not only by
+  `ah events` (#43, #46, #15).
+
+  **Migration:** stacks that lived in `~/.local/state/ah/default` or
+  `~/.local/state/ah/e3b0c442` are not moved or deleted; commands simply stop
+  resolving there. After upgrading, restart your projects (`ah start` inside
+  each) and collect the dead directories with `ah reclaim`.
+
 ## [1.11.0] - 2026-08-05
 
 ### Added
