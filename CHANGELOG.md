@@ -6,6 +6,22 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-08-05
+
+### Added
+- `ah reclaim` collects what crashes leave behind. Bounded retention and
+  archive-before-destroy only run on the normal path; a crash, a power cut or a
+  `kill -9` skips them and strands a sandbox home, a tmux socket, a systemd unit
+  and a state directory with no owner — on one machine, 812 of 978 sandbox homes
+  belonged to stacks that no longer existed. `ah reclaim` reports what it can
+  collect and exits; `--yes` removes it. It never touches anything a running
+  daemon still owns, never touches a project's `.ah/sessions/`, and defaults to
+  ignoring anything younger than seven days, so a stack that died an hour ago is
+  still there to investigate. A sandbox holding session records that belong to no
+  known project is kept and reported rather than deleted; `--archive-to <dir>`
+  names a destination for those records and reclaims the home once they are
+  safely out.
+
 ## [1.10.0] - 2026-08-05
 
 ### Added

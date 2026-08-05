@@ -1702,6 +1702,12 @@ where
     Ok(output)
 }
 
+/// The directory every sandbox home is created under. `ah reclaim` walks it to
+/// find homes no state directory points at any more.
+pub fn sandbox_home_root() -> Result<PathBuf, CcbdError> {
+    Ok(xdg_cache_root()?.join("ah/sandboxes"))
+}
+
 pub fn sandbox_home_for_sandbox_dir(sandbox_dir: &Path) -> Result<PathBuf, CcbdError> {
     let sandbox_path = sandbox_dir
         .canonicalize()

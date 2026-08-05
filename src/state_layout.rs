@@ -153,7 +153,9 @@ fn project_id_for_dir(config_dir: &Path) -> String {
     format!("{:x}", hasher.finalize())[..8].to_string()
 }
 
-fn default_state_root() -> PathBuf {
+/// The root every per-stack state directory lives under. `ah reclaim` walks it
+/// to find stacks nobody is running any more.
+pub fn default_state_root() -> PathBuf {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

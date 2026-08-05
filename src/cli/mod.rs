@@ -7,6 +7,7 @@ pub mod master_cutover;
 pub mod output;
 pub mod prereq;
 pub mod prompt;
+pub mod reclaim;
 pub mod rpc_client;
 pub mod service_bootstrap;
 pub mod service_unit;

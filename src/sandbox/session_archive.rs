@@ -110,6 +110,18 @@ pub fn read_project_root_marker(sandbox_dir: &Path) -> Option<PathBuf> {
     Some(PathBuf::from(trimmed))
 }
 
+/// Whether a sandbox home holds any provider session records at all.
+///
+/// Callers that must decide whether destroying a home would lose something ask
+/// this first, rather than inferring it from an archive attempt.
+pub fn holds_session_records(home_root: &Path) -> bool {
+    RECORD_SETS.iter().any(|set| {
+        set.entries
+            .iter()
+            .any(|entry| holds_records(&home_root.join(entry)))
+    })
+}
+
 /// Copies every provider record set found in `home_root` into the owning
 /// project, keyed by session and agent.
 pub fn archive_session_records(
