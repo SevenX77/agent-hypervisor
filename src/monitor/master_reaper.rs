@@ -67,7 +67,7 @@ pub(crate) async fn spawn_replacement_master_pane(
     let master_sandbox_home = if env_state.unsafe_no_sandbox {
         master_cwd.clone()
     } else {
-        let sandbox_dir = path::resolve_sandbox_dir(state_dir, session_id, "master")?;
+        let sandbox_dir = path::resolve_sandbox_dir(state_dir, session_id, "master", &master_cwd)?;
         let home_root = sandbox_home_for_sandbox_dir(&sandbox_dir)?;
         let provider = revive_master_provider(master_cmd);
         master_env_vars.extend(crate::provider::home_layout::provider_home_env(

@@ -355,7 +355,12 @@ fn master_sandbox_home_for_watch_row(
     if ctx.env_state.unsafe_no_sandbox {
         return Ok(PathBuf::from(&row.absolute_path));
     }
-    let sandbox_dir = path::resolve_sandbox_dir(&ctx.state_dir, &row.session_id, "master")?;
+    let sandbox_dir = path::resolve_sandbox_dir(
+        &ctx.state_dir,
+        &row.session_id,
+        "master",
+        Path::new(&row.absolute_path),
+    )?;
     sandbox_home_for_sandbox_dir(&sandbox_dir)
 }
 
@@ -3938,7 +3943,8 @@ provider = "bash"
         }
 
         let master_sandbox_dir =
-            crate::sandbox::path::resolve_sandbox_dir(&state_dir, &session_id, "master").unwrap();
+            crate::sandbox::path::resolve_sandbox_dir(&state_dir, &session_id, "master", &state_dir)
+                .unwrap();
         let expected_home =
             crate::provider::home_layout::sandbox_home_for_sandbox_dir(&master_sandbox_dir)
                 .unwrap();

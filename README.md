@@ -446,9 +446,27 @@ ah keeps a deliberate split between **project-local config** and **machine-local
 | Kind | What | Where | In your repo? |
 |---|---|---|---|
 | Config | `ah.toml`, `.ah/rules/<slot>.md` | inside your project | Yes — safe to commit and share |
+| Session records | provider transcripts kept when a sandbox is destroyed | `.ah/sessions/` inside your project | No — self-ignored, but yours to keep |
 | Runtime state | SQLite db, sandboxes, tmux sockets, pipes, logs, evidence | `~/.local/state/ah/<project-id>/` | No — machine-local, per-checkout |
 
 Runtime state lives **outside** the project tree on purpose: sandboxes hold materialized provider credentials, and the database and sockets are machine-bound — you never want them committed to git or handed to a teammate who clones your repo. (This mirrors `claude`, which keeps session history under `~/.claude/projects/<path>/`, not in your project.)
+
+### Your sessions outlive the sandbox
+
+Everything ah creates is disposable: sandboxes, the database, tmux sockets, the systemd unit. Your **sessions** are not — the transcript of what an agent actually did is yours, so ah hands it to the project before it throws the sandbox away.
+
+When a sandbox is destroyed, each provider's session records are copied to:
+
+```
+<project>/.ah/sessions/<session-id>/<agent-id>/<provider>/
+```
+
+codex rollouts and `history.jsonl`, claude's `projects/` records, and antigravity's conversations, summaries and knowledge. The provider's installed CLI, caches and credentials are not copied — only the records.
+
+Two guarantees worth knowing:
+
+- **`.ah/sessions/` ignores itself.** It is created with a `.gitignore` containing `*`, the way cargo marks `target/`, so archives never appear in `git status`. Move anything you want to keep permanently out of it.
+- **A sandbox whose records cannot be archived is not deleted.** If the project directory is read-only or full, ah leaves the sandbox on disk and logs an error. A leftover sandbox can be cleaned up later; a deleted session cannot be recovered.
 
 `<project-id>` is the first 8 hex characters of the SHA-256 of the project's absolute, symlink-resolved path — specifically the directory where `ah.toml` is found by walking up from your current directory.
 

@@ -693,10 +693,12 @@ mod tests {
         unsafe {
             std::env::set_var("XDG_CACHE_HOME", cache_home.path());
         }
+        let project = tempfile::TempDir::new().unwrap();
         let master_sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
             &ctx.state_dir,
             "s_kill_master_sandbox",
             "master",
+            project.path(),
         )
         .unwrap();
         let master_home =
