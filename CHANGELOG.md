@@ -6,6 +6,17 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-08-04
+
+### Fixed
+- `ah stop` removes the systemd user unit it created. `ah start` writes and
+  enables a per-stack `ah-<hash>.service`; stop only stopped the process, so the
+  unit stayed enabled with its `default.target.wants/` symlink and relaunched a
+  stack the operator had shut down at the next login — one orphan per
+  start/stop cycle. Stop now disables the unit, removes the file and reloads
+  systemd, keyed on ah's own `AH_STATE_DIR` marker so a unit ah did not generate
+  is never touched (#24).
+
 ## [1.8.2] - 2026-08-04
 
 ### Added
