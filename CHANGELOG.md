@@ -6,6 +6,20 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-08-04
+
+### Added
+- The state database stays bounded. Nothing removed old rows and nothing
+  returned freed pages, so a database holding kilobytes of live state reached
+  gigabytes on disk. Retention is graded by what a row is for rather than by age
+  alone — pane-output events are capped tightly while state changes, evidence
+  and failures are kept far longer, so a retention pass cannot delete the record
+  of why something failed. Deleted space is actually reclaimed: new databases use
+  incremental auto-vacuum, an existing one is compacted when its waste is large
+  in both share and bytes, and the write-ahead log is truncated so the space does
+  not simply move there. The pass runs at daemon start and every 30 minutes. On a
+  real 1.9 GB database this returned 1.8 GB in 2.3 seconds (#23).
+
 ## [1.8.3] - 2026-08-04
 
 ### Fixed
