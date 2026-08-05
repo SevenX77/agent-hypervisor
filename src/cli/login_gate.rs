@@ -135,8 +135,15 @@ fn foreign_store_message(provider: &str, path: &Path, target: &PathBuf) -> Strin
 
 /// Runs the provider's login program attached to the operator's terminal.
 fn run_login_in_terminal(argv: &[&str]) -> Result<(), CliError> {
-    let status = std::process::Command::new(argv[0])
-        .args(&argv[1..])
+    let mut command = std::process::Command::new(argv[0]);
+    command.args(&argv[1..]);
+    // Point CLIs that honour $BROWSER at the opener so the sign-in page pops
+    // instead of printing a URL; in WSL that opener is the bridge to the
+    // Windows browser (`ah setup --fix` installs it).
+    if std::env::var_os("BROWSER").is_none() && which::which("xdg-open").is_ok() {
+        command.env("BROWSER", "xdg-open");
+    }
+    let status = command
         .status()
         .map_err(|err| {
             CliError::Config(format!("could not launch `{}`: {err}", argv.join(" ")))

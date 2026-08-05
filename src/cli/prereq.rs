@@ -132,6 +132,15 @@ pub fn metadata_for(id: &str) -> PrerequisiteMetadata {
             boundary: ExecutionBoundary::WslDistro,
             restart: RestartRequirement::None,
         },
+        // The sign-in doorman (decision 0006) launches provider login flows
+        // that open a browser; inside WSL that needs the bridge to Windows.
+        "wsl:browser-bridge" => PrerequisiteMetadata {
+            owner: FixOwner::AhRuntime,
+            fix_available: true,
+            privilege: PrivilegeClass::DistroSudo,
+            boundary: ExecutionBoundary::WslDistro,
+            restart: RestartRequirement::None,
+        },
         "daemon" | "tmux server orphans" | "tmux legacy shared session" => PrerequisiteMetadata {
             owner: FixOwner::DiagnosticOnly,
             fix_available: false,
