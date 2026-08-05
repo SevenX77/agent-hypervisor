@@ -6,6 +6,26 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-04
+
+### Added
+- `[master.env]`, and the project `[env]`, now reach the master seat. The master
+  was the only seat with no environment channel, so a host with per-project
+  variables to inject had to wrap `cmd` in a shell — which also exposed secrets
+  in the process table. Author-configured values are layered project-then-seat
+  and ah's own runtime variables are applied last, so a project cannot redirect
+  the seat's identity, state directory or daemon socket. Carried on spawn,
+  realign, cutover, and restored from the project config on revive; a change to
+  it moves the master's config fingerprint, so `ah up` notices (#37).
+
+### Fixed
+- A shell in the master `cmd` no longer collides with a declared `provider`.
+  1.8.0's conflict rule read `bash -c '… exec claude …'` as the bash provider
+  and rejected the config, which broke every host that used a wrapper to inject
+  environment — the only shape available before `[master.env]` existed. A shell
+  is a launcher, so the rule now fires only when the command names a different
+  agent CLI (#37).
+
 ## [1.8.1] - 2026-08-04
 
 ### Fixed

@@ -117,7 +117,17 @@ The master is a role, not a provider. Point it at whichever agent CLI you want:
 provider = "codex"
 ```
 
-`provider` is authoritative. Leave `cmd` out and the master launches with that provider's own command; write both and they must agree, or the config is rejected. With neither set, the master runs `claude`.
+`provider` is authoritative. Leave `cmd` out and the master launches with that provider's own command. Writing both is fine as long as `cmd` does not name a *different* agent CLI — a shell wrapper (`bash -c '… exec claude …'`) is a launcher, not a competing provider. With neither set, the master runs `claude`.
+
+To give the master environment variables, use `[master.env]` rather than a shell wrapper — it keeps secrets out of the process table, and the project's `[env]` reaches the master too:
+
+```toml
+[master]
+provider = "claude"
+
+[master.env]
+MY_SERVICE_TOKEN = "…"
+```
 
 What a master gets depends on what its provider declares it supports:
 
@@ -333,6 +343,7 @@ plugins = []
 |---|---|---|
 | `enabled` | bool | Defaults to `true`. |
 | `cmd` | string | Defaults to the resolved provider's launch command (`claude` for Claude). Rejected when it names a different provider than `provider` does. |
+| `env` | table of strings | Extra environment for the master seat, layered over the project `[env]`. The counterpart of `agents.<id>.env`; use it instead of wrapping `cmd` in a shell, which would also put secrets in the process table. |
 | `provider` | optional string | Authoritative. Valid values: `codex`, `claude`, `antigravity`, `bash`. When unset, the provider is read from the first word of `cmd`, falling back to `claude`. Drives the master's home layout, rules target, hooks, and readiness — see [Choosing the master's provider](#choosing-the-masters-provider). |
 | `readiness_timeout_s` | integer | Defaults to `120`. |
 | `hooks` | table | Optional. |
