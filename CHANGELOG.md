@@ -6,6 +6,32 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-08-05
+
+### Added
+- ah is now the login doorman (decision 0006). One OAuth token chain has one
+  active environment — an environment being a home directory on one OS: the
+  Windows profile, the WSL distro and a macOS home are three. Refresh tokens
+  rotate on every use, so a chain shared between two environments (a copied
+  `auth.json`, a symlink across the WSL boundary) dies on whichever side
+  refreshes less — measured on a real machine, where the WSL codex login was
+  rotated away by the Windows side, and where the WSL claude store turned out
+  to be a symlink into the Windows profile: an unlit fuse for the same
+  failure. `ah start` now checks every provider the project uses before
+  spawning seats: in an interactive terminal a missing login launches the
+  provider's own sign-in flow right there (`codex login`,
+  `claude auth login`) and start continues once it succeeds; anywhere else
+  the error carries a pasteable remedy. A store reaching across the
+  environment boundary is refused with removal instructions — never silently
+  deleted, and never "fixed" by logging in over it. `ah doctor` diagnoses
+  each provider's store with the same checks and prints the remedy (#4).
+  The checks are specified per OS: on Linux every provider keeps a regular
+  file; on macOS claude lives in the Keychain, so the spec marks it
+  probe-only instead of pretending a file check applies. Expiry is judged
+  with restraint: an expired access token is not a dead login — the refresh
+  token renews it — so only absence, an explicit logout stub, an unparseable
+  file or a boundary-crossing store ask for a sign-in.
+
 ## [1.12.0] - 2026-08-05
 
 ### Fixed
