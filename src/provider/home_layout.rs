@@ -1112,6 +1112,7 @@ fn prepare_managed_codex_home(
             .map_err(|err| home_err("write codex config", &target_config, err))?;
     }
     ensure_codex_workspace_trust(&target_config, workspace_key)?;
+    inherit_codex_model_settings(source_home, &target_config)?;
     let skills = resolve_provider_skills(project_root, extensions)?;
     materialize_codex_skills(codex_home, &skills)?;
     materialize_builtin_skills(&codex_home.join("skills"), role)?;
@@ -2039,6 +2040,51 @@ fn ensure_codex_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), 
     write_codex_config(path, &root)
 }
 
+/// Carries the operator's model choice into a codex seat (#6).
+///
+/// The sandbox config is generated, so without this a seat runs whatever model
+/// codex defaults to — not the one the operator pinned on the host. That bit
+/// for real when only one model had quota left: the host CLI used the pinned
+/// model and worked while every ah seat spawned on the default model and hit
+/// the usage limit. Seat-local values win; the host's choice is a default, so
+/// a bundle or operator override inside the sandbox stays authoritative.
+fn inherit_codex_model_settings(source_home: &Path, target_config: &Path) -> Result<(), CcbdError> {
+    const MODEL_KEYS: [&str; 2] = ["model", "model_reasoning_effort"];
+
+    let source_path = source_home.join(".codex/config.toml");
+    let Ok(source_raw) = fs::read_to_string(&source_path) else {
+        return Ok(());
+    };
+    let Ok(source) = source_raw.parse::<TomlValue>() else {
+        return Ok(());
+    };
+    let Some(source_table) = source.as_table() else {
+        return Ok(());
+    };
+
+    let target_raw = fs::read_to_string(target_config).unwrap_or_default();
+    let mut target = target_raw
+        .parse::<TomlValue>()
+        .unwrap_or_else(|_| TomlValue::Table(toml::map::Map::new()));
+    let Some(target_table) = target.as_table_mut() else {
+        return Ok(());
+    };
+
+    let mut changed = false;
+    for key in MODEL_KEYS {
+        if let Some(value) = source_table.get(key)
+            && !target_table.contains_key(key)
+        {
+            target_table.insert(key.to_string(), value.clone());
+            changed = true;
+        }
+    }
+    if changed {
+        write_codex_config(target_config, &target)?;
+    }
+    Ok(())
+}
+
 fn table_entry<'a>(
     table: &'a mut toml::map::Map<String, TomlValue>,
     key: &str,
@@ -2312,6 +2358,45 @@ impl AntigravityHomeLayout {
 
 #[cfg(test)]
 mod tests {
+    use super::inherit_codex_model_settings;
+
+    /// #6: a seat must run the model the operator pinned on the host, not
+    /// whatever codex defaults to. Seat-local values stay authoritative.
+    #[test]
+    fn codex_seat_inherits_the_host_model_choice_without_overriding_local_values() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let source_home = temp.path().join("host");
+        std::fs::create_dir_all(source_home.join(".codex")).unwrap();
+        std::fs::write(
+            source_home.join(".codex/config.toml"),
+            "model = \"gpt-5.3-codex-spark\"
+model_reasoning_effort = \"low\"
+",
+        )
+        .unwrap();
+        let inherit_target = temp.path().join("seat-config.toml");
+        std::fs::write(&inherit_target, "# ccb agent-local codex config
+").unwrap();
+
+        inherit_codex_model_settings(&source_home, &inherit_target).unwrap();
+
+        let seat = std::fs::read_to_string(&inherit_target).unwrap();
+        assert!(seat.contains("model = \"gpt-5.3-codex-spark\""), "got: {seat}");
+        assert!(seat.contains("model_reasoning_effort = \"low\""), "got: {seat}");
+
+        // A seat that already pinned its own model keeps it.
+        let local_target = temp.path().join("seat-local.toml");
+        std::fs::write(&local_target, "model = \"seat-pinned\"
+").unwrap();
+        inherit_codex_model_settings(&source_home, &local_target).unwrap();
+        let local = std::fs::read_to_string(&local_target).unwrap();
+        assert!(local.contains("model = \"seat-pinned\""), "got: {local}");
+        assert!(
+            local.contains("model_reasoning_effort = \"low\""),
+            "the missing key still inherits: {local}"
+        );
+    }
+
     use super::{HomeLayoutRole, builtin, resolve_materialization_source_home};
     use std::path::{Path, PathBuf};
 
