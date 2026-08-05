@@ -280,23 +280,120 @@ enum AgentCmd {
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let cli = Cli::parse();
-    let socket = resolve_socket_path_for_config(cli.config.as_deref());
-    let client = UnixRpcClient::new(socket);
-    let result = match cli.cmd {
-        None => default_action(&client, cli.config).await,
-        Some(Cmd::InternalBridge { uds, port_file }) => {
-            ah::claude_gateway::run_internal_bridge(&uds, port_file.as_deref())
-                .await
-                .map_err(CliError::Io)
+    let result = dispatch(cli).await;
+    if let Err(err) = result {
+        let code = exit_code(&err);
+        eprintln!("\x1b[31m{err}\x1b[0m");
+        if matches!(
+            err,
+            CliError::DaemonNotRunning(_) | CliError::DaemonNotAccepting(_, _)
+        ) {
+            eprintln!("Start it with: ah start");
         }
-        Some(Cmd::Ping) => cmd_ping(&client).await,
+        std::process::exit(code);
+    }
+}
+
+async fn dispatch(cli: Cli) -> Result<(), CliError> {
+    let Cli { config, cmd } = cli;
+    // Commands that must work outside any project return before resolution:
+    // reclaiming leftovers, printing a version or validating a named config
+    // cannot demand an ah.toml above the working directory (decision 0005).
+    let cmd = match cmd {
+        Some(Cmd::InternalBridge { uds, port_file }) => {
+            return ah::claude_gateway::run_internal_bridge(&uds, port_file.as_deref())
+                .await
+                .map_err(CliError::Io);
+        }
         Some(Cmd::Version) => {
             println!("{}", env!("CARGO_PKG_VERSION"));
-            Ok(())
+            return Ok(());
         }
+        Some(Cmd::Reclaim {
+            yes,
+            older_than_days,
+            archive_to,
+        }) => return cmd_reclaim(yes, older_than_days, archive_to),
+        Some(Cmd::Setup {
+            check,
+            fix,
+            yes,
+            json,
+            resume,
+        }) => return cmd_setup(check, fix, yes, json, resume),
+        Some(Cmd::Config { cmd }) => {
+            return match cmd {
+                ConfigCmd::Validate { config } => run_config_validate(&config),
+                ConfigCmd::Migrate => cmd_config_migrate(),
+            };
+        }
+        Some(Cmd::Bundle { cmd }) => {
+            let cwd = std::env::current_dir().map_err(CliError::Io)?;
+            return match cmd {
+                BundleCmd::Validate { all, names } => run_bundle_validate(BundleValidateOptions {
+                    config_path: config,
+                    cwd,
+                    all,
+                    names,
+                }),
+                BundleCmd::List => run_bundle_list(BundleListOptions {
+                    config_path: config,
+                    cwd,
+                }),
+            };
+        }
+        // Events resolves for itself: it absolutizes the config and walks up,
+        // and its daemon-absent snapshot path needs the config even when no
+        // socket answers.
+        Some(Cmd::Events { format }) => return cmd_events(config, format).await,
+        // Hook notifications carry their socket explicitly (--socket or
+        // CCB_SOCKET); a hook firing from a sandbox must not depend on the
+        // sandbox's directory resolving to a project.
+        Some(Cmd::Agent {
+            cmd:
+                AgentCmd::Notify {
+                    agent_id,
+                    event,
+                    provider,
+                    event_id,
+                    hook_json,
+                    hook_debug_log,
+                    socket,
+                    outbox_dir,
+                },
+        }) => {
+            let notify_socket = match socket {
+                Some(socket) => socket,
+                None => resolve_socket_path_for_config(config.as_deref())?,
+            };
+            let notify_client = UnixRpcClient::new(notify_socket);
+            // R1-T1: resolve the journal target — explicit override, else derive
+            // from the socket both sides agree on.
+            let outbox_dir = outbox_dir.or_else(|| {
+                ah::outbox::default_agent_outbox_dir(notify_client.socket(), &agent_id)
+            });
+            return cmd_agent_notify(
+                &notify_client,
+                agent_id,
+                event,
+                provider,
+                event_id,
+                hook_json,
+                hook_debug_log,
+                outbox_dir,
+            )
+            .await;
+        }
+        other => other,
+    };
+
+    let client = UnixRpcClient::new(resolve_socket_path_for_config(config.as_deref())?);
+    match cmd {
+        None => default_action(&client, config).await,
+        Some(Cmd::Ping) => cmd_ping(&client).await,
         Some(Cmd::Ps { all }) => cmd_ps(&client, all).await,
         Some(Cmd::Status { json }) => cmd_status(&client, json).await,
-        Some(Cmd::Start { wait }) => cmd_start(&client, cli.config, wait).await,
+        Some(Cmd::Start { wait }) => cmd_start(&client, config, wait).await,
         Some(Cmd::Up { force }) => {
             let cwd = std::env::current_dir().map_err(CliError::Io);
             match cwd {
@@ -304,7 +401,7 @@ async fn main() {
                     run_up(
                         &client,
                         UpOptions {
-                            config_path: cli.config,
+                            config_path: config,
                             cwd,
                             force,
                         },
@@ -337,7 +434,6 @@ async fn main() {
             agent_id,
             since_event_id,
         }) => cmd_watch(&client, agent_id, since_event_id).await,
-        Some(Cmd::Events { format }) => cmd_events(cli.config, format).await,
         Some(Cmd::Logs { agent_id, since }) => run_logs(&client, &agent_id, since).await,
         Some(Cmd::Attach {
             target,
@@ -345,81 +441,13 @@ async fn main() {
             session,
         }) => cmd_attach(&client, &target, subject.as_deref(), session.as_deref()).await,
         Some(Cmd::Stop) => cmd_stop(&client).await,
-        Some(Cmd::Reclaim {
-            yes,
-            older_than_days,
-            archive_to,
-        }) => cmd_reclaim(yes, older_than_days, archive_to),
         Some(Cmd::Master { cmd }) => match cmd {
             MasterCmd::Cutover { wait, print_attach } => {
-                cmd_master_cutover(&client, cli.config, wait, print_attach).await
+                cmd_master_cutover(&client, config, wait, print_attach).await
             }
             MasterCmd::AckReady { cutover_id } => cmd_master_ack_ready(&client, cutover_id).await,
         },
-        Some(Cmd::Agent { cmd }) => match cmd {
-            AgentCmd::Notify {
-                agent_id,
-                event,
-                provider,
-                event_id,
-                hook_json,
-                hook_debug_log,
-                socket,
-                outbox_dir,
-            } => {
-                let notify_client = socket
-                    .map(UnixRpcClient::new)
-                    .unwrap_or_else(|| UnixRpcClient::new(client.socket().to_path_buf()));
-                // R1-T1: resolve the journal target — explicit override, else derive from the
-                // socket both sides agree on.
-                let outbox_dir = outbox_dir.or_else(|| {
-                    ah::outbox::default_agent_outbox_dir(notify_client.socket(), &agent_id)
-                });
-                cmd_agent_notify(
-                    &notify_client,
-                    agent_id,
-                    event,
-                    provider,
-                    event_id,
-                    hook_json,
-                    hook_debug_log,
-                    outbox_dir,
-                )
-                .await
-            }
-        },
-        Some(Cmd::Doctor) => cmd_doctor(&client, cli.config.as_deref()).await,
-        Some(Cmd::Setup {
-            check,
-            fix,
-            yes,
-            json,
-            resume,
-        }) => cmd_setup(check, fix, yes, json, resume),
-        Some(Cmd::Config { cmd }) => match cmd {
-            ConfigCmd::Validate { config } => run_config_validate(&config),
-            ConfigCmd::Migrate => cmd_config_migrate(),
-        },
-        Some(Cmd::Bundle { cmd }) => {
-            let cwd = std::env::current_dir().map_err(CliError::Io);
-            match cwd {
-                Ok(cwd) => match cmd {
-                    BundleCmd::Validate { all, names } => {
-                        run_bundle_validate(BundleValidateOptions {
-                            config_path: cli.config,
-                            cwd,
-                            all,
-                            names,
-                        })
-                    }
-                    BundleCmd::List => run_bundle_list(BundleListOptions {
-                        config_path: cli.config,
-                        cwd,
-                    }),
-                },
-                Err(err) => Err(err),
-            }
-        }
+        Some(Cmd::Doctor) => cmd_doctor(&client, config.as_deref()).await,
         Some(Cmd::Prompt { cmd }) => match cmd {
             PromptCmd::Resolve {
                 agent_id,
@@ -439,18 +467,16 @@ async fn main() {
                 .await
             }
         },
-    };
-
-    if let Err(err) = result {
-        let code = exit_code(&err);
-        eprintln!("\x1b[31m{err}\x1b[0m");
-        if matches!(
-            err,
-            CliError::DaemonNotRunning(_) | CliError::DaemonNotAccepting(_, _)
-        ) {
-            eprintln!("Start it with: ah start");
-        }
-        std::process::exit(code);
+        Some(
+            Cmd::InternalBridge { .. }
+            | Cmd::Version
+            | Cmd::Reclaim { .. }
+            | Cmd::Setup { .. }
+            | Cmd::Config { .. }
+            | Cmd::Bundle { .. }
+            | Cmd::Events { .. }
+            | Cmd::Agent { .. },
+        ) => unreachable!("handled before project resolution"),
     }
 }
 
@@ -1606,7 +1632,7 @@ async fn cmd_events(config: Option<PathBuf>, format: String) -> Result<(), CliEr
                 config_path.display()
             ))
         })?;
-    let socket = resolve_socket_path_for_config(Some(&config_path));
+    let socket = resolve_socket_path_for_config(Some(&config_path))?;
     let state_dir = socket.parent().map(|path| path.display().to_string());
     let mut sequence = 1_u64;
     let mut last_local_fingerprint = None::<String>;

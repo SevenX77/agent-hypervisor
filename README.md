@@ -538,7 +538,7 @@ Inside that directory you will find `ahd.sqlite` (jobs, sessions, recovery state
 | `AH_STATE_DIR` | Use this exact path as the state root (highest priority). Set `AH_STATE_DIR="$PWD/.ah-state"` to keep state inside the project. |
 | `XDG_STATE_HOME` | Use `$XDG_STATE_HOME/ccbd` as the root instead of `~/.local/state/ah`. |
 
-With no `ah.toml` found by walking up and no override set, ah falls back to `~/.local/state/ah/default/`.
+With no `ah.toml` found by walking up and no override set, project-scoped commands fail with an error naming the directory searched — the way git reports "not a git repository" — rather than guessing. Commands that do not target a project (`ah reclaim`, `ah version`, `ah setup`, `ah config validate`, `ah bundle`) run anywhere. (Before 1.12.0 the CLI silently fell back to a shared `~/.local/state/ah/default/`, which let unrelated projects collide in one database; `ah reclaim` collects that directory once its stack is dead.)
 
 ## Development
 

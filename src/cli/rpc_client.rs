@@ -108,37 +108,41 @@ pub fn exit_code(err: &CliError) -> i32 {
     }
 }
 
-pub fn resolve_socket_path() -> PathBuf {
+pub fn resolve_socket_path() -> Result<PathBuf, CliError> {
     resolve_socket_path_for_config(None)
 }
 
-pub fn resolve_socket_path_for_config(config_path: Option<&Path>) -> PathBuf {
+/// Resolves the daemon socket for a project-scoped command.
+///
+/// One resolution path for every command (decision 0005): explicit `--config`
+/// (or `CCB_CONFIG_PATH`, matching `ah events`), else the ah.toml found by
+/// walking up from the working directory. Failure is an error, not a fallback:
+/// the old silent `default` state dir let unrelated projects share one
+/// database (#46).
+pub fn resolve_socket_path_for_config(config_path: Option<&Path>) -> Result<PathBuf, CliError> {
     let socket_override = std::env::var("CCB_SOCKET").ok().map(PathBuf::from);
+    let env_config = std::env::var_os("CCB_CONFIG_PATH")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     resolve_socket_path_for_config_inner(
-        config_path,
+        config_path.map(Path::to_path_buf).or(env_config),
         socket_override,
-        crate::state_layout::resolve_neutral_state_layout,
+        &cwd,
     )
 }
 
 fn resolve_socket_path_for_config_inner(
-    config_path: Option<&Path>,
+    config_path: Option<PathBuf>,
     socket_override: Option<PathBuf>,
-    neutral_layout: impl FnOnce() -> crate::state_layout::StateLayout,
-) -> PathBuf {
+    cwd: &Path,
+) -> Result<PathBuf, CliError> {
     if let Some(path) = socket_override {
-        return path;
+        return Ok(path);
     }
-    if config_path.is_none() {
-        return neutral_layout().state_dir.join("ahd.sock");
-    }
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    crate::state_layout::resolve_state_layout(&crate::state_layout::StateLayoutRequest {
-        cwd,
-        config_path: config_path.map(Path::to_path_buf),
-    })
-    .state_dir
-    .join("ahd.sock")
+    crate::state_layout::resolve_cli_state_layout(cwd, config_path.as_deref())
+        .map(|layout| layout.state_dir.join("ahd.sock"))
+        .map_err(|err| CliError::Config(err.to_string()))
 }
 
 pub fn rpc_call(socket: &Path, method: &str, params: Value) -> Result<Value, CliError> {
@@ -341,8 +345,50 @@ where
 #[cfg(test)]
 mod tests {
     use super::{CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message};
-    use crate::state_layout::StateLayout;
     use serde_json::json;
+    use std::ffi::OsString;
+
+    /// Clears every ambient override the resolver honours, so these tests
+    /// exercise the discovery path rather than the machine they run on.
+    struct ResolutionEnvGuard {
+        saved: Vec<(&'static str, Option<OsString>)>,
+    }
+
+    impl ResolutionEnvGuard {
+        fn clear() -> Self {
+            let keys = [
+                "AH_STATE_DIR",
+                "CCBD_STATE_DIR",
+                "XDG_STATE_HOME",
+                "CCB_ENV",
+                "CCB_CONFIG_PATH",
+            ];
+            let saved = keys
+                .iter()
+                .map(|key| {
+                    let old = std::env::var_os(key);
+                    unsafe {
+                        std::env::remove_var(key);
+                    }
+                    (*key, old)
+                })
+                .collect();
+            Self { saved }
+        }
+    }
+
+    impl Drop for ResolutionEnvGuard {
+        fn drop(&mut self) {
+            for (key, old) in self.saved.drain(..) {
+                unsafe {
+                    match old {
+                        Some(value) => std::env::set_var(key, value),
+                        None => std::env::remove_var(key),
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn rpc_error_message_carries_the_daemon_detail_not_just_the_code() {
@@ -399,15 +445,81 @@ mod tests {
         assert_eq!(response["result"]["ok"], true);
     }
 
+    /// The old behavior: no --config meant a shared neutral state dir, so a
+    /// command run inside a project talked to the wrong stack (#46). Now the
+    /// ambient project IS the answer.
     #[test]
-    fn no_config_socket_resolution_ignores_ambient_cwd_project() {
-        let neutral = tempfile::tempdir().unwrap();
-        let socket = resolve_socket_path_for_config_inner(None, None, || StateLayout {
-            state_dir: neutral.path().to_path_buf(),
-            project_id: None,
-        });
+    #[serial_test::serial(global_env)]
+    fn no_config_socket_resolution_uses_the_ambient_cwd_project() {
+        let _env = ResolutionEnvGuard::clear();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("ah.toml"), "version = \"1\"\n").unwrap();
+        let nested = project.path().join("src/deep");
+        std::fs::create_dir_all(&nested).unwrap();
 
-        assert_eq!(socket, neutral.path().join("ahd.sock"));
+        let from_root = resolve_socket_path_for_config_inner(None, None, project.path()).unwrap();
+        let from_nested = resolve_socket_path_for_config_inner(None, None, &nested).unwrap();
+
+        assert_eq!(
+            from_root, from_nested,
+            "every directory inside a project must address the same stack"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(global_env)]
+    fn no_config_outside_any_project_is_an_error_not_a_shared_default() {
+        let _env = ResolutionEnvGuard::clear();
+        let empty = tempfile::tempdir().unwrap();
+
+        let err = resolve_socket_path_for_config_inner(None, None, empty.path()).unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("no ah.toml found"), "got: {message}");
+        assert!(message.contains("--config"), "the fix must be named: {message}");
+    }
+
+    /// #43: a bare `--config ah.toml` used to hash the empty string, sending
+    /// every project invoked that way to one shared state dir.
+    #[test]
+    #[serial_test::serial(global_env)]
+    fn relative_and_absolute_config_paths_resolve_to_the_same_stack() {
+        let _env = ResolutionEnvGuard::clear();
+        let project = tempfile::tempdir().unwrap();
+        let config_path = project.path().join("ah.toml");
+        std::fs::write(&config_path, "version = \"1\"\n").unwrap();
+
+        let relative = resolve_socket_path_for_config_inner(
+            Some(std::path::PathBuf::from("ah.toml")),
+            None,
+            project.path(),
+        )
+        .unwrap();
+        let absolute =
+            resolve_socket_path_for_config_inner(Some(config_path), None, project.path()).unwrap();
+
+        assert_eq!(relative, absolute);
+        assert!(
+            !relative.display().to_string().contains("e3b0c442"),
+            "the empty-string hash must be unreachable: {}",
+            relative.display()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(global_env)]
+    fn a_config_path_that_does_not_exist_is_an_error() {
+        let _env = ResolutionEnvGuard::clear();
+        let empty = tempfile::tempdir().unwrap();
+
+        let err = resolve_socket_path_for_config_inner(
+            Some(empty.path().join("missing/ah.toml")),
+            None,
+            empty.path(),
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("does not exist"), "got: {err}");
     }
 
     #[test]
@@ -418,13 +530,12 @@ mod tests {
         std::fs::write(&config_path, "version = \"1\"\n").unwrap();
         let leaked_socket = neutral.path().join("live").join("ahd.sock");
 
-        let socket =
-            resolve_socket_path_for_config_inner(Some(&config_path), Some(leaked_socket), || {
-                StateLayout {
-                    state_dir: neutral.path().to_path_buf(),
-                    project_id: None,
-                }
-            });
+        let socket = resolve_socket_path_for_config_inner(
+            Some(config_path),
+            Some(leaked_socket),
+            project.path(),
+        )
+        .unwrap();
 
         assert_eq!(socket, neutral.path().join("live").join("ahd.sock"));
     }
