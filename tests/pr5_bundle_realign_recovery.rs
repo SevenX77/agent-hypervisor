@@ -134,7 +134,10 @@ master = "rules/master.md"
         .unwrap()
         .unwrap();
     let first_hash = compute_config_hash(&ConfigFingerprintInput {
-        role: ConfigRole::Master { cmd: "claude" },
+        role: ConfigRole::Master {
+            cmd: "claude",
+            env: &std::collections::HashMap::new(),
+        },
         hooks: &hooks,
         plugins: &plugins,
         skills: &skills,
@@ -148,7 +151,10 @@ master = "rules/master.md"
         .unwrap()
         .unwrap();
     let second_hash = compute_config_hash(&ConfigFingerprintInput {
-        role: ConfigRole::Master { cmd: "claude" },
+        role: ConfigRole::Master {
+            cmd: "claude",
+            env: &std::collections::HashMap::new(),
+        },
         hooks: &hooks,
         plugins: &plugins,
         skills: &skills,

@@ -345,6 +345,9 @@ pub(crate) struct SpawnMasterPaneParams {
     /// `None` means the caller did not resolve one, and the daemon derives it
     /// from `cmd` the same way the config layer would.
     pub(crate) provider: Option<String>,
+    /// Author-configured environment for this master seat: the project `[env]`
+    /// with `[master].env` layered on top.
+    pub(crate) seat_env: HashMap<String, String>,
     pub(crate) tmux_window_size: TmuxWindowSize,
     pub(crate) extensions: ExtensionConfig,
     pub(crate) extra_env: HashMap<String, String>,
@@ -382,6 +385,10 @@ pub async fn handle_session_spawn_master_pane(
     let tmux_window_size = parse_tmux_window_size(&params)?;
     let extensions = extension_config_from_params(&params)?;
     let extra_env = parse_extra_env(&params)?;
+    // The master's own env plus the project env, merged server-side exactly the
+    // way agent.spawn does it, so spawn and realign cannot diverge.
+    let seat_env = parse_env_map(&params, "env")?;
+    let config_env = parse_env_map(&params, "config_env")?;
     let claude_shared_credentials_dir = optional_pathbuf(&params, "claude_shared_credentials_dir")?;
     let provider = params
         .get("provider")
@@ -395,6 +402,7 @@ pub async fn handle_session_spawn_master_pane(
             session_id: session_id.to_string(),
             cmd: cmd.to_string(),
             provider,
+            seat_env: merge_seat_env(config_env, seat_env),
             tmux_window_size,
             extensions,
             extra_env,
@@ -413,6 +421,25 @@ fn parse_tmux_window_size(params: &Value) -> Result<TmuxWindowSize, CcbdError> {
             CcbdError::IpcInvalidRequest(format!("invalid tmux_window_size: {err}"))
         }),
         None => Ok(TmuxWindowSize::Fixed),
+    }
+}
+
+/// Layers the master seat's own env over the project env. The seat wins on
+/// collisions, matching how an agent's `env` overrides the project `[env]`.
+pub(crate) fn merge_seat_env(
+    config_env: HashMap<String, String>,
+    seat_env: HashMap<String, String>,
+) -> HashMap<String, String> {
+    let mut merged = config_env;
+    merged.extend(seat_env);
+    merged
+}
+
+fn parse_env_map(params: &Value, key: &str) -> Result<HashMap<String, String>, CcbdError> {
+    match params.get(key) {
+        Some(value) => serde_json::from_value::<HashMap<String, String>>(value.clone())
+            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid {key}: {err}"))),
+        None => Ok(HashMap::new()),
     }
 }
 
@@ -467,8 +494,11 @@ pub(super) async fn prepare_master_pane_plan(
             CcbdError::DbConstraintViolation(format!("query master generation: {err}"))
         })?
     };
-    let mut master_env_vars =
-        build_master_spawn_env_vars(&params.session_id, params.extra_env.clone());
+    let mut master_env_vars = build_master_spawn_env_vars(
+        &params.session_id,
+        params.seat_env.clone(),
+        params.extra_env.clone(),
+    );
     let sandbox_overrides = SandboxOverrides::default();
     let mut home_root = None;
     let master_sandbox_dir = if ctx.env_state.unsafe_no_sandbox {
@@ -534,13 +564,21 @@ pub(crate) fn claude_shared_credentials_dir_for_provider<'a>(
         .flatten()
 }
 
+/// Builds the master's spawn environment.
+///
+/// Author-configured values go in first and ah's own runtime variables are
+/// injected after, so a project cannot accidentally (or deliberately) redirect
+/// the seat's identity, state directory or daemon socket.
 fn build_master_spawn_env_vars(
     session_id: &str,
-    mut extra_env: HashMap<String, String>,
+    seat_env: HashMap<String, String>,
+    runtime_env: HashMap<String, String>,
 ) -> HashMap<String, String> {
-    crate::process_identity::inject_master_identity(&mut extra_env, session_id);
-    strip_claude_gateway_env(&mut extra_env);
-    extra_env
+    let mut env = seat_env;
+    env.extend(runtime_env);
+    crate::process_identity::inject_master_identity(&mut env, session_id);
+    strip_claude_gateway_env(&mut env);
+    env
 }
 
 pub(crate) fn strip_claude_gateway_env(env: &mut HashMap<String, String>) {
@@ -596,7 +634,10 @@ pub(super) async fn spawn_prepared_master_pane(
     let _ = ctx.tmux_server.set_pane_title(pane.clone(), &title).await;
     set_session_master_pane_id(ctx.db.clone(), params.session_id.clone(), pane.0.clone()).await?;
     let config_hash = compute_config_hash(&ConfigFingerprintInput {
-        role: ConfigRole::Master { cmd: &params.cmd },
+        role: ConfigRole::Master {
+            cmd: &params.cmd,
+            env: &params.seat_env,
+        },
         hooks: &plan.extensions.hooks,
         plugins: &plan.extensions.plugins,
         skills: &plan.extensions.skills,
@@ -928,6 +969,7 @@ mod master_cutover_tests {
             ah_state_dir: Some(tmp.path().join("state")),
             ah_socket_path: tmp.path().join("state").join("ahd.sock"),
             master: MasterCutoverMasterParams {
+                env: HashMap::new(),
                 cmd: "claude --continue".to_string(),
                 provider: Some("claude".to_string()),
                 readiness_timeout_s: 1,
@@ -1008,6 +1050,7 @@ mod master_cutover_tests {
             session_id: "s_codex_master".to_string(),
             cmd: "codex".to_string(),
             provider: Some("codex".to_string()),
+            seat_env: HashMap::new(),
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::new(),
@@ -1041,6 +1084,55 @@ mod master_cutover_tests {
         );
     }
 
+    /// The master seat gets the same env treatment agents already had: the
+    /// project env, the seat's own env on top of it, and ah's runtime variables
+    /// on top of both — a project cannot redirect the seat's identity or socket.
+    #[tokio::test(flavor = "current_thread")]
+    async fn master_spawn_env_carries_project_and_seat_env_without_overriding_runtime() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx(tmp.path().join("state"));
+        ctx.env_state.unsafe_no_sandbox = true;
+        create_session(
+            ctx.db.clone(),
+            "s_master_env".to_string(),
+            "p_master_env".to_string(),
+            tmp.path().display().to_string(),
+        )
+        .await
+        .unwrap();
+        let params = SpawnMasterPaneParams {
+            session_id: "s_master_env".to_string(),
+            cmd: "sleep 60".to_string(),
+            provider: None,
+            seat_env: HashMap::from([
+                ("STUDIO_MCP_URL".to_string(), "https://studio.example".to_string()),
+                ("SHARED".to_string(), "from-seat".to_string()),
+                ("AH_SESSION_ID".to_string(), "hijacked".to_string()),
+            ]),
+            tmux_window_size: TmuxWindowSize::Fixed,
+            extensions: ExtensionConfig::default(),
+            extra_env: HashMap::new(),
+            claimed_master_generation: None,
+            claude_shared_credentials_dir: None,
+        };
+
+        let plan = prepare_master_pane_plan(&ctx, &params).await.unwrap();
+
+        assert_eq!(
+            plan.master_env_vars.get("STUDIO_MCP_URL").map(String::as_str),
+            Some("https://studio.example")
+        );
+        assert_eq!(
+            plan.master_env_vars.get("SHARED").map(String::as_str),
+            Some("from-seat")
+        );
+        assert_eq!(
+            plan.master_env_vars.get("AH_SESSION_ID").map(String::as_str),
+            Some("s_master_env"),
+            "ah runtime identity must win over author-configured env"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn initial_master_spawn_env_contains_process_identity() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1058,6 +1150,7 @@ mod master_cutover_tests {
             session_id: "s_master_identity".to_string(),
             cmd: "sleep 60".to_string(),
             provider: None,
+            seat_env: HashMap::new(),
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::from([
@@ -1113,6 +1206,7 @@ mod master_cutover_tests {
             session_id: "s_cutover_identity".to_string(),
             cmd: "claude --continue".to_string(),
             provider: None,
+            seat_env: HashMap::new(),
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::from([
@@ -1690,6 +1784,7 @@ mod master_cutover_tests {
             session_id: "s_watch_delay".to_string(),
             cmd: "sleep 60".to_string(),
             provider: None,
+            seat_env: HashMap::new(),
             tmux_window_size: TmuxWindowSize::Fixed,
             extensions: ExtensionConfig::default(),
             extra_env: HashMap::new(),

@@ -35,6 +35,8 @@ struct RealignMasterParams {
     #[serde(default)]
     cmd: String,
     #[serde(default)]
+    env: HashMap<String, String>,
+    #[serde(default)]
     hooks: HashMap<String, Vec<crate::provider::extensions::HookGroup>>,
     #[serde(default)]
     plugins: Vec<String>,
@@ -145,7 +147,10 @@ pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, C
     } else if session.config_hash.as_deref()
         == Some(
             compute_config_hash(&ConfigFingerprintInput {
-                role: ConfigRole::Master { cmd: &master.cmd },
+                role: ConfigRole::Master {
+                    cmd: &master.cmd,
+                    env: &master.env,
+                },
                 hooks: &master.hooks,
                 plugins: &master.plugins,
                 skills: &master.skills,
@@ -162,7 +167,10 @@ pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, C
         }));
     } else if force {
         let expected_master_hash = compute_config_hash(&ConfigFingerprintInput {
-            role: ConfigRole::Master { cmd: &master.cmd },
+            role: ConfigRole::Master {
+                cmd: &master.cmd,
+                env: &master.env,
+            },
             hooks: &master.hooks,
             plugins: &master.plugins,
             skills: &master.skills,

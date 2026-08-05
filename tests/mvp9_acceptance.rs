@@ -375,6 +375,7 @@ async fn test_launcher_passes_merged_env_to_agent_spawn() {
             cmd: "claude".to_string(),
             cmd_explicit: false,
             provider: None,
+            env: Default::default(),
             readiness_timeout_s: 120,
             enabled: false,
             window_size: Default::default(),

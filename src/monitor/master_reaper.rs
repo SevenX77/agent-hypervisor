@@ -56,6 +56,13 @@ pub(crate) async fn spawn_replacement_master_pane(
             marker_path.display().to_string(),
         );
     }
+    // A revived master must come back with the same author-configured
+    // environment the original seat had; the revive path has no payload, so it
+    // re-reads the project config. Runtime variables were inserted above and
+    // stay authoritative.
+    for (key, value) in revive_master_seat_env(&master_cwd) {
+        master_env_vars.entry(key).or_insert(value);
+    }
     let sandbox_overrides = SandboxOverrides::default();
     let master_sandbox_home = if env_state.unsafe_no_sandbox {
         master_cwd.clone()
@@ -278,6 +285,27 @@ pub(crate) fn prepare_revive_master_readiness_check(
 /// never ran.
 pub(crate) fn revive_master_provider(master_cmd: &str) -> Option<String> {
     crate::cli::config::provider_name_from_command(master_cmd)
+}
+
+/// Author-configured environment for a revived master: the project `[env]` with
+/// `[master].env` layered on top, exactly as the spawn path merges them. A
+/// config that cannot be read yields nothing rather than failing the revive —
+/// bringing the master back matters more than its extra variables.
+fn revive_master_seat_env(project_root: &Path) -> HashMap<String, String> {
+    let Ok(config_path) = crate::cli::config::find_config(project_root) else {
+        return HashMap::new();
+    };
+    match crate::cli::config::load_project_config(&config_path) {
+        Ok(config) => {
+            let mut env = config.env;
+            env.extend(config.master.env);
+            env
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "revive could not read master env from project config");
+            HashMap::new()
+        }
+    }
 }
 
 fn revive_claude_shared_credentials_dir(project_root: &Path) -> Result<Option<PathBuf>, CcbdError> {

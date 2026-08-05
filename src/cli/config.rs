@@ -51,6 +51,10 @@ pub struct MasterConfig {
     /// author-written `provider`.
     pub cmd_explicit: bool,
     pub provider: Option<String>,
+    /// Extra environment for the master seat, the counterpart of `agents.<id>.env`.
+    /// Without it a host with per-project environment to inject had no channel
+    /// but to wrap `cmd` in a shell, which also put secrets in the process table.
+    pub env: HashMap<String, String>,
     pub readiness_timeout_s: u64,
     pub enabled: bool,
     pub window_size: TmuxWindowSize,
@@ -69,6 +73,8 @@ struct MasterConfigWire {
     cmd: Option<String>,
     #[serde(default)]
     provider: Option<String>,
+    #[serde(default)]
+    env: HashMap<String, String>,
     #[serde(default = "default_master_readiness_timeout_s")]
     readiness_timeout_s: u64,
     #[serde(default = "default_master_enabled")]
@@ -113,6 +119,7 @@ impl<'de> Deserialize<'de> for MasterConfig {
             cmd,
             cmd_explicit,
             provider,
+            env: wire.env,
             readiness_timeout_s: wire.readiness_timeout_s,
             enabled: wire.enabled,
             window_size: wire.window_size,
@@ -169,6 +176,7 @@ impl Default for MasterConfig {
             cmd: default_master_cmd_for_provider(DEFAULT_MASTER_PROVIDER),
             cmd_explicit: false,
             provider: None,
+            env: HashMap::new(),
             readiness_timeout_s: default_master_readiness_timeout_s(),
             enabled: default_master_enabled(),
             window_size: TmuxWindowSize::Fixed,
@@ -352,10 +360,15 @@ fn validate_master_provider_config(config: &ProjectConfig, diagnostics: &mut Vec
     }
 
     let provider = config.master.resolved_provider();
+    // A declared provider and an explicit cmd only conflict when the command
+    // launches a *different agent CLI*. A shell in argv[0] is a launcher — it
+    // wraps whatever it execs — so `cmd = "bash -c '… exec claude …'"` next to
+    // `provider = "claude"` is a legitimate shape, not a contradiction.
     if let Some(declared) = config.master.provider.as_deref()
         && config.master.cmd_explicit
         && let Some(cmd_provider) = provider_name_from_command(&config.master.cmd)
         && cmd_provider != declared
+        && cmd_provider != SHELL_PROVIDER
     {
         diagnostics.push(error(format!(
             "master declares provider '{declared}' but cmd runs provider '{cmd_provider}'; \
@@ -519,6 +532,11 @@ pub(crate) fn find_config_with_env(
 /// command ah recognizes. This keeps the historical default: an untouched
 /// `[master]` runs Claude.
 pub const DEFAULT_MASTER_PROVIDER: &str = "claude";
+
+/// The provider whose "command" is a shell rather than an agent CLI. As argv[0]
+/// of a master command it means "launch something through a shell", so it never
+/// contradicts a declared provider.
+const SHELL_PROVIDER: &str = "bash";
 
 /// Launch command for a master whose config could not be read at all. Callers
 /// recovering a master without its config use this instead of spelling a
@@ -979,6 +997,68 @@ provider = "bash"
             }),
             "warning must name every missing master capability: {warnings:?}"
         );
+    }
+
+    /// Regression for #37: a host that must inject per-project environment used
+    /// to have no choice but to wrap the master command in a shell, and 1.8.0's
+    /// conflict rule read that shell as a competing provider.
+    #[test]
+    fn a_shell_wrapper_does_not_conflict_with_the_declared_provider() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[providers.claude]
+shared_credentials_dir = "/tmp/claude-login-store"
+
+[master]
+provider = "claude"
+cmd = "bash -c 'export STUDIO_API_TOKEN=x; exec claude --mcp-config /tmp/mcp.json'"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.master.resolved_provider(), "claude");
+        assert!(
+            errors(&config).is_empty(),
+            "a shell launcher is not a competing provider: {:?}",
+            errors(&config)
+        );
+    }
+
+    #[test]
+    fn master_env_is_parsed_and_layered_over_the_project_env() {
+        let config = toml::from_str::<super::ProjectConfig>(
+            r#"
+version = "1"
+
+[providers.claude]
+shared_credentials_dir = "/tmp/claude-login-store"
+
+[env]
+SHARED = "project"
+ONLY_PROJECT = "1"
+
+[master]
+provider = "claude"
+
+[master.env]
+SHARED = "master"
+ONLY_MASTER = "1"
+
+[agents.a1]
+provider = "bash"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.master.env.get("ONLY_MASTER").map(String::as_str), Some("1"));
+        assert_eq!(config.master.env.get("SHARED").map(String::as_str), Some("master"));
+        assert_eq!(config.env.get("ONLY_PROJECT").map(String::as_str), Some("1"));
+        assert!(errors(&config).is_empty());
     }
 
     #[test]

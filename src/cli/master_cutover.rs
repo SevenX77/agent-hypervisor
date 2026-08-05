@@ -53,6 +53,7 @@ pub async fn run_master_cutover(
                 "master": {
                     "cmd": options.config.master.cmd,
                     "provider": options.config.master.resolved_provider(),
+                    "env": options.config.master.env,
                     "readiness_timeout_s": options.config.master.readiness_timeout_s,
                     "hooks": options.config.master.hooks,
                     "plugins": options.config.master.plugins,

@@ -139,6 +139,8 @@ pub(super) struct MasterCutoverMasterParams {
     pub(super) cmd: String,
     #[serde(default)]
     pub(super) provider: Option<String>,
+    #[serde(default)]
+    pub(super) env: HashMap<String, String>,
     #[serde(default = "default_master_readiness_timeout_s")]
     pub(super) readiness_timeout_s: u64,
     #[serde(default)]
@@ -339,6 +341,10 @@ where
             session_id: session_id.clone(),
             cmd: request.master.cmd.clone(),
             provider: request.master.provider.clone(),
+            seat_env: super::sessions::merge_seat_env(
+                HashMap::new(),
+                request.master.env.clone(),
+            ),
             tmux_window_size: request.master.tmux_window_size,
             extensions: ExtensionConfig {
                 hooks: request.master.hooks.clone(),
