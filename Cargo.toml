@@ -1,6 +1,6 @@
 [package]
 name = "ah"
-version = "1.13.0"
+version = "1.13.1"
 edition = "2024"
 authors = ["sevenx"]
 description = "L2 Scheduling Daemon for Agent Hypervisor"

@@ -6,6 +6,19 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.13.1] - 2026-08-05
+
+### Fixed
+- codex seats inherit the host's model choice. The sandbox `config.toml` is
+  generated, so a seat ran whatever model codex defaults to rather than the one
+  the operator pinned in `~/.codex/config.toml` — which bit for real when only
+  one model had quota left: the host CLI worked while every ah seat spawned on
+  the default model, hit the usage limit and stalled on an interactive
+  rate-limit prompt. `model` and `model_reasoning_effort` now carry over at
+  materialization; a value already present in the seat's own config stays
+  authoritative, so bundle or operator overrides inside the sandbox still win.
+  First slice of #6 (per-agent CLI settings for codex/antigravity).
+
 ## [1.13.0] - 2026-08-05
 
 ### Added
