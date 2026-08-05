@@ -13,6 +13,7 @@ pub mod evidence;
 pub mod job_state;
 pub mod jobs;
 pub mod learned_rules;
+pub mod maintenance;
 pub mod master_cutovers;
 pub mod master_recovery;
 pub(crate) mod perception;
@@ -175,6 +176,10 @@ fn open_configured_connection(db_path: &Path) -> Result<Connection, CcbdError> {
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
         PRAGMA busy_timeout = 5000;
+        -- Freed pages must come back without rewriting the file. This only takes
+        -- effect on a database that has no tables yet; an existing one keeps its
+        -- mode and is compacted by the maintenance pass instead (decision 0004).
+        PRAGMA auto_vacuum = INCREMENTAL;
         "#,
     )
     .map_err(|err| CcbdError::DbConstraintViolation(format!("initialize pragmas: {err}")))?;

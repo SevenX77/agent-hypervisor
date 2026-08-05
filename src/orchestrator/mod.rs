@@ -58,7 +58,48 @@ async fn run_before_dispatch_send_hook_for_test(ctx: &Ctx, agent_id: &str, pane_
 async fn run_before_dispatch_send_hook_for_test(_ctx: &Ctx, _agent_id: &str, _pane_id: TmuxPaneId) {
 }
 
+/// How often the daemon reclaims its own storage. Long enough to be invisible
+/// next to real work, short enough that a busy stack cannot accumulate a day's
+/// worth of pane output before the first pass.
+const STATE_MAINTENANCE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+/// Keeps the state database bounded for as long as the daemon runs.
+///
+/// The first pass happens right away: a daemon that has just started is the one
+/// moment where a database bloated by the previous run can be compacted without
+/// competing with live traffic (decision 0004, #23).
+async fn state_maintenance_loop(ctx: Ctx) {
+    loop {
+        let db = ctx.db.clone();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let conn = db.conn();
+            crate::db::maintenance::run_state_maintenance(
+                &conn,
+                crate::db::maintenance::RetentionPolicy::default(),
+            )
+        })
+        .await;
+        match outcome {
+            Ok(Ok(report)) if report.deleted_rows() > 0 || report.vacuumed => tracing::info!(
+                firehose_events_deleted = report.firehose_events_deleted,
+                forensic_events_deleted = report.forensic_events_deleted,
+                job_transitions_deleted = report.job_transitions_deleted,
+                vacuumed = report.vacuumed,
+                "state database maintenance reclaimed space"
+            ),
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => tracing::warn!(error = %err, "state database maintenance failed"),
+            Err(err) => tracing::warn!(error = %err, "state database maintenance task panicked"),
+        }
+        tokio::time::sleep(STATE_MAINTENANCE_INTERVAL).await;
+    }
+}
+
 pub fn spawn_orchestrator_task(ctx: Ctx) {
+    let maintenance_ctx = ctx.clone();
+    tokio::spawn(async move {
+        state_maintenance_loop(maintenance_ctx).await;
+    });
     let watcher_ctx = ctx.clone();
     tokio::spawn(async move {
         let (watch_interval, stuck_threshold) = resolve_stuck_watch_config();
