@@ -1035,6 +1035,7 @@ mod master_cutover_tests {
         }
     }
 
+    #[serial_test::serial(global_env)]
     #[tokio::test(flavor = "current_thread")]
     async fn master_pane_plan_materializes_the_declared_provider_not_claude() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1088,6 +1089,7 @@ mod master_cutover_tests {
     /// The master seat gets the same env treatment agents already had: the
     /// project env, the seat's own env on top of it, and ah's runtime variables
     /// on top of both — a project cannot redirect the seat's identity or socket.
+    #[serial_test::serial(global_env)]
     #[tokio::test(flavor = "current_thread")]
     async fn master_spawn_env_carries_project_and_seat_env_without_overriding_runtime() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1134,6 +1136,7 @@ mod master_cutover_tests {
         );
     }
 
+    #[serial_test::serial(global_env)]
     #[tokio::test(flavor = "current_thread")]
     async fn initial_master_spawn_env_contains_process_identity() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1190,6 +1193,7 @@ mod master_cutover_tests {
         assert!(!plan.master_env_vars.contains_key("ANTHROPIC_AUTH_TOKEN"));
     }
 
+    #[serial_test::serial(global_env)]
     #[tokio::test(flavor = "current_thread")]
     async fn master_cutover_spawn_env_contains_process_identity() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1767,6 +1771,7 @@ mod master_cutover_tests {
         assert!(cutover.ack_ready_at.is_none());
     }
 
+    #[serial_test::serial(global_env)]
     #[tokio::test(flavor = "current_thread")]
     async fn spawn_master_pane_does_not_arm_revival_watch_before_active() {
         let tmp = tempfile::tempdir().unwrap();
