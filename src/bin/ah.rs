@@ -1224,8 +1224,21 @@ async fn cmd_attach(
 
 async fn cmd_stop(client: &UnixRpcClient) -> Result<(), CliError> {
     client.call("system.shutdown", json!({})).await?;
+    // The daemon is down; now remove what started it. An enabled unit outlives
+    // the process and relaunches this stack at the next login, so leaving it
+    // behind would make `ah stop` a pause rather than a teardown (#24).
+    if let Some(state_dir) = client.socket().parent() {
+        crate::teardown_ahd_unit(state_dir);
+    }
     eprintln!("ccbd shutting down.");
     Ok(())
+}
+
+fn teardown_ahd_unit(state_dir: &std::path::Path) {
+    if !systemd_user_bootstrap_available() {
+        return;
+    }
+    ah::cli::service_bootstrap::teardown_persistent_unit(&RealSystemctlRunner, state_dir);
 }
 
 async fn cmd_ping(client: &UnixRpcClient) -> Result<(), CliError> {
