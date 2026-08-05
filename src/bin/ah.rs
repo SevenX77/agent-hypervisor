@@ -144,6 +144,19 @@ enum Cmd {
     },
     /// Shut down the daemon gracefully.
     Stop,
+    /// Report ah's reclaimable leftovers; `--yes` removes them.
+    Reclaim {
+        /// Actually remove what the report lists.
+        #[arg(long)]
+        yes: bool,
+        /// Only consider leftovers older than this many days.
+        #[arg(long, default_value_t = 7)]
+        older_than_days: u64,
+        /// Where to put session records that belong to no known project.
+        /// Without it, sandbox homes holding such records are kept.
+        #[arg(long)]
+        archive_to: Option<PathBuf>,
+    },
     /// Manage the ah-managed master process.
     Master {
         #[command(subcommand)]
@@ -332,6 +345,11 @@ async fn main() {
             session,
         }) => cmd_attach(&client, &target, subject.as_deref(), session.as_deref()).await,
         Some(Cmd::Stop) => cmd_stop(&client).await,
+        Some(Cmd::Reclaim {
+            yes,
+            older_than_days,
+            archive_to,
+        }) => cmd_reclaim(yes, older_than_days, archive_to),
         Some(Cmd::Master { cmd }) => match cmd {
             MasterCmd::Cutover { wait, print_attach } => {
                 cmd_master_cutover(&client, cli.config, wait, print_attach).await
@@ -1232,6 +1250,129 @@ async fn cmd_stop(client: &UnixRpcClient) -> Result<(), CliError> {
     }
     eprintln!("ccbd shutting down.");
     Ok(())
+}
+
+/// `ah reclaim` — collect what crashes and hard kills left behind.
+///
+/// This deliberately runs without a daemon connection: the whole point is to
+/// clean up after stacks that are no longer running. It reports by default and
+/// only removes with `--yes`, because every judgement here is a heuristic and
+/// the cost of a wrong one is unrecoverable (decision 0004 D3).
+fn cmd_reclaim(
+    yes: bool,
+    older_than_days: u64,
+    archive_to: Option<PathBuf>,
+) -> Result<(), CliError> {
+    use ah::cli::reclaim;
+
+    let sandbox_root = ah::provider::home_layout::sandbox_home_root()
+        .map_err(|err| CliError::Io(std::io::Error::other(err.to_string())))?;
+    let state_root = ah::state_layout::default_state_root();
+    let scope = reclaim::ReclaimScope {
+        sandbox_root,
+        live_state_dirs: live_state_dirs(&state_root),
+        state_root,
+        tmux_socket_dir: tmux_socket_dir(),
+        min_age: Duration::from_secs(older_than_days * 24 * 60 * 60),
+        now: SystemTime::now(),
+        tmux_server_alive: Box::new(reclaim::tmux_server_alive),
+    };
+
+    let plan = reclaim::survey(&scope);
+    if plan.is_empty() {
+        println!("Nothing to reclaim.");
+        report_skips(&plan);
+        return Ok(());
+    }
+
+    for item in &plan.items {
+        println!(
+            "{:<14} {:>10}  {}  ({})",
+            item.kind.label(),
+            reclaim::format_bytes(item.bytes),
+            item.path.display(),
+            item.reason
+        );
+    }
+    println!(
+        "\n{} item(s), {} reclaimable.",
+        plan.items.len(),
+        reclaim::format_bytes(plan.bytes())
+    );
+    report_skips(&plan);
+
+    if !yes {
+        println!("\nNothing was removed. Re-run with --yes to reclaim.");
+        return Ok(());
+    }
+
+    let report = reclaim::execute(
+        &plan,
+        &reclaim::ExecuteOptions {
+            archive_unattributable_to: archive_to,
+        },
+    );
+    println!(
+        "\nRemoved {} item(s); {} freed.",
+        report.removed,
+        reclaim::format_bytes(report.bytes_freed)
+    );
+    for (path, reason) in &report.kept {
+        println!("kept {}: {reason}", path.display());
+    }
+    Ok(())
+}
+
+fn report_skips(plan: &ah::cli::reclaim::ReclaimPlan) {
+    if plan.skipped_in_use > 0 {
+        println!("{} item(s) still in use were skipped.", plan.skipped_in_use);
+    }
+    if plan.skipped_too_recent > 0 {
+        println!(
+            "{} item(s) newer than the age floor were skipped.",
+            plan.skipped_too_recent
+        );
+    }
+}
+
+/// State directories whose daemon still answers on its socket.
+///
+/// Liveness is decided by connecting, not by the socket file existing: a socket
+/// outlives the process that bound it, which is exactly the leftover being
+/// collected here.
+fn live_state_dirs(state_root: &std::path::Path) -> std::collections::HashSet<PathBuf> {
+    let mut live = std::collections::HashSet::new();
+    let Ok(entries) = std::fs::read_dir(state_root) else {
+        return live;
+    };
+    for entry in entries.flatten() {
+        let socket = entry.path().join("ahd.sock");
+        #[cfg(unix)]
+        if socket.exists() && std::os::unix::net::UnixStream::connect(&socket).is_ok() {
+            live.insert(entry.path());
+        }
+        #[cfg(not(unix))]
+        if socket.exists() {
+            live.insert(entry.path());
+        }
+    }
+    live
+}
+
+fn tmux_socket_dir() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        let root = std::env::var_os("TMUX_TMPDIR")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        let uid = unsafe { libc::getuid() };
+        Some(root.join(format!("tmux-{uid}")))
+    }
+    #[cfg(not(unix))]
+    {
+        None
+    }
 }
 
 fn teardown_ahd_unit(state_dir: &std::path::Path) {

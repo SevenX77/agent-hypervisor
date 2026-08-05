@@ -468,6 +468,43 @@ Two guarantees worth knowing:
 - **`.ah/sessions/` ignores itself.** It is created with a `.gitignore` containing `*`, the way cargo marks `target/`, so archives never appear in `git status`. Move anything you want to keep permanently out of it.
 - **A sandbox whose records cannot be archived is not deleted.** If the project directory is read-only or full, ah leaves the sandbox on disk and logs an error. A leftover sandbox can be cleaned up later; a deleted session cannot be recovered.
 
+### Reclaiming what crashes left behind
+
+A crash, a power cut or a `kill -9` skips every cleanup path, leaving sandbox homes, tmux sockets and state directories with no owner. `ah reclaim` collects them:
+
+```bash
+ah reclaim
+```
+
+It **reports and exits** — nothing is removed without `--yes`:
+
+```
+sandbox home       1.1 GB  /root/.cache/ah/sandboxes/32b9edc0b0e5  (no state directory points at this home)
+state dir         27.0 GB  /root/.local/state/ah/default.bak-old   (no daemon holds this stack's socket)
+tmux socket            0 B  /tmp/tmux-0/ahd-82e72291bb9ee707        (no tmux server is listening)
+
+3 item(s), 28.1 GB reclaimable.
+2 item(s) still in use were skipped.
+
+Nothing was removed. Re-run with --yes to reclaim.
+```
+
+| Flag | Effect |
+|---|---|
+| `--yes` | Actually remove what the report lists. |
+| `--older-than-days <n>` | Only consider leftovers older than this. Defaults to `7`, so a stack that died an hour ago is left for you to investigate. |
+| `--archive-to <dir>` | Where to put session records belonging to no known project — see below. |
+
+Two things `ah reclaim` never touches: anything a running daemon still owns, and `.ah/sessions/` in any project.
+
+A sandbox is an orphan precisely because the directory holding its project marker is gone, so ah cannot tell whose session its records are. Those homes are **kept and reported** rather than deleted. To reclaim them, name a destination:
+
+```bash
+ah reclaim --yes --archive-to ~/ah-rescued
+```
+
+Their records land in `~/ah-rescued/.ah/sessions/orphans/<sandbox>/` before the home is removed. There is deliberately no default destination — that would just be another directory ah never cleans up.
+
 `<project-id>` is the first 8 hex characters of the SHA-256 of the project's absolute, symlink-resolved path — specifically the directory where `ah.toml` is found by walking up from your current directory.
 
 ### Finding a project's runtime data
