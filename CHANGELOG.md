@@ -6,6 +6,16 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.14.1] - 2026-08-05
+
+### Fixed
+- `ah setup --fix` actually installs the browser bridge. The fix gate only
+  acted on failing steps, and the bridge deliberately warns rather than fails
+  (sign-in works without the pop) — so `--fix` reported the warn back without
+  installing anything, found live minutes after the 1.14.0 release. A warning
+  step that declares a fix is now gated into the fix path; diagnostic-only
+  warnings stay untouched.
+
 ## [1.14.0] - 2026-08-05
 
 ### Added
