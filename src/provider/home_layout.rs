@@ -1893,6 +1893,13 @@ fn read_mount_table() -> String {
     fs::read_to_string("/proc/self/mounts").unwrap_or_default()
 }
 
+/// The Windows interop mount point backing `path`, if any — the auth-store
+/// doorman uses this to spot a credential store reaching across the WSL
+/// boundary (decision 0006).
+pub fn windows_interop_mount_point(path: &Path) -> Option<String> {
+    windows_interop_mount_for_path(path, &read_mount_table()).map(|mount| mount.mount_point)
+}
+
 /// Returns the mount backing `path` when that mount is a Windows drive exposed
 /// into Linux (WSL's `drvfs`, whether carried over `9p` or mounted directly).
 ///
