@@ -583,10 +583,18 @@ pub fn build_phase1_fix_envelope(
     })
 }
 
+/// Whether `--fix` should act on a step.
+///
+/// A Warn counts when the step declares a fix: the browser bridge warns rather
+/// than fails (sign-in still works without the pop), and gating fixes on Fail
+/// alone silently skipped it — found live, when `ah setup --fix` reported the
+/// warn back instead of installing the opener.
 fn step_needs_fix(steps: &[RuntimePrerequisite], id: &str) -> bool {
-    steps
-        .iter()
-        .any(|step| step.id == id && step.status == PrereqStatus::Fail)
+    steps.iter().any(|step| {
+        step.id == id
+            && (step.status == PrereqStatus::Fail
+                || (step.status == PrereqStatus::Warn && step.fix_available))
+    })
 }
 
 fn step_passes(steps: &[RuntimePrerequisite], id: &str) -> bool {
@@ -1105,6 +1113,32 @@ mod tests {
         fn confirm(&self, _prompt: &str, _assume_yes: bool) -> std::io::Result<bool> {
             Ok(self.confirm)
         }
+    }
+
+    /// Found live: the bridge warns instead of failing, and the fix gate only
+    /// looked at Fail — so `ah setup --fix` reported the warn back without
+    /// installing anything. A warn with a declared fix must be fixable.
+    #[test]
+    fn a_warn_step_with_a_declared_fix_is_gated_into_the_fix_path() {
+        let warn_step = super::runtime_prerequisite_from_doctor(DoctorCheck {
+            name: "wsl:browser-bridge".to_string(),
+            status: DoctorStatus::Warn,
+            detail: "no opener".to_string(),
+            suggestion: None,
+        });
+        assert!(warn_step.fix_available);
+        assert!(super::step_needs_fix(&[warn_step], "wsl:browser-bridge"));
+
+        let warn_no_fix = super::runtime_prerequisite_from_doctor(DoctorCheck {
+            name: "tmux server orphans".to_string(),
+            status: DoctorStatus::Warn,
+            detail: "1 stale".to_string(),
+            suggestion: None,
+        });
+        assert!(
+            !super::step_needs_fix(&[warn_no_fix], "tmux server orphans"),
+            "a warn without a fix stays diagnostic"
+        );
     }
 
     #[test]
