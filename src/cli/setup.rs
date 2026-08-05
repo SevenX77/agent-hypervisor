@@ -468,6 +468,17 @@ pub fn build_phase1_fix_envelope(
         }
     }
 
+    if step_needs_fix(&steps, "wsl:browser-bridge") {
+        let outcome = install_browser_bridge_if_needed(runner, options.yes)?;
+        apply_step_outcome(&mut steps, "wsl:browser-bridge", &outcome);
+        if outcome.status == PrereqStatus::Fixed {
+            changed.push(
+                "Installed the WSL-to-Windows browser opener at /usr/local/bin/xdg-open"
+                    .to_string(),
+            );
+        }
+    }
+
     let mut wsl_hash_before = None;
     let mut wsl_hash_after = None;
     if step_needs_fix(&steps, "wsl:systemd-user") || step_needs_fix(&steps, "binary:systemd-run") {
@@ -642,6 +653,58 @@ fn mark_step_fixed_detail(
         step.status = status;
         step.detail = detail.into();
         step.suggestion = suggestion;
+    }
+}
+
+/// The sign-in doorman (decision 0006) launches provider login flows that
+/// open a browser; inside WSL that needs a hand-off to the Windows side. The
+/// shim is what `wslview` does at its core, with zero package dependencies.
+const BROWSER_BRIDGE_SCRIPT: &str = "#!/bin/sh
+# ah setup: WSL browser bridge - hand URLs to the Windows default browser.
+exec /mnt/c/Windows/System32/rundll32.exe url.dll,FileProtocolHandler \"$1\"
+";
+
+fn install_browser_bridge_if_needed(
+    runner: &impl SetupRunner,
+    yes: bool,
+) -> io::Result<FixOutcome> {
+    if runner.command_exists("xdg-open") || runner.command_exists("wslview") {
+        return Ok(FixOutcome {
+            status: PrereqStatus::Pass,
+            detail: "a browser opener is already installed".to_string(),
+            suggestion: None,
+        });
+    }
+    if !runner.confirm(
+        "ah setup needs sudo to install /usr/local/bin/xdg-open (opens URLs in the Windows browser)",
+        yes,
+    )? {
+        return Ok(FixOutcome {
+            status: PrereqStatus::PermissionDenied,
+            detail: "user declined the browser bridge installation".to_string(),
+            suggestion: Some(
+                "rerun ah setup --fix and approve, or install the wslu package manually".to_string(),
+            ),
+        });
+    }
+    // The shim text contains no single quotes, so it can sit inside one
+    // single-quoted shell word verbatim.
+    let script = format!(
+        "printf '%s' '{BROWSER_BRIDGE_SCRIPT}' > /usr/local/bin/xdg-open && chmod 755 /usr/local/bin/xdg-open"
+    );
+    let result = runner.run_sudo(&["sh", "-c", &script], yes)?;
+    if result.success() {
+        Ok(FixOutcome {
+            status: PrereqStatus::Fixed,
+            detail: "installed /usr/local/bin/xdg-open".to_string(),
+            suggestion: None,
+        })
+    } else {
+        Ok(FixOutcome {
+            status: PrereqStatus::Fail,
+            detail: format!("failed to write /usr/local/bin/xdg-open: {}", result.stderr.trim()),
+            suggestion: Some("install the wslu package manually, then rerun ah setup --check".to_string()),
+        })
     }
 }
 
@@ -1042,6 +1105,56 @@ mod tests {
         fn confirm(&self, _prompt: &str, _assume_yes: bool) -> std::io::Result<bool> {
             Ok(self.confirm)
         }
+    }
+
+    #[test]
+    fn browser_bridge_fix_writes_the_shim_through_sudo() {
+        let runner = FakeRunner {
+            apt_get: true,
+            tmux: true,
+            confirm: true,
+            commands: std::cell::RefCell::new(Vec::new()),
+        };
+
+        let outcome = super::install_browser_bridge_if_needed(&runner, true).unwrap();
+
+        assert_eq!(outcome.status, PrereqStatus::Fixed);
+        let commands = runner.commands.borrow();
+        let script = commands
+            .iter()
+            .flatten()
+            .find(|arg| arg.contains("/usr/local/bin/xdg-open"))
+            .expect("the fix must write the opener");
+        assert!(script.contains("rundll32.exe"), "got: {script}");
+        assert!(script.contains("chmod 755"), "got: {script}");
+    }
+
+    #[test]
+    fn browser_bridge_fix_respects_a_decline_and_an_existing_opener() {
+        let declined = FakeRunner {
+            apt_get: true,
+            tmux: true,
+            confirm: false,
+            commands: std::cell::RefCell::new(Vec::new()),
+        };
+        let outcome = super::install_browser_bridge_if_needed(&declined, false).unwrap();
+        assert_eq!(outcome.status, PrereqStatus::PermissionDenied);
+        assert!(declined.commands.borrow().is_empty(), "no sudo on decline");
+
+        struct HasOpener;
+        impl SetupRunner for HasOpener {
+            fn command_exists(&self, program: &str) -> bool {
+                program == "xdg-open"
+            }
+            fn run_sudo(&self, _: &[&str], _: bool) -> std::io::Result<CommandResult> {
+                panic!("must not run sudo when an opener exists");
+            }
+            fn confirm(&self, _: &str, _: bool) -> std::io::Result<bool> {
+                Ok(true)
+            }
+        }
+        let outcome = super::install_browser_bridge_if_needed(&HasOpener, true).unwrap();
+        assert_eq!(outcome.status, PrereqStatus::Pass);
     }
 
     fn wsl_failing_checks() -> Vec<DoctorCheck> {

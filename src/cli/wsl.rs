@@ -143,11 +143,46 @@ pub fn wsl_onboarding_checks() -> Vec<DoctorCheck> {
     if !detection.is_wsl {
         return Vec::new();
     }
-    wsl_onboarding_checks_from(
+    let mut checks = wsl_onboarding_checks_from(
         detection,
         current_systemd_user_status(),
         current_tmux_check(),
-    )
+    );
+    checks.push(browser_bridge_check(current_browser_opener()));
+    checks
+}
+
+/// Where WSL can hand a URL to the Windows default browser, if anywhere.
+fn current_browser_opener() -> Option<std::path::PathBuf> {
+    which::which("xdg-open")
+        .or_else(|_| which::which("wslview"))
+        .ok()
+}
+
+/// Provider sign-in flows open a browser; inside WSL that needs a bridge to
+/// the Windows side (decision 0006's doorman launches `codex login` and
+/// friends right in the terminal). Without one the flows still work — the URL
+/// prints and the operator clicks it — so a missing bridge warns rather than
+/// fails, and `ah setup --fix` installs a zero-dependency opener.
+pub fn browser_bridge_check(opener: Option<std::path::PathBuf>) -> DoctorCheck {
+    match opener {
+        Some(path) => DoctorCheck {
+            name: "wsl:browser-bridge".to_string(),
+            status: DoctorStatus::Pass,
+            detail: path.display().to_string(),
+            suggestion: None,
+        },
+        None => DoctorCheck {
+            name: "wsl:browser-bridge".to_string(),
+            status: DoctorStatus::Warn,
+            detail: "no xdg-open/wslview in WSL; provider sign-in flows cannot pop the Windows browser"
+                .to_string(),
+            suggestion: Some(
+                "run ah setup --fix (installs a WSL-to-Windows opener at /usr/local/bin/xdg-open)"
+                    .to_string(),
+            ),
+        },
+    }
 }
 
 pub fn wsl_onboarding_checks_from(
@@ -338,6 +373,18 @@ fn container_hint() -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn browser_bridge_check_passes_with_an_opener_and_warns_without() {
+        let with = super::browser_bridge_check(Some(std::path::PathBuf::from(
+            "/usr/local/bin/xdg-open",
+        )));
+        assert!(matches!(with.status, DoctorStatus::Pass));
+
+        let without = super::browser_bridge_check(None);
+        assert!(matches!(without.status, DoctorStatus::Warn));
+        assert!(without.suggestion.unwrap().contains("ah setup --fix"));
+    }
+
     use super::{
         SystemdUserStatus, TmuxProbe, WSL_README_URL, WslDetection, WslProbeInputs,
         classify_systemd_user_probe, detect_wsl, start_preflight_from, tmux_check_from_probe,

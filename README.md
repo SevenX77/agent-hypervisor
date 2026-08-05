@@ -32,7 +32,7 @@ That is all you need — see [Quick Start](#quick-start) below. (Building from s
 
 Log in to each provider CLI once, **in the environment where ah runs**, the normal way (`claude auth login`, `codex login`, `agy` → sign in). Every agent `ah` spawns then shares that same login: the credential file in each sandbox points at the host's, so when a provider refreshes its token the new one is immediately in effect for the host and for every other agent. Nothing drifts onto a private copy that only one agent can renew.
 
-You don't have to remember any of this: **`ah start` checks each provider's login before spawning anything.** In an interactive terminal, a missing login launches the provider's own sign-in flow right there and start continues once you finish in the browser; in scripts it fails with the exact command to run. `ah doctor` prints the same diagnosis per provider.
+You don't have to remember any of this: **`ah start` checks each provider's login before spawning anything.** In an interactive terminal, a missing login launches the provider's own sign-in flow right there and start continues once you finish in the browser; in scripts it fails with the exact command to run. `ah doctor` prints the same diagnosis per provider. On WSL, run `ah setup --fix` once so sign-in pages open in your Windows browser automatically (the `wsl:browser-bridge` check).
 
 **An environment is a home directory on one OS — and one login belongs to one environment.** On Windows + WSL that means the Windows profile and the WSL distro each sign in separately. Do not copy an `auth.json` from Windows into WSL or symlink across `/mnt/c`: refresh tokens rotate on every use, so a chain shared by two environments dies on whichever side refreshes less — the file looks fine while the login inside it is already dead. ah refuses a credential store that reaches across the boundary and tells you how to fix it. (Two logins to the same account is the normal OAuth arrangement, same as being signed in on your phone and your laptop.)
 
@@ -71,8 +71,8 @@ macOS is not supported yet; native support (kqueue-based supervision) is on the 
    ```
    then run `wsl --shutdown` in PowerShell and reopen Ubuntu.
 3. Install tmux if missing: `sudo apt install -y tmux`.
-4. Install your agent CLIs (claude/codex/…) **inside WSL** and log in there — agents live in the Linux world, not on the Windows side.
-5. Run the one-line `ah` installer above, inside WSL.
+4. Install your agent CLIs (claude/codex/…) **inside WSL** and log in there — agents live in the Linux world, not on the Windows side. Never copy or symlink a `auth.json`/`.credentials.json` from the Windows side: refresh tokens rotate, and a chain shared by two environments dies (see [One login per provider](#one-login-per-provider-shared-by-every-agent)).
+5. Run the one-line `ah` installer above, inside WSL, then `ah setup --fix`. Among other prerequisites it installs the **WSL browser bridge** (`/usr/local/bin/xdg-open`) so provider sign-in flows can pop the Windows browser instead of printing a URL; `ah doctor` reports it as `wsl:browser-bridge`.
 
 Practical notes:
 

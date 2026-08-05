@@ -47,6 +47,10 @@ ah 的运行时（守护进程、沙箱、seats）目前只在 Linux（含 WSL2�
 - **交互终端**（stdin 和 stdout 都是 tty）：当场以继承终端的方式启动该 provider 的官方登录命令，用户在浏览器完成后 start 继续。登录命令由 manifest 声明：codex `codex login`、claude `claude auth login`、antigravity **无独立登录子命令**（provider 侧限制）——退化为打印指引（交互跑一次 `agy` 触发 OAuth），不冒充自动。
 - **非交互**（Studio 拉起、CI、管道）：失败，错误信息包含可直接复制执行的 remedy 命令。
 
+### D2b 浏览器桥是门卫的环境前置，由 `ah setup` 负责
+
+门卫拉起的登录流程要开浏览器；WSL 里的 Linux 进程弹不出 Windows 浏览器，除非有桥（`xdg-open`/`wslview`）。这不是登录方法的可选优化，而是它的环境前置：没有桥，"当场拉起登录"退化成"打印 URL 等用户自己点"。因此桥进入产品：`ah doctor` 以 `wsl:browser-bridge` 检查它（缺失为 Warn——流程仍可用，只是要手点 URL），`ah setup --fix` 安装零依赖的 opener（`/usr/local/bin/xdg-open` → Windows `rundll32 url.dll,FileProtocolHandler`，即 wslview 的内核做法）；门卫启动登录命令时若可解析到 opener，则为尊重 `$BROWSER` 的 CLI 注入该变量。
+
 ### D3 持久性是澄清加守卫，不是新机制
 
 "每次打开 WSL 都要重新登录"从来不是持久性问题——WSL 的 ext4 跨 `wsl --shutdown` 天然持久（本机那份死了 20 天的 auth.json 就是证明），过去的重登是**分叉病的症状**：文件还在，token 被另一侧轮换死了。每环境自持链后：登录一次，seats 正常使用即自动刷新、链靠使用保鲜。剩余风险只有长期闲置导致 refresh token 自然过期，由 D2 门卫兜住。

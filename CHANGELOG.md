@@ -6,6 +6,21 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.14.0] - 2026-08-05
+
+### Added
+- The WSL browser bridge is part of the product (decision 0006 D2b). The login
+  doorman launches provider sign-in flows that open a browser, and inside WSL a
+  Linux process cannot pop the Windows browser without a bridge — so on the
+  machine this was built on, the bridge had been installed by hand and every
+  other machine would fall back to "click the printed URL yourself".
+  `ah doctor` now checks it as `wsl:browser-bridge` (a Warn when missing:
+  sign-in still works, just without the pop), and `ah setup --fix` installs a
+  zero-dependency opener at `/usr/local/bin/xdg-open` that hands URLs to the
+  Windows default browser — the same mechanism `wslview` uses, without the
+  package. The doorman also points `$BROWSER` at the opener for CLIs that
+  honour it.
+
 ## [1.13.1] - 2026-08-05
 
 ### Fixed
