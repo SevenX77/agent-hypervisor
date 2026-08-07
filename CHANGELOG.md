@@ -6,6 +6,18 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.14.2] - 2026-08-07
+
+### Fixed
+- `tmux_server_alive` in the runtime snapshot is now probe-truth (#53): it
+  reflects a live probe of the runtime's own tmux socket at snapshot time
+  instead of being gated on ACTIVE inventory. After an abnormal master death
+  the DB session goes terminal while `remain-on-exit` deliberately keeps the
+  server alive holding the forensic dead pane — the old gating reported that
+  demonstrably-alive server as gone, making the forensic state unrepresentable
+  to hosts (keep-the-evidence / deny-its-existence). Hosts can now surface
+  "attach to see the last screen" and know Close has something to reap.
+
 ## [1.14.1] - 2026-08-05
 
 ### Fixed

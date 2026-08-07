@@ -218,11 +218,12 @@ pub async fn build_runtime_snapshot(
         .map(|window| (window.session_id.clone(), window))
         .collect::<HashMap<_, _>>();
     let ahd_has_inventory = sessions.iter().any(|session| session.status == "ACTIVE");
-    let tmux_server_alive = if ahd_has_inventory {
-        ctx.tmux_server.server_running().await.unwrap_or(false)
-    } else {
-        false
-    };
+    // Probe-truth (#53): the server's liveness is a fact about the runtime's own socket,
+    // not about the inventory. After an abnormal master death the DB session goes
+    // terminal while `remain-on-exit` deliberately keeps the server alive holding the
+    // forensic dead pane — gating this probe on ACTIVE inventory made that state
+    // unrepresentable to hosts consuming the snapshot.
+    let tmux_server_alive = ctx.tmux_server.server_running().await.unwrap_or(false);
 
     let mut master_alive_by_session = HashMap::new();
     let mut all_active_masters_alive = true;
