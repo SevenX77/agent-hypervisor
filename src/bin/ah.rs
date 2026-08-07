@@ -975,6 +975,45 @@ fn resolve_master_attach_session_name(
     Ok(master_session_name(project_id))
 }
 
+/// Pick the master tmux session to attach to when the daemon has no ACTIVE session.
+///
+/// `session.list` deliberately hides terminal sessions, and the DB's history holds every
+/// past run of the project — neither can answer "which pane is still there". tmux can:
+/// after an abnormal master death `remain-on-exit` keeps exactly the dead master session
+/// on the socket, and that is the forensic screen attach exists to show.
+fn pick_forensic_master_session(session_names: &[String]) -> Result<String, CliError> {
+    let masters = session_names
+        .iter()
+        .filter(|name| name.starts_with("master_"))
+        .collect::<Vec<_>>();
+    match masters.len() {
+        0 => Err(CliError::Config(
+            "no active session with a master pane; run `ah start` first".into(),
+        )),
+        1 => Ok(masters[0].clone()),
+        _ => Err(CliError::Config(
+            "multiple master panes on this runtime; pass --session <session_id>".into(),
+        )),
+    }
+}
+
+/// Ask tmux which sessions exist on this runtime's socket (empty when the server is gone).
+fn list_tmux_session_names(socket: &std::path::Path) -> Vec<String> {
+    let output = std::process::Command::new("tmux")
+        .arg("-S")
+        .arg(socket)
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output();
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn resolve_master_session<'a>(
     sessions: Option<&'a Value>,
     session_id: Option<&str>,
@@ -983,35 +1022,16 @@ fn resolve_master_session<'a>(
         .and_then(|value| value.get("sessions"))
         .and_then(Value::as_array)
         .ok_or_else(|| CliError::InvalidResponse("session.list missing sessions".into()))?;
-    let matches_id = |session: &&Value| match session_id {
-        Some(expected_id) => session.get("id").and_then(Value::as_str) == Some(expected_id),
-        None => true,
-    };
-    let has_master_pane = |session: &&Value| {
-        session
-            .get("master_pane_id")
-            .and_then(Value::as_str)
-            .is_some_and(|value| !value.is_empty())
-    };
-    let mut candidates = sessions
+    let candidates = sessions
         .iter()
-        .filter(matches_id)
         .filter(|session| {
-            session_id.is_some()
-                || session.get("status").and_then(Value::as_str) == Some("ACTIVE")
+            if let Some(expected_id) = session_id {
+                session.get("id").and_then(Value::as_str) == Some(expected_id)
+            } else {
+                session.get("status").and_then(Value::as_str) == Some("ACTIVE")
+            }
         })
         .collect::<Vec<_>>();
-    // Forensic fallback: after an abnormal master death the session goes terminal while
-    // remain-on-exit keeps its pane for post-mortem. Attach IS the sanctioned way to read
-    // that last screen, so when nothing is active fall back to terminal sessions that
-    // still carry a master pane. tmux itself is the authority on whether the pane is
-    // still there — if it is gone, the attach fails with tmux's own message.
-    if candidates.is_empty() && session_id.is_none() {
-        candidates = sessions
-            .iter()
-            .filter(has_master_pane)
-            .collect::<Vec<_>>();
-    }
     let session = match candidates.len() {
         0 if session_id.is_some() => {
             return Err(CliError::Config(format!(
@@ -1021,13 +1041,13 @@ fn resolve_master_session<'a>(
         }
         0 => {
             return Err(CliError::Config(
-                "no session with a master pane; run `ah start` first".into(),
+                "no active session with a master pane; run `ah start` first".into(),
             ));
         }
         1 => candidates[0],
         _ => {
             return Err(CliError::Config(
-                "multiple sessions with a master pane; pass --session <session_id>".into(),
+                "multiple active sessions; pass --session <session_id>".into(),
             ));
         }
     };
@@ -1297,7 +1317,20 @@ async fn cmd_attach(
     } else {
         None
     };
-    let session_name = resolve_attach_session_name(target, subject, session_id, sessions.as_ref())?;
+    let session_name = match resolve_attach_session_name(
+        target,
+        subject,
+        session_id,
+        sessions.as_ref(),
+    ) {
+        Ok(name) => name,
+        // Nothing ACTIVE, no explicit session: the runtime may still be holding a
+        // remain-on-exit master pane for post-mortem. tmux is the authority on that.
+        Err(err) if target == "master" && session_id.is_none() => {
+            pick_forensic_master_session(&list_tmux_session_names(&socket)).map_err(|_| err)?
+        }
+        Err(err) => return Err(err),
+    };
     exec_tmux_attach(socket, session_name)
 }
 
@@ -1884,7 +1917,8 @@ mod tests {
     use super::{
         Cli, Cmd, MasterCmd, attach_session_name, bottom_contains_tell_body, cmd_agent_notify,
         contains_paste_expand_guard, detect_nesting, format_agent_notify_output,
-        prepare_attach_command, resolve_attach_session_name, resolve_start_config_path,
+        pick_forensic_master_session, prepare_attach_command, resolve_attach_session_name,
+        resolve_start_config_path,
         runtime_subscribe_params, status_snapshot_json,
     };
     use ah::cli::rpc_client::{RpcClient, RpcFuture, UnixRpcClient};
@@ -2310,65 +2344,37 @@ provider = "bash"
     }
 
     #[test]
-    fn attach_master_falls_back_to_the_forensic_session_when_none_is_active() {
-        // Abnormal master death leaves the session terminal while remain-on-exit keeps
-        // the pane for post-mortem. Attach is exactly the forensic entry point, so a
-        // terminal session that still has a master pane must remain attachable —
-        // gating on ACTIVE made the kept evidence unreachable through the CLI.
-        let sessions = json!({
-            "sessions": [
-                {
-                    "id": "s1",
-                    "project_id": "ccbd-rust",
-                    "status": "FAILED",
-                    "master_pane_id": "%7"
-                }
-            ]
-        });
+    fn forensic_master_session_picks_the_only_master_on_the_socket() {
+        // After an abnormal master death the DB session is terminal and session.list
+        // (which hides terminal rows) offers nothing — but remain-on-exit still holds
+        // the pane. tmux is the authority on what can be attached, so the picker reads
+        // the socket's own session list.
+        let names = vec![
+            "agent_clotho".to_string(),
+            "master_exp-a".to_string(),
+            "agent_atropos".to_string(),
+        ];
 
-        let session_name =
-            resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap();
-
-        assert_eq!(session_name, "master_ccbd-rust");
+        assert_eq!(
+            pick_forensic_master_session(&names).unwrap(),
+            "master_exp-a"
+        );
     }
 
     #[test]
-    fn attach_master_prefers_the_active_session_over_terminal_residue() {
-        let sessions = json!({
-            "sessions": [
-                {
-                    "id": "s_old",
-                    "project_id": "old-proj",
-                    "status": "FAILED",
-                    "master_pane_id": "%1"
-                },
-                {
-                    "id": "s_live",
-                    "project_id": "live-proj",
-                    "status": "ACTIVE",
-                    "master_pane_id": "%2"
-                }
-            ]
-        });
+    fn forensic_master_session_refuses_to_guess_between_several() {
+        let names = vec!["master_one".to_string(), "master_two".to_string()];
 
-        let session_name =
-            resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap();
-
-        assert_eq!(session_name, "master_live-proj");
-    }
-
-    #[test]
-    fn attach_master_errors_when_multiple_terminal_residues_are_ambiguous() {
-        let sessions = json!({
-            "sessions": [
-                {"id": "s1", "project_id": "p1", "status": "FAILED", "master_pane_id": "%1"},
-                {"id": "s2", "project_id": "p2", "status": "CLOSED", "master_pane_id": "%2"}
-            ]
-        });
-
-        let err = resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap_err();
+        let err = pick_forensic_master_session(&names).unwrap_err();
 
         assert!(err.to_string().contains("--session"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn forensic_master_session_reports_nothing_attachable_when_no_master_pane_remains() {
+        let names = vec!["agent_only".to_string()];
+
+        assert!(pick_forensic_master_session(&names).is_err());
     }
 
     #[test]
