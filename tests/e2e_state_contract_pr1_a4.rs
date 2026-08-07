@@ -397,6 +397,34 @@ async fn e2e_cleanup_required_true_for_terminal_with_live_residual() {
     let _ = live_pane; // pane dies with the killed session
 }
 
+/// (5) PROBE-TRUTH (#53) — after an abnormal master death the DB session goes terminal
+/// (no ACTIVE inventory) while the runtime's own tmux server is demonstrably alive holding
+/// the remain-on-exit dead pane. `tmux_server_alive` must reflect a live probe of the
+/// runtime's own socket, not inventory bookkeeping — gating the probe on ACTIVE sessions
+/// made the forensic state remain-on-exit deliberately keeps unrepresentable to hosts.
+#[tokio::test(flavor = "current_thread")]
+#[serial_test::serial(state_contract_pr1_tmux)]
+async fn e2e_tmux_server_alive_is_probe_truth_without_active_inventory() {
+    which::which("tmux").expect("tmux required for probe-truth e2e");
+    let stack = Stack::new();
+    // A live pane on the runtime's own socket keeps the server alive — the same
+    // server-with-residue shape an abnormal master death leaves behind.
+    let (_pane, _pid) = stack.spawn_live_agent_pane("a_probe").await;
+    stack.seed_session("s_probe", "p_probe", "FAILED", 0, None);
+
+    let snap = stack.subscribe_snapshot().await;
+    assert_eq!(
+        snap["tmux_server_alive"], true,
+        "the server holds a pane on its own socket; the snapshot must say so: {snap}"
+    );
+
+    let _ = stack
+        .guard
+        .server()
+        .kill_session(agent_session_name("a_probe"))
+        .await;
+}
+
 /// (4) CLEANUP-SIGNAL SANITY — an ACTIVE session yields cleanup_required == false &&
 /// safe_to_cleanup == false; a terminal session with no residual and no recovery window
 /// yields safe_to_cleanup == true (the drivable safe_to_cleanup=true case). No tmux needed.
