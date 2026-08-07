@@ -6,6 +6,17 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.14.3] - 2026-08-07
+
+### Fixed
+- `ah attach master` reaches the forensic pane again (#53 follow-up). Attach
+  resolved the target from ACTIVE inventory only, so after an abnormal master
+  death — exactly when `remain-on-exit` has kept the pane for post-mortem —
+  it refused with "no active session with a master pane". It now falls back to
+  terminal sessions that still carry a master pane (ACTIVE still wins; several
+  residues ask for `--session`), leaving tmux as the authority on whether the
+  pane is actually there. Same inversion as the snapshot fix below, one layer up.
+
 ## [1.14.2] - 2026-08-07
 
 ### Fixed
