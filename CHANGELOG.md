@@ -12,10 +12,13 @@ All notable changes to `ah` are documented here. The format is based on
 - `ah attach master` reaches the forensic pane again (#53 follow-up). Attach
   resolved the target from ACTIVE inventory only, so after an abnormal master
   death — exactly when `remain-on-exit` has kept the pane for post-mortem —
-  it refused with "no active session with a master pane". It now falls back to
-  terminal sessions that still carry a master pane (ACTIVE still wins; several
-  residues ask for `--session`), leaving tmux as the authority on whether the
-  pane is actually there. Same inversion as the snapshot fix below, one layer up.
+  it refused with "no active session with a master pane". When nothing is
+  ACTIVE and no `--session` is given, attach now asks **tmux** which sessions
+  the runtime's socket still holds and opens the single remaining master pane
+  (several ask for `--session`). tmux is the authority on what can be attached:
+  `session.list` deliberately hides terminal rows and the DB carries every past
+  run of the project, so neither can answer "which pane is still there". Same
+  inversion as the snapshot fix below, one layer up.
 
 ## [1.14.2] - 2026-08-07
 
