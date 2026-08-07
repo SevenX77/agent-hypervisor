@@ -983,16 +983,35 @@ fn resolve_master_session<'a>(
         .and_then(|value| value.get("sessions"))
         .and_then(Value::as_array)
         .ok_or_else(|| CliError::InvalidResponse("session.list missing sessions".into()))?;
-    let candidates = sessions
+    let matches_id = |session: &&Value| match session_id {
+        Some(expected_id) => session.get("id").and_then(Value::as_str) == Some(expected_id),
+        None => true,
+    };
+    let has_master_pane = |session: &&Value| {
+        session
+            .get("master_pane_id")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.is_empty())
+    };
+    let mut candidates = sessions
         .iter()
+        .filter(matches_id)
         .filter(|session| {
-            if let Some(expected_id) = session_id {
-                session.get("id").and_then(Value::as_str) == Some(expected_id)
-            } else {
-                session.get("status").and_then(Value::as_str) == Some("ACTIVE")
-            }
+            session_id.is_some()
+                || session.get("status").and_then(Value::as_str) == Some("ACTIVE")
         })
         .collect::<Vec<_>>();
+    // Forensic fallback: after an abnormal master death the session goes terminal while
+    // remain-on-exit keeps its pane for post-mortem. Attach IS the sanctioned way to read
+    // that last screen, so when nothing is active fall back to terminal sessions that
+    // still carry a master pane. tmux itself is the authority on whether the pane is
+    // still there — if it is gone, the attach fails with tmux's own message.
+    if candidates.is_empty() && session_id.is_none() {
+        candidates = sessions
+            .iter()
+            .filter(has_master_pane)
+            .collect::<Vec<_>>();
+    }
     let session = match candidates.len() {
         0 if session_id.is_some() => {
             return Err(CliError::Config(format!(
@@ -1002,13 +1021,13 @@ fn resolve_master_session<'a>(
         }
         0 => {
             return Err(CliError::Config(
-                "no active session with a master pane; run `ah start` first".into(),
+                "no session with a master pane; run `ah start` first".into(),
             ));
         }
         1 => candidates[0],
         _ => {
             return Err(CliError::Config(
-                "multiple active sessions; pass --session <session_id>".into(),
+                "multiple sessions with a master pane; pass --session <session_id>".into(),
             ));
         }
     };
@@ -2288,6 +2307,68 @@ provider = "bash"
         let session_name = resolve_attach_session_name("a1", None, None, None).unwrap();
 
         assert_eq!(session_name, "agent_a1");
+    }
+
+    #[test]
+    fn attach_master_falls_back_to_the_forensic_session_when_none_is_active() {
+        // Abnormal master death leaves the session terminal while remain-on-exit keeps
+        // the pane for post-mortem. Attach is exactly the forensic entry point, so a
+        // terminal session that still has a master pane must remain attachable —
+        // gating on ACTIVE made the kept evidence unreachable through the CLI.
+        let sessions = json!({
+            "sessions": [
+                {
+                    "id": "s1",
+                    "project_id": "ccbd-rust",
+                    "status": "FAILED",
+                    "master_pane_id": "%7"
+                }
+            ]
+        });
+
+        let session_name =
+            resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap();
+
+        assert_eq!(session_name, "master_ccbd-rust");
+    }
+
+    #[test]
+    fn attach_master_prefers_the_active_session_over_terminal_residue() {
+        let sessions = json!({
+            "sessions": [
+                {
+                    "id": "s_old",
+                    "project_id": "old-proj",
+                    "status": "FAILED",
+                    "master_pane_id": "%1"
+                },
+                {
+                    "id": "s_live",
+                    "project_id": "live-proj",
+                    "status": "ACTIVE",
+                    "master_pane_id": "%2"
+                }
+            ]
+        });
+
+        let session_name =
+            resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap();
+
+        assert_eq!(session_name, "master_live-proj");
+    }
+
+    #[test]
+    fn attach_master_errors_when_multiple_terminal_residues_are_ambiguous() {
+        let sessions = json!({
+            "sessions": [
+                {"id": "s1", "project_id": "p1", "status": "FAILED", "master_pane_id": "%1"},
+                {"id": "s2", "project_id": "p2", "status": "CLOSED", "master_pane_id": "%2"}
+            ]
+        });
+
+        let err = resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap_err();
+
+        assert!(err.to_string().contains("--session"), "unexpected error: {err}");
     }
 
     #[test]
