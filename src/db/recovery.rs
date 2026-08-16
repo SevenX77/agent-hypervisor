@@ -442,14 +442,20 @@ pub(crate) fn requeue_interrupted_job_from_captured_intent_standalone_sync(
     Ok(requeued)
 }
 
-/// Repair the narrow race where an in-flight send returns after master
-/// recovery replaced its worker and the old agent cascade removed the job.
-/// The lifecycle fence prevents an ordinary missing job from being revived.
-pub(crate) fn restore_missing_job_after_lifecycle_replacement_sync(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LifecycleReplacementReconciliation {
+    pub lifecycle_replaced: bool,
+    pub job_restored: bool,
+}
+
+/// Fence an in-flight send that returns after master recovery replaced its
+/// worker. If the replacement cascade removed the job, restore it before the
+/// stale dispatcher can apply either success or failure effects.
+pub(crate) fn reconcile_stale_dispatch_after_lifecycle_replacement_sync(
     db: &Db,
     job: &crate::db::schema::Job,
     expected_lifecycle_id: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<LifecycleReplacementReconciliation, CcbdError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -472,9 +478,17 @@ pub(crate) fn restore_missing_job_after_lifecycle_replacement_sync(
         })?;
     if current_lifecycle_id.as_deref().is_none()
         || current_lifecycle_id.as_deref() == Some(expected_lifecycle_id)
-        || crate::db::jobs::query_job_sync(&tx, &job.id)?.is_some()
     {
-        return Ok(false);
+        return Ok(LifecycleReplacementReconciliation {
+            lifecycle_replaced: false,
+            job_restored: false,
+        });
+    }
+    if crate::db::jobs::query_job_sync(&tx, &job.id)?.is_some() {
+        return Ok(LifecycleReplacementReconciliation {
+            lifecycle_replaced: true,
+            job_restored: false,
+        });
     }
 
     let marker = crate::db::jobs::recovery_requeued_error_reason(0);
@@ -509,7 +523,10 @@ pub(crate) fn restore_missing_job_after_lifecycle_replacement_sync(
         current_lifecycle_id = ?current_lifecycle_id,
         "restored job removed by an overlapping worker lifecycle replacement"
     );
-    Ok(true)
+    Ok(LifecycleReplacementReconciliation {
+        lifecycle_replaced: true,
+        job_restored: true,
+    })
 }
 
 pub(crate) fn replace_killed_agent_and_requeue_job_sync(
@@ -802,10 +819,9 @@ mod tests {
     use super::{
         AgentRecoveryIntent, AgentSpawnSpec, CapturedInterruptedJob, RecoveryIntentAction,
         clear_recovery_backoff_sync, confirm_agent_stable_sync, persist_agent_spawn_spec_sync,
-        query_agent_spawn_spec_sync, record_recovery_failure_backoff_sync,
-        replace_killed_agent_and_requeue_job_sync,
+        query_agent_spawn_spec_sync, reconcile_stale_dispatch_after_lifecycle_replacement_sync,
+        record_recovery_failure_backoff_sync, replace_killed_agent_and_requeue_job_sync,
         requeue_interrupted_job_from_captured_intent_standalone_sync,
-        restore_missing_job_after_lifecycle_replacement_sync,
         set_replace_killed_agent_after_delete_test_hook, try_claim_agent_recovery_sync,
     };
     use crate::db::agents::insert_agent_sync;
@@ -1285,10 +1301,14 @@ mod tests {
             .unwrap();
             drop(conn);
 
-            assert!(
-                restore_missing_job_after_lifecycle_replacement_sync(db, &dispatched, "life-old",)
-                    .unwrap()
-            );
+            let first = reconcile_stale_dispatch_after_lifecycle_replacement_sync(
+                db,
+                &dispatched,
+                "life-old",
+            )
+            .unwrap();
+            assert!(first.lifecycle_replaced);
+            assert!(first.job_restored);
             let repaired = query_job_sync(&db.conn(), "job_repair").unwrap().unwrap();
             assert_eq!(repaired.status, "QUEUED");
             assert_eq!(
@@ -1299,10 +1319,14 @@ mod tests {
                 repaired.governance_binding_json,
                 dispatched.governance_binding_json
             );
-            assert!(
-                !restore_missing_job_after_lifecycle_replacement_sync(db, &dispatched, "life-old",)
-                    .unwrap()
-            );
+            let second = reconcile_stale_dispatch_after_lifecycle_replacement_sync(
+                db,
+                &dispatched,
+                "life-old",
+            )
+            .unwrap();
+            assert!(second.lifecycle_replaced);
+            assert!(!second.job_restored);
         });
     }
 

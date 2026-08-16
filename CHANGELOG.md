@@ -14,9 +14,10 @@ All notable changes to `ah` are documented here. The format is based on
 - Preserve AH's line-oriented paste/Enter delivery for the Bash adapter, whose
   submitted command history cannot be distinguished from an active composer
   using TUI-style terminal markers while the command is running.
-- Fence stale in-flight send compensation by worker lifecycle, restore a job
-  if an overlapping master-revive cascade removed it, and carry its complete
-  governance binding through recovery capture, migration, and requeue.
+- Fence every stale in-flight send result by worker lifecycle, restore a job if
+  an overlapping master-revive cascade removed it without cancelling the new
+  worker's monitor, and carry its complete governance binding through recovery
+  capture, migration, and requeue.
 - Make the Windows WSL2 provisioning entry point invocable by removing
   case-insensitive parameter/alias collisions, and route non-elevated optional
   feature probes through the existing UAC feature-enable child when `-Fix` is

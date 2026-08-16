@@ -308,17 +308,32 @@ async fn run_once_with_recovery_respawn(
         )
         .await;
 
+        let lifecycle_reconciliation =
+            crate::db::recovery::reconcile_stale_dispatch_after_lifecycle_replacement_sync(
+                &ctx.db,
+                &job,
+                &agent.lifecycle_id,
+            )?;
+        if lifecycle_reconciliation.lifecycle_replaced {
+            // The registry is keyed by stable agent ID, so cancelling here
+            // could cancel the replacement lifecycle's monitor. The revive
+            // path owns cleanup of the old lifecycle.
+            tracing::warn!(
+                agent_id = %agent.id,
+                job_id = %job.id,
+                expected_lifecycle_id = %agent.lifecycle_id,
+                pane_id = %pane_id.0,
+                job_restored = lifecycle_reconciliation.job_restored,
+                send_error = ?send_result.as_ref().err(),
+                "discarded stale dispatch result after worker lifecycle replacement"
+            );
+            wake_up();
+            continue;
+        }
+
         if let Err(err) = send_result {
             crate::completion::registry::cancel(&agent.id);
-            if stale_dispatch_failure_already_requeued(
-                ctx,
-                &agent.id,
-                &agent.lifecycle_id,
-                &job,
-                &pane_id,
-                &err,
-            )
-            .await?
+            if stale_dispatch_failure_already_requeued(ctx, &agent.id, &job, &pane_id, &err).await?
             {
                 did_work = true;
                 wake_up();
@@ -1465,27 +1480,12 @@ async fn mark_dispatch_io_failed(ctx: &Ctx, agent_id: &str, reason: &str) {
 async fn stale_dispatch_failure_already_requeued(
     ctx: &Ctx,
     agent_id: &str,
-    expected_lifecycle_id: &str,
     job: &db::schema::Job,
     pane_id: &TmuxPaneId,
     err: &CcbdError,
 ) -> Result<bool, CcbdError> {
     let current = db::jobs::query_job(ctx.db.clone(), job.id.clone()).await?;
     let Some(current) = current else {
-        if crate::db::recovery::restore_missing_job_after_lifecycle_replacement_sync(
-            &ctx.db,
-            job,
-            expected_lifecycle_id,
-        )? {
-            tracing::warn!(
-                agent_id,
-                job_id = %job.id,
-                pane_id = %pane_id.0,
-                error = %err,
-                "stale dispatch send failed after worker replacement; restored missing job and skipped failure compensation"
-            );
-            return Ok(true);
-        }
         tracing::warn!(
             agent_id,
             job_id = %job.id,
