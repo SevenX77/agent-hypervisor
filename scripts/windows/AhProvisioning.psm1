@@ -347,7 +347,7 @@ function Start-AhElevatedFeatureChild {
     try {
         $process = Start-Process `
             -FilePath $command.FilePath `
-            -ArgumentList $command.ArgumentList `
+            -ArgumentList $command.ArgumentLine `
             -Verb RunAs `
             -Wait `
             -PassThru
@@ -389,6 +389,30 @@ function Start-AhElevatedFeatureChild {
     }
 }
 
+function ConvertTo-AhWindowsProcessArgumentLine {
+    [CmdletBinding()]
+    param(
+        [string[]]$Arguments = @()
+    )
+
+    $parts = @()
+    foreach ($argument in @($Arguments)) {
+        $value = [string]$argument
+        if ($value.Contains('"') -or $value.Contains("`r") -or $value.Contains("`n")) {
+            throw 'Windows process arguments must not contain quotes or line breaks.'
+        }
+        if ($value.Length -eq 0) {
+            $parts += '""'
+        } elseif ($value -match '\s') {
+            $parts += '"' + $value + '"'
+        } else {
+            $parts += $value
+        }
+    }
+
+    return $parts -join ' '
+}
+
 function New-AhElevatedFeatureChildCommand {
     [CmdletBinding()]
     param(
@@ -420,6 +444,7 @@ function New-AhElevatedFeatureChildCommand {
     return [pscustomobject]@{
         FilePath = 'powershell.exe'
         ArgumentList = @($arguments)
+        ArgumentLine = ConvertTo-AhWindowsProcessArgumentLine -Arguments $arguments
     }
 }
 
@@ -1180,12 +1205,21 @@ function Invoke-AhPhase2Provisioning {
         }
 
         if ($disabled.Count -gt 0) {
+            $childDetail = "Elevated feature child returned $childStatus."
+            if ($null -ne $child -and ($child.PSObject.Properties.Name -contains 'error') -and -not [string]::IsNullOrWhiteSpace([string]$child.error)) {
+                $childDetail += " $([string]$child.error)"
+            } elseif ($null -ne $child -and ($child.PSObject.Properties.Name -contains 'stderr_tail')) {
+                $tail = @($child.stderr_tail | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -Last 3)
+                if ($tail.Count -gt 0) {
+                    $childDetail += " $($tail -join ' | ')"
+                }
+            }
             $step = New-AhSetupStep `
                 -Id 'windows:feature-enable' `
                 -Status 'fail' `
                 -FixAvailable $true `
                 -Privilege 'admin' `
-                -Detail "Elevated feature child returned $childStatus."
+                -Detail $childDetail
             return New-AhSetupEnvelope `
                 -OperationId $operationId `
                 -OverallStatus 'fail' `

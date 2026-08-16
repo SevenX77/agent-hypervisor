@@ -21,7 +21,8 @@ All notable changes to `ah` are documented here. The format is based on
 - Make the Windows WSL2 provisioning entry point invocable by removing
   case-insensitive parameter/alias collisions, and route non-elevated optional
   feature probes through the existing UAC feature-enable child when `-Fix` is
-  requested.
+  requested. Quote elevated child arguments for Windows paths containing spaces
+  and surface child DISM failures in the setup envelope.
 - Make the interactive prompt fixture redraw selection changes so causal
   action-observation confirmation is exercised against realistic terminal
   output.

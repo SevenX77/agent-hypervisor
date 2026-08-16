@@ -380,6 +380,16 @@ Describe 'Req1 Phase 2 P2-0 contract' {
         $command.ArgumentList | Should -Contain 'VirtualMachinePlatform'
     }
 
+    It 'quotes elevated child script and result paths that contain spaces' {
+        $command = New-AhElevatedFeatureChildCommand `
+            -FeatureNames @('Microsoft-Windows-Subsystem-Linux', 'VirtualMachinePlatform') `
+            -OperationId 'op-spaced-child' `
+            -ResultPath 'C:\Users\vibe coding\AppData\Local\ah\setup-elevated-result.op-spaced-child.json' `
+            -ChildScriptPath 'C:\repo with spaces\scripts\windows\enable-ah-wsl-features.ps1'
+
+        $command.ArgumentLine | Should -Be '-NoProfile -ExecutionPolicy Bypass -File "C:\repo with spaces\scripts\windows\enable-ah-wsl-features.ps1" -OperationId op-spaced-child -ResultPath "C:\Users\vibe coding\AppData\Local\ah\setup-elevated-result.op-spaced-child.json" -FeatureName Microsoft-Windows-Subsystem-Linux -FeatureName VirtualMachinePlatform'
+    }
+
     It 'parses WSL distro list output and selected distro version' {
         $distros = ConvertFrom-AhWslDistroList -Lines @(
             "  NAME      STATE           VERSION",
@@ -756,6 +766,7 @@ Describe 'Req1 Phase 2 P2-0 contract' {
 
         $envelope.overall_status | Should -Be 'fail'
         @($envelope.steps)[0].id | Should -Be 'windows:feature-enable'
+        @($envelope.steps)[0].detail | Should -Match 'dism failed'
     }
 
     It 'builds in-distro install command with AH_INSTALL_DIR and absolute ah verification' {
