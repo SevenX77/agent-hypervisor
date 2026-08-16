@@ -281,7 +281,7 @@ fn capture_recovery_intent_for_crash(
     let interrupted = conn
         .query_row(
             "SELECT id, status, request_id, prompt_text, cancel_requested, \
-                    requires_physical_evidence, requires_test_evidence \
+                    requires_physical_evidence, requires_test_evidence, governance_binding_json \
              FROM jobs \
              WHERE agent_id = ? AND status = 'DISPATCHED' \
              ORDER BY dispatched_at ASC, id ASC LIMIT 1",
@@ -295,6 +295,7 @@ fn capture_recovery_intent_for_crash(
                     row.get::<_, i64>(4)?,
                     row.get::<_, i64>(5)?,
                     row.get::<_, i64>(6)?,
+                    row.get::<_, Option<String>>(7)?,
                 ))
             },
         )
@@ -327,6 +328,7 @@ fn capture_recovery_intent_for_crash(
                 cancel_requested,
                 requires_physical_evidence,
                 requires_test_evidence,
+                governance_binding_json,
             )| {
                 (
                     Some(id.clone()),
@@ -338,6 +340,7 @@ fn capture_recovery_intent_for_crash(
                         cancel_requested: cancel_requested != 0,
                         requires_physical_evidence: requires_physical_evidence != 0,
                         requires_test_evidence: requires_test_evidence != 0,
+                        governance_binding_json,
                     }),
                 )
             },
@@ -611,6 +614,13 @@ mod tests {
                 let conn = db.conn();
                 seed_agent_with_state(&conn, STATE_BUSY);
                 seed_dispatched_job(&conn, "job_busy");
+                conn.execute(
+                    "UPDATE jobs
+                     SET governance_binding_json = '{\"binding_version\":1}'
+                     WHERE id = 'job_busy'",
+                    [],
+                )
+                .unwrap();
             }
 
             let changes = mark_agent_crashed_with_exit_sync(db, "a1", Some(137)).unwrap();
@@ -627,6 +637,10 @@ mod tests {
             let captured = intent.interrupted_job.as_ref().unwrap();
             assert_eq!(captured.id, "job_busy");
             assert_eq!(captured.prompt_text, "work\n");
+            assert_eq!(
+                captured.governance_binding_json.as_deref(),
+                Some("{\"binding_version\":1}")
+            );
             assert_eq!(intent.action, RecoveryIntentAction::Revive);
             assert_eq!(job.status, "FAILED");
         });

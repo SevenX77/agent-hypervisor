@@ -186,14 +186,16 @@ pub(crate) fn insert_recovered_queued_job_sync(
     cancel_requested: bool,
     requires_physical_evidence: bool,
     requires_test_evidence: bool,
+    governance_binding_json: Option<&str>,
     error_reason: &str,
 ) -> Result<String, CcbdError> {
     let result = conn.execute(
         "INSERT INTO jobs (
              id, agent_id, request_id, prompt_text, status, error_reason,
-             cancel_requested, requires_physical_evidence, requires_test_evidence
+             cancel_requested, requires_physical_evidence, requires_test_evidence,
+             governance_binding_json
          )
-         VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, ?)",
+         VALUES (?, ?, ?, ?, 'QUEUED', ?, ?, ?, ?, ?)",
         params![
             id,
             agent_id,
@@ -203,6 +205,7 @@ pub(crate) fn insert_recovered_queued_job_sync(
             i64::from(cancel_requested),
             i64::from(requires_physical_evidence),
             i64::from(requires_test_evidence),
+            governance_binding_json,
         ],
     );
 

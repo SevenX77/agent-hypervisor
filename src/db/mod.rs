@@ -376,6 +376,10 @@ fn migrate_agent_spawn_specs(conn: &Connection) -> Result<(), CcbdError> {
             "interrupted_job_requires_test_evidence",
             "ALTER TABLE agent_recovery_intents ADD COLUMN interrupted_job_requires_test_evidence INTEGER",
         ),
+        (
+            "interrupted_job_governance_binding_json",
+            "ALTER TABLE agent_recovery_intents ADD COLUMN interrupted_job_governance_binding_json TEXT",
+        ),
     ] {
         add_column_if_missing(conn, "agent_recovery_intents", column, statement)?;
     }
@@ -420,6 +424,7 @@ fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), 
           interrupted_job_cancel_requested INTEGER,
           interrupted_job_requires_physical_evidence INTEGER,
           interrupted_job_requires_test_evidence INTEGER,
+          interrupted_job_governance_binding_json TEXT,
           action TEXT NOT NULL CHECK(action IN ('REVIVE', 'REVIVE_IDLE', 'REAP_ONLY')),
           reason TEXT NOT NULL,
           consumed_at INTEGER,
@@ -431,6 +436,7 @@ fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), 
           interrupted_job_id, interrupted_job_status, interrupted_job_request_id,
           interrupted_job_prompt_text, interrupted_job_cancel_requested,
           interrupted_job_requires_physical_evidence, interrupted_job_requires_test_evidence,
+          interrupted_job_governance_binding_json,
           action, reason, consumed_at, created_at, updated_at
         )
         SELECT
@@ -438,6 +444,7 @@ fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), 
           interrupted_job_id, interrupted_job_status, interrupted_job_request_id,
           interrupted_job_prompt_text, interrupted_job_cancel_requested,
           interrupted_job_requires_physical_evidence, interrupted_job_requires_test_evidence,
+          interrupted_job_governance_binding_json,
           action, reason, consumed_at, created_at, updated_at
         FROM agent_recovery_intents_old;
         DROP TABLE agent_recovery_intents_old;

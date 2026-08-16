@@ -310,7 +310,15 @@ async fn run_once_with_recovery_respawn(
 
         if let Err(err) = send_result {
             crate::completion::registry::cancel(&agent.id);
-            if stale_dispatch_failure_already_requeued(ctx, &agent.id, &job, &pane_id, &err).await?
+            if stale_dispatch_failure_already_requeued(
+                ctx,
+                &agent.id,
+                &agent.lifecycle_id,
+                &job,
+                &pane_id,
+                &err,
+            )
+            .await?
             {
                 did_work = true;
                 wake_up();
@@ -1457,12 +1465,27 @@ async fn mark_dispatch_io_failed(ctx: &Ctx, agent_id: &str, reason: &str) {
 async fn stale_dispatch_failure_already_requeued(
     ctx: &Ctx,
     agent_id: &str,
+    expected_lifecycle_id: &str,
     job: &db::schema::Job,
     pane_id: &TmuxPaneId,
     err: &CcbdError,
 ) -> Result<bool, CcbdError> {
     let current = db::jobs::query_job(ctx.db.clone(), job.id.clone()).await?;
     let Some(current) = current else {
+        if crate::db::recovery::restore_missing_job_after_lifecycle_replacement_sync(
+            &ctx.db,
+            job,
+            expected_lifecycle_id,
+        )? {
+            tracing::warn!(
+                agent_id,
+                job_id = %job.id,
+                pane_id = %pane_id.0,
+                error = %err,
+                "stale dispatch send failed after worker replacement; restored missing job and skipped failure compensation"
+            );
+            return Ok(true);
+        }
         tracing::warn!(
             agent_id,
             job_id = %job.id,
@@ -1698,6 +1721,7 @@ mod tests {
                 cancel_requested: false,
                 requires_physical_evidence: false,
                 requires_test_evidence: false,
+                governance_binding_json: None,
             }),
             action,
             reason: "AGENT_UNEXPECTED_EXIT".to_string(),

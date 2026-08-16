@@ -66,6 +66,7 @@ CREATE TABLE IF NOT EXISTS agent_recovery_intents (
   interrupted_job_cancel_requested INTEGER,
   interrupted_job_requires_physical_evidence INTEGER,
   interrupted_job_requires_test_evidence INTEGER,
+  interrupted_job_governance_binding_json TEXT,
   action TEXT NOT NULL CHECK(action IN ('REVIVE', 'REVIVE_IDLE', 'REAP_ONLY')),
   reason TEXT NOT NULL,
   consumed_at INTEGER,
@@ -162,6 +163,7 @@ pub(crate) struct CapturedInterruptedJob {
     pub cancel_requested: bool,
     pub requires_physical_evidence: bool,
     pub requires_test_evidence: bool,
+    pub governance_binding_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -195,9 +197,9 @@ pub(crate) fn persist_agent_recovery_intent_sync(
             interrupted_job_id, interrupted_job_status, interrupted_job_request_id,
             interrupted_job_prompt_text, interrupted_job_cancel_requested,
             interrupted_job_requires_physical_evidence, interrupted_job_requires_test_evidence,
-            action, reason, consumed_at, updated_at
+            interrupted_job_governance_binding_json, action, reason, consumed_at, updated_at
          )
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, unixepoch())
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, unixepoch())
          ON CONFLICT(agent_id) DO UPDATE SET
             session_id = excluded.session_id,
             provider = excluded.provider,
@@ -210,6 +212,7 @@ pub(crate) fn persist_agent_recovery_intent_sync(
             interrupted_job_cancel_requested = excluded.interrupted_job_cancel_requested,
             interrupted_job_requires_physical_evidence = excluded.interrupted_job_requires_physical_evidence,
             interrupted_job_requires_test_evidence = excluded.interrupted_job_requires_test_evidence,
+            interrupted_job_governance_binding_json = excluded.interrupted_job_governance_binding_json,
             action = excluded.action,
             reason = excluded.reason,
             consumed_at = NULL,
@@ -239,6 +242,10 @@ pub(crate) fn persist_agent_recovery_intent_sync(
                 .interrupted_job
                 .as_ref()
                 .map(|job| i64::from(job.requires_test_evidence)),
+            intent
+                .interrupted_job
+                .as_ref()
+                .and_then(|job| job.governance_binding_json.as_deref()),
             intent.action.as_db_str(),
             intent.reason,
         ],
@@ -258,12 +265,12 @@ pub(crate) fn query_agent_recovery_intent_sync(
                 interrupted_job_id, interrupted_job_status, interrupted_job_request_id,
                 interrupted_job_prompt_text, interrupted_job_cancel_requested,
                 interrupted_job_requires_physical_evidence, interrupted_job_requires_test_evidence,
-                action, reason
+                interrupted_job_governance_binding_json, action, reason
          FROM agent_recovery_intents
          WHERE agent_id = ? AND consumed_at IS NULL",
         params![agent_id],
         |row| {
-            let action: String = row.get(12)?;
+            let action: String = row.get(13)?;
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
@@ -277,8 +284,9 @@ pub(crate) fn query_agent_recovery_intent_sync(
                 row.get::<_, Option<i64>>(9)?,
                 row.get::<_, Option<i64>>(10)?,
                 row.get::<_, Option<i64>>(11)?,
+                row.get::<_, Option<String>>(12)?,
                 action,
-                row.get::<_, String>(13)?,
+                row.get::<_, String>(14)?,
             ))
         },
     )
@@ -298,6 +306,7 @@ pub(crate) fn query_agent_recovery_intent_sync(
             interrupted_job_cancel_requested,
             interrupted_job_requires_physical_evidence,
             interrupted_job_requires_test_evidence,
+            interrupted_job_governance_binding_json,
             action,
             reason,
         )| {
@@ -312,6 +321,7 @@ pub(crate) fn query_agent_recovery_intent_sync(
                         != 0,
                     requires_test_evidence: interrupted_job_requires_test_evidence.unwrap_or(0)
                         != 0,
+                    governance_binding_json: interrupted_job_governance_binding_json,
                 }),
                 _ => None,
             };
@@ -399,6 +409,7 @@ pub(crate) fn requeue_interrupted_job_from_captured_intent_sync(
         captured_job.cancel_requested,
         captured_job.requires_physical_evidence,
         captured_job.requires_test_evidence,
+        captured_job.governance_binding_json.as_deref(),
         &marker,
     )?;
     if inserted_id != captured_job.id {
@@ -429,6 +440,76 @@ pub(crate) fn requeue_interrupted_job_from_captured_intent_standalone_sync(
         ))
     })?;
     Ok(requeued)
+}
+
+/// Repair the narrow race where an in-flight send returns after master
+/// recovery replaced its worker and the old agent cascade removed the job.
+/// The lifecycle fence prevents an ordinary missing job from being revived.
+pub(crate) fn restore_missing_job_after_lifecycle_replacement_sync(
+    db: &Db,
+    job: &crate::db::schema::Job,
+    expected_lifecycle_id: &str,
+) -> Result<bool, CcbdError> {
+    let mut conn = db.conn();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| {
+            CcbdError::DbConstraintViolation(format!(
+                "begin lifecycle-fenced missing job recovery: {err}"
+            ))
+        })?;
+    let current_lifecycle_id = tx
+        .query_row(
+            "SELECT lifecycle_id FROM agents WHERE id = ?",
+            params![job.agent_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|err| {
+            CcbdError::DbConstraintViolation(format!(
+                "query lifecycle for missing job recovery: {err}"
+            ))
+        })?;
+    if current_lifecycle_id.as_deref().is_none()
+        || current_lifecycle_id.as_deref() == Some(expected_lifecycle_id)
+        || crate::db::jobs::query_job_sync(&tx, &job.id)?.is_some()
+    {
+        return Ok(false);
+    }
+
+    let marker = crate::db::jobs::recovery_requeued_error_reason(0);
+    let restored_id = crate::db::jobs::insert_recovered_queued_job_sync(
+        &tx,
+        &job.id,
+        &job.agent_id,
+        job.request_id.as_deref(),
+        &job.prompt_text,
+        job.cancel_requested,
+        job.requires_physical_evidence,
+        job.requires_test_evidence,
+        job.governance_binding_json.as_deref(),
+        &marker,
+    )?;
+    if restored_id != job.id {
+        return Err(CcbdError::DbConstraintViolation(format!(
+            "lifecycle-fenced missing job restored as unexpected id: expected {}, got {}",
+            job.id, restored_id
+        )));
+    }
+    tx.commit().map_err(|err| {
+        CcbdError::DbConstraintViolation(format!(
+            "commit lifecycle-fenced missing job recovery: {err}"
+        ))
+    })?;
+    crate::db::jobs::notify_runtime_job_changed();
+    tracing::warn!(
+        agent_id = %job.agent_id,
+        job_id = %job.id,
+        expected_lifecycle_id,
+        current_lifecycle_id = ?current_lifecycle_id,
+        "restored job removed by an overlapping worker lifecycle replacement"
+    );
+    Ok(true)
 }
 
 pub(crate) fn replace_killed_agent_and_requeue_job_sync(
@@ -724,6 +805,7 @@ mod tests {
         query_agent_spawn_spec_sync, record_recovery_failure_backoff_sync,
         replace_killed_agent_and_requeue_job_sync,
         requeue_interrupted_job_from_captured_intent_standalone_sync,
+        restore_missing_job_after_lifecycle_replacement_sync,
         set_replace_killed_agent_after_delete_test_hook, try_claim_agent_recovery_sync,
     };
     use crate::db::agents::insert_agent_sync;
@@ -826,6 +908,7 @@ mod tests {
                 cancel_requested: false,
                 requires_physical_evidence: false,
                 requires_test_evidence: false,
+                governance_binding_json: None,
             }),
             action: RecoveryIntentAction::Revive,
             reason: "AGENT_UNEXPECTED_EXIT".to_string(),
@@ -854,6 +937,7 @@ mod tests {
                 "interrupted_job_cancel_requested",
                 "interrupted_job_requires_physical_evidence",
                 "interrupted_job_requires_test_evidence",
+                "interrupted_job_governance_binding_json",
                 "action",
                 "reason",
                 "consumed_at",
@@ -1087,6 +1171,7 @@ mod tests {
             cancel_requested: true,
             requires_physical_evidence: true,
             requires_test_evidence: false,
+            governance_binding_json: Some("{\"binding_version\":1}".to_string()),
         });
         let spec = sample_spec("a_atomic", "codex");
         let observer = db.fresh_conn().unwrap();
@@ -1137,6 +1222,10 @@ mod tests {
         assert!(job.cancel_requested);
         assert!(job.requires_physical_evidence);
         assert!(!job.requires_test_evidence);
+        assert_eq!(
+            job.governance_binding_json.as_deref(),
+            Some("{\"binding_version\":1}")
+        );
         assert_eq!(job.error_reason.as_deref(), Some("RECOVERY_REQUEUED:0"));
 
         let agent = crate::db::agents::query_agent_sync(&db.conn(), "a_atomic")
@@ -1148,6 +1237,73 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(stored.config_hash, "hash-atomic");
+    }
+
+    #[test]
+    fn lifecycle_replacement_repairs_a_missing_inflight_job_with_its_binding() {
+        with_db(|db| {
+            let conn = db.conn();
+            insert_session_sync(&conn, "s1", "p1", "/tmp/lifecycle-job-repair").unwrap();
+            crate::db::agents::insert_agent_with_lifecycle_id_sync(
+                &conn,
+                "a_repair",
+                "s1",
+                "bash",
+                "life-old",
+                "WAITING_FOR_ACK",
+                Some(111),
+            )
+            .unwrap();
+            insert_job_sync(
+                &conn,
+                "job_repair",
+                "a_repair",
+                Some("req-repair"),
+                "sleep 30\n",
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE jobs
+                 SET status = 'DISPATCHED',
+                     governance_binding_json = '{\"binding_version\":1}'
+                 WHERE id = 'job_repair'",
+                [],
+            )
+            .unwrap();
+            let dispatched = query_job_sync(&conn, "job_repair").unwrap().unwrap();
+            conn.execute("DELETE FROM agents WHERE id = 'a_repair'", [])
+                .unwrap();
+            crate::db::agents::insert_agent_with_lifecycle_id_sync(
+                &conn,
+                "a_repair",
+                "s1",
+                "bash",
+                "life-new",
+                "IDLE",
+                Some(222),
+            )
+            .unwrap();
+            drop(conn);
+
+            assert!(
+                restore_missing_job_after_lifecycle_replacement_sync(db, &dispatched, "life-old",)
+                    .unwrap()
+            );
+            let repaired = query_job_sync(&db.conn(), "job_repair").unwrap().unwrap();
+            assert_eq!(repaired.status, "QUEUED");
+            assert_eq!(
+                repaired.error_reason.as_deref(),
+                Some("RECOVERY_REQUEUED:0")
+            );
+            assert_eq!(
+                repaired.governance_binding_json,
+                dispatched.governance_binding_json
+            );
+            assert!(
+                !restore_missing_job_after_lifecycle_replacement_sync(db, &dispatched, "life-old",)
+                    .unwrap()
+            );
+        });
     }
 
     #[test]
