@@ -362,27 +362,6 @@ fn mark_agent_idle_matched_outcome_sync_inner(
     let dispatched_job_reply = if let Some(job) =
         query_dispatched_job_for_agent_sync(&tx, agent_id)?
     {
-        let terminal_pane_is_authoritative =
-            crate::provider::adapter(&provider).is_some_and(|adapter| {
-                adapter
-                    .observation_spec()
-                    .uses_terminal_pane_for_turn_state()
-            });
-        if !terminal_pane_is_authoritative {
-            tracing::trace!(
-                agent_id,
-                provider,
-                job_id = %job.id,
-                "terminal marker swallowed: provider Adapter requires semantic turn evidence"
-            );
-            tx.commit()
-                .map_err(|err| map_db_error("commit semantic marker refusal", err))?;
-            return Ok(MarkerMatchedSyncOutcome {
-                changes: 0,
-                denial_message: None,
-                deferred_nudge: None,
-            });
-        }
         if crate::completion::registry::contains(agent_id) {
             tracing::trace!(
                 agent_id,
@@ -404,6 +383,27 @@ fn mark_agent_idle_matched_outcome_sync_inner(
             return Ok(MarkerMatchedSyncOutcome {
                 changes: 0,
                 denial_message: Some(denial_message),
+                deferred_nudge: None,
+            });
+        }
+        let terminal_pane_is_authoritative =
+            crate::provider::adapter(&provider).is_some_and(|adapter| {
+                adapter
+                    .observation_spec()
+                    .uses_terminal_pane_for_turn_state()
+            });
+        if !terminal_pane_is_authoritative {
+            tracing::trace!(
+                agent_id,
+                provider,
+                job_id = %job.id,
+                "terminal marker swallowed: provider Adapter requires semantic turn evidence"
+            );
+            tx.commit()
+                .map_err(|err| map_db_error("commit semantic marker refusal", err))?;
+            return Ok(MarkerMatchedSyncOutcome {
+                changes: 0,
+                denial_message: None,
                 deferred_nudge: None,
             });
         }
@@ -3244,6 +3244,42 @@ mod tests {
                 .any(|(agent, message)| agent == agent_id && message.contains("SYSTEM DENY")),
             "hook denial must be sent through the pane nudge path: {nudges:?}"
         );
+    }
+
+    #[test]
+    fn marker_evidence_denial_precedes_provider_authority_refusal() {
+        with_test_db_handle(|db| {
+            let agent_id = "a_marker_denial_order";
+            let job_id = "job_marker_denial_order";
+            seed_dispatched_agent_job(db, agent_id, STATE_BUSY, job_id);
+            db.conn()
+                .execute(
+                    "UPDATE agents SET provider = 'codex' WHERE id = ?1",
+                    [agent_id],
+                )
+                .unwrap();
+            set_job_evidence_requirements_sync(&db.conn(), job_id, true, false).unwrap();
+
+            let outcome = super::mark_agent_idle_matched_outcome_sync(db, agent_id).unwrap();
+
+            assert_eq!(outcome.changes, 0);
+            assert!(
+                outcome
+                    .denial_message
+                    .as_deref()
+                    .is_some_and(|message| message.contains("SYSTEM DENY"))
+            );
+            let denial_count: i64 = db
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM events
+                     WHERE agent_id = ?1 AND event_type = 'evidence_denied'",
+                    [agent_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(denial_count, 1);
+        });
     }
 
     #[test]
