@@ -241,6 +241,10 @@ provider turn state, Job completion, upstream acceptance, and Effect proof stay
 separate, so a stale callback cannot complete a new attempt and a displayed
 `BUSY` string cannot hide a dead provider process.
 
+Natural-language provider seats receive the binding as execution context. The
+`bash` provider stores and returns the same binding but executes only the
+caller-supplied command; governance JSON is never pasted as shell source.
+
 See [Work Execution architecture](docs/work-execution.md) for the ownership and
 state invariants, and [Upgrading to 1.15](docs/upgrade-1.15.md) for compatibility
 details.

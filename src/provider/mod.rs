@@ -22,7 +22,7 @@ pub mod manifest;
 pub use contract::{
     AuthChallengeKind, AuthStoreSpec, HookStatusUse, ObservationSourceSpec, ProviderAdapter,
     ProviderAuthSpec, ProviderAuthStoreSpec, ProviderHookSpec, ProviderLoginDriverSpec,
-    ProviderObservationSpec, ProviderTerminalControlSpec,
+    ProviderObservationSpec, ProviderPromptKind, ProviderTerminalControlSpec,
 };
 
 use antigravity::ANTIGRAVITY;
@@ -51,7 +51,7 @@ pub fn canonical_name(raw: &str) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PROVIDER_NAMES, adapter, adapters};
+    use super::{PROVIDER_NAMES, ProviderPromptKind, adapter, adapters};
     use crate::runtime_observation::{
         EvidenceSource, ProviderObservation, ProviderObservationKind, ProviderOccupancy,
         ProviderProcessState, ProviderStatusInput, ProviderTurnState, reduce_provider_status,
@@ -102,6 +102,21 @@ mod tests {
             Some("antigravity")
         );
         assert!(adapter("Gemini").is_none());
+    }
+
+    #[test]
+    fn only_the_shell_adapter_treats_prompts_as_executable_source() {
+        assert_eq!(
+            adapter("bash").unwrap().prompt_kind(),
+            ProviderPromptKind::ShellCommand
+        );
+        for provider in ["codex", "claude", "antigravity"] {
+            assert_eq!(
+                adapter(provider).unwrap().prompt_kind(),
+                ProviderPromptKind::NaturalLanguage,
+                "{provider}"
+            );
+        }
     }
 
     #[test]

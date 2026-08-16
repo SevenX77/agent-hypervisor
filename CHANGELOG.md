@@ -32,6 +32,11 @@ All notable changes to `ah` are documented here. The format is based on
 ### Fixed
 - Delayed hooks and transcript callbacks are fenced to the lifecycle and turn
   they observed, preventing stale completion from mutating a replacement run.
+- Governance bindings stay durable and receipt-visible for the `bash` provider
+  without being pasted into its composer as executable shell source.
+- The bundled dev-programming scenario now validates against the release
+  config contract, and CI exercises a real two-seat Bash/tmux handoff with
+  distinct execution bindings and fenced turn observations.
 - Cancellation and prompt input use causal action-observation confirmation;
   timeouts remain unsettled instead of being reported as successful effects.
 - Upgrading a 1.14 database now adds and backfills lifecycle identity plus the

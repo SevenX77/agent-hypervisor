@@ -3,14 +3,15 @@
 # 默认拓扑复刻你的项目编程栈:master=claude,a1/a2=codex,a3=antigravity,a4=claude
 version = "1"
 
+[providers.claude]
+shared_credentials_dir = "~/.claude"
+
 [master]
 cmd = "claude"
 enabled = true
 
 [completion]
 hook_push_enabled = true
-hook_push_events = ["stop"]
-hook_push_providers = ["claude", "codex", "antigravity"]
 
 [agents.a1]
 provider = "codex"

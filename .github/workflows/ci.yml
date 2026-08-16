@@ -45,6 +45,11 @@ jobs:
       - name: Test
         run: cargo test --all-targets
 
+      - name: Exercise scenario-package multi-agent handoff
+        env:
+          CCB_TEST_SKIP_REAL_PROVIDER: "0"
+        run: cargo test --test work_execution_real_bash -- --test-threads=1 --nocapture
+
       - name: Check tmux orphan guard
         run: cargo test --test mvp10_acceptance test_no_orphan_tmux_after_test_suite -- --ignored --nocapture
 

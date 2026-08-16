@@ -1,6 +1,6 @@
 use super::{
     ObservationSourceSpec, ProviderAdapter, ProviderAuthSpec, ProviderLoginDriverSpec,
-    ProviderObservationSpec, ProviderTerminalControlSpec,
+    ProviderObservationSpec, ProviderPromptKind, ProviderTerminalControlSpec,
 };
 use crate::provider::manifest::{
     CompletionSignalKind, ENV_PASSTHROUGH, IdleDetectionMode, InitProbeKind, ProviderCapabilities,
@@ -86,5 +86,9 @@ impl ProviderAdapter for BashAdapter {
 
     fn terminal_control_spec(&self) -> &'static ProviderTerminalControlSpec {
         &TERMINAL_CONTROL_SPEC
+    }
+
+    fn prompt_kind(&self) -> ProviderPromptKind {
+        ProviderPromptKind::ShellCommand
     }
 }

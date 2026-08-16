@@ -86,6 +86,9 @@ this exact schema:
 Standalone human-guided use does not require a binding. In managed-team mode,
 the coordinator injects `GAS_TEAM_BINDING_PATH`; an agent is not allowed to
 mint its own request ID or binding, and `ask` must wait for a terminal receipt.
+For natural-language agent CLIs, AH also includes the binding in the delivered
+context. The `bash` adapter keeps it in durable Job/receipt state only, so
+governance JSON can never be interpreted as shell source.
 
 ## Compatibility boundary
 

@@ -235,6 +235,16 @@ pub struct ProviderTerminalControlSpec {
     pub collapsed_paste_markers: &'static [&'static str],
 }
 
+/// The semantic shape accepted by a provider's interactive composer.
+///
+/// Governance metadata may be rendered as natural-language context for agent
+/// CLIs, but must never be pasted into a shell as executable source text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderPromptKind {
+    NaturalLanguage,
+    ShellCommand,
+}
+
 impl ProviderObservationSpec {
     pub fn hook(&self, event: &str) -> Option<&ProviderHookSpec> {
         self.hooks.iter().find(|hook| hook.event == event)
@@ -274,6 +284,10 @@ pub trait ProviderAdapter: Sync {
     fn observation_spec(&self) -> &'static ProviderObservationSpec;
 
     fn terminal_control_spec(&self) -> &'static ProviderTerminalControlSpec;
+
+    fn prompt_kind(&self) -> ProviderPromptKind {
+        ProviderPromptKind::NaturalLanguage
+    }
 
     fn recovery_args(&self, _sandbox_home: &Path) -> Vec<String> {
         Vec::new()

@@ -1,3 +1,4 @@
+use ah::cli::config::{load_project_config, validate_project_config};
 use ah::home_materialization::{
     HomeLayoutRole, compose_rules_with_layers,
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
@@ -26,6 +27,7 @@ impl EnvGuard {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let home = tempfile::tempdir().unwrap();
         let cache = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
         let old_home = std::env::var_os("HOME");
         let old_cache = std::env::var_os("XDG_CACHE_HOME");
         let old_user = std::env::var_os("USER");
@@ -136,7 +138,14 @@ fn dev_programming_scenario_materializes_all_slots_to_provider_rules_targets() {
     let project = tempfile::tempdir().unwrap();
     copy_dir_all(&scenario_root().join(".ah"), &project.path().join(".ah"));
 
-    let config: toml::Value = std::fs::read_to_string(scenario_root().join("ah.toml"))
+    let config_path = scenario_root().join("ah.toml");
+    let loaded = load_project_config(&config_path).unwrap();
+    assert!(
+        validate_project_config(&loaded).is_empty(),
+        "the packaged scenario must obey the release config contract"
+    );
+    assert!(loaded.completion.hook_push_enabled);
+    let config: toml::Value = std::fs::read_to_string(config_path)
         .unwrap()
         .parse()
         .unwrap();
@@ -237,4 +246,27 @@ fn dev_programming_codex_slots_are_byte_identical() {
     let a1 = std::fs::read(rules_file("a1")).unwrap();
     let a2 = std::fs::read(rules_file("a2")).unwrap();
     assert_eq!(a1, a2);
+}
+
+#[test]
+fn published_scenario_and_test_fixture_stay_byte_identical() {
+    let published =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scenarios/dev-programming");
+    for relative in [
+        "ah.toml",
+        "README.md",
+        ".ah/rules/master.md",
+        ".ah/rules/a1.md",
+        ".ah/rules/a2.md",
+        ".ah/rules/a3.md",
+        ".ah/rules/a4.md",
+    ] {
+        let normalize =
+            |path: PathBuf| std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+        assert_eq!(
+            normalize(published.join(relative)),
+            normalize(scenario_root().join(relative)),
+            "published scenario drifted from its exercised fixture: {relative}"
+        );
+    }
 }

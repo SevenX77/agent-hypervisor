@@ -18,12 +18,6 @@ pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     let supplied_prompt = required_str(&params, "text")?;
     let binding = params.get("governance_binding").cloned();
     let binding_json = binding.map(validate_governance_binding).transpose()?;
-    let prompt_text = match binding_json.as_deref() {
-        Some(binding) => format!(
-            "System-owned execution identity and scope. Preserve every identity, stay inside the declared physical and semantic scope, and do not treat completion as acceptance or Effect proof.\n{binding}\n\nAssigned work:\n{supplied_prompt}"
-        ),
-        None => supplied_prompt.to_string(),
-    };
     let mut request_id = params
         .get("request_id")
         .and_then(Value::as_str)
@@ -37,6 +31,8 @@ pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
             current_state: agent.state,
         });
     }
+    let prompt_text =
+        compose_provider_prompt(&agent.provider, supplied_prompt, binding_json.as_deref());
 
     let job_id = format!("job_{}", Uuid::new_v4());
     if request_id.is_none() && binding_json.is_some() {
@@ -57,6 +53,21 @@ pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
         "job_id": returned_job_id,
         "status": "QUEUED",
     }))
+}
+
+fn compose_provider_prompt(provider: &str, supplied_prompt: &str, binding: Option<&str>) -> String {
+    match (
+        binding,
+        crate::provider::adapter(provider).map(crate::provider::ProviderAdapter::prompt_kind),
+    ) {
+        (Some(_), Some(crate::provider::ProviderPromptKind::ShellCommand)) => {
+            supplied_prompt.to_string()
+        }
+        (Some(binding), _) => format!(
+            "System-owned execution identity and scope. Preserve every identity, stay inside the declared physical and semantic scope, and do not treat completion as acceptance or Effect proof.\n{binding}\n\nAssigned work:\n{supplied_prompt}"
+        ),
+        (None, _) => supplied_prompt.to_string(),
+    }
 }
 
 fn validate_governance_binding(value: Value) -> Result<String, CcbdError> {
@@ -303,6 +314,21 @@ mod tests {
         binding.as_object_mut().unwrap().remove("context_id");
         let error = validate_governance_binding(binding).unwrap_err();
         assert!(error.to_string().contains("context_id"));
+    }
+
+    #[test]
+    fn governance_binding_is_not_executed_as_part_of_a_bash_command() {
+        let canonical = validate_governance_binding(valid_binding()).unwrap();
+        let command = "printf 'safe-command\\n'\n";
+        assert_eq!(
+            compose_provider_prompt("bash", command, Some(&canonical)),
+            command
+        );
+
+        let natural_language = compose_provider_prompt("codex", "do the work", Some(&canonical));
+        assert!(natural_language.contains("System-owned execution identity and scope"));
+        assert!(natural_language.contains(&canonical));
+        assert!(natural_language.ends_with("Assigned work:\ndo the work"));
     }
 
     #[test]
