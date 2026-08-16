@@ -265,6 +265,52 @@ Describe 'Req1 Phase 2 P2-0 contract' {
         @($envelope.steps)[0].status | Should -Be 'permission_denied'
     }
 
+    It 'reports feature probe elevation requirements without an unknown-state failure' {
+        Mock -ModuleName AhProvisioning Get-AhWindowsOptionalFeature {
+            [pscustomobject]@{ State = 'AccessDenied' }
+        }
+        Mock -ModuleName AhProvisioning Start-AhElevatedFeatureChild {
+            throw 'check mode must not request elevation'
+        }
+
+        $envelope = Invoke-AhPhase2Provisioning -Check -SelectedDistro 'Ubuntu'
+
+        $envelope.overall_status | Should -Be 'permission_denied'
+        @($envelope.steps).Count | Should -Be 2
+        @($envelope.steps)[0].status | Should -Be 'permission_denied'
+        @($envelope.steps)[1].status | Should -Be 'permission_denied'
+        Should -Invoke -ModuleName AhProvisioning Start-AhElevatedFeatureChild -Times 0 -Exactly
+    }
+
+    It 'requests the existing elevated feature child when fix cannot probe without elevation' {
+        Mock -ModuleName AhProvisioning Get-AhWindowsOptionalFeature {
+            [pscustomobject]@{ State = 'AccessDenied' }
+        }
+        Mock -ModuleName AhProvisioning Start-AhElevatedFeatureChild {
+            [pscustomobject]@{
+                status = 'needs_windows_reboot'
+                features = @()
+            }
+        }
+
+        $temp = Join-Path ([System.IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString())
+        try {
+            $envelope = Invoke-AhPhase2Provisioning `
+                -Fix `
+                -SelectedDistro 'Ubuntu' `
+                -StatePath (Join-Path $temp 'setup-state.json')
+
+            $envelope.overall_status | Should -Be 'needs_windows_reboot'
+            Should -Invoke -ModuleName AhProvisioning Start-AhElevatedFeatureChild -Times 1 -Exactly -ParameterFilter {
+                $FeatureNames.Count -eq 2 -and
+                    $FeatureNames -contains 'Microsoft-Windows-Subsystem-Linux' -and
+                    $FeatureNames -contains 'VirtualMachinePlatform'
+            }
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'builds the exact elevated child command for disabled features with fix' {
         Mock -ModuleName AhProvisioning Get-AhWindowsOptionalFeature {
             [pscustomobject]@{ State = 'Disabled' }
@@ -1048,6 +1094,29 @@ Describe 'Req1 Phase 2 P2-0 contract' {
         $standalone | Should -Match 'Invoke-AhPhase2Provisioning'
         $module | Should -Match 'Invoke-AhPhase2Provisioning'
         $featureChild | Should -Match 'Invoke-AhDismEnableFeature'
+    }
+
+    It 'does not declare aliases that collide with case-insensitive PowerShell parameter names' {
+        $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..' '..')).Path
+        $entrypointPath = Join-Path $RepoRoot 'scripts/windows/provision-ah-wsl.ps1'
+        $tokens = $null
+        $parseErrors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile(
+            $entrypointPath,
+            [ref]$tokens,
+            [ref]$parseErrors
+        )
+
+        @($parseErrors).Count | Should -Be 0
+        foreach ($parameter in @($ast.ParamBlock.Parameters)) {
+            $parameterName = $parameter.Name.VariablePath.UserPath
+            $aliases = @(
+                $parameter.Attributes |
+                    Where-Object { $_.TypeName.Name -eq 'Alias' } |
+                    ForEach-Object { $_.PositionalArguments.SafeGetValue() }
+            )
+            @($aliases | Where-Object { $_ -ieq $parameterName }).Count | Should -Be 0
+        }
     }
 
     It 'configures cargo-dist for Linux shell installer and Windows provisioning release assets' {

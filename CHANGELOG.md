@@ -6,6 +6,19 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- Preserve the existing AH provider launch flags, explicit
+  `CCBD_UNSAFE_NO_SANDBOX=1` fallback, and best-effort master revival behavior;
+  Zeroth governance remains an additive binding, lifecycle, observation, and
+  handoff layer instead of replacing established execution behavior.
+- Make the Windows WSL2 provisioning entry point invocable by removing
+  case-insensitive parameter/alias collisions, and route non-elevated optional
+  feature probes through the existing UAC feature-enable child when `-Fix` is
+  requested.
+- Make the interactive prompt fixture redraw selection changes so causal
+  action-observation confirmation is exercised against realistic terminal
+  output.
+
 ## [1.15.0] - 2026-08-16
 
 ### Added

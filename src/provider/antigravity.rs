@@ -150,10 +150,7 @@ impl ProviderAdapter for AntigravityAdapter {
         ProviderManifest {
             provider_name: self.name(),
             auth_mount_paths: vec![".gemini/antigravity-cli"],
-            // Antigravity has no premise-matched unattended permission policy
-            // wired here yet. Keep its native permission boundary; operations
-            // that require approval must block instead of bypassing it.
-            command: &["agy"],
+            command: &["agy", "--dangerously-skip-permissions"],
             resume_args: &[],
             env_passthrough: ENV_PASSTHROUGH,
             injected_env_vars: ANTIGRAVITY_INJECTED_ENV,

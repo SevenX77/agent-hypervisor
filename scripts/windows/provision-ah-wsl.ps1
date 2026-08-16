@@ -3,31 +3,22 @@
 
 [CmdletBinding()]
 param(
-    [Alias('check')]
     [switch]$Check,
 
-    [Alias('fix')]
     [switch]$Fix,
 
-    [Alias('yes')]
     [switch]$Yes,
 
-    [Alias('json')]
     [switch]$Json,
 
-    [Alias('resume')]
     [switch]$Resume,
 
-    [Alias('dry-run')]
     [switch]$DryRun,
 
-    [Alias('distro')]
     [string]$Distro = 'Ubuntu',
 
-    [Alias('ah-install-url')]
     [string]$AhInstallUrl,
 
-    [Alias('expected-ah-version')]
     [string]$ExpectedAhVersion = $env:AH_SETUP_EXPECTED_VERSION,
 
     [string]$StatePath

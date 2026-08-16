@@ -29,6 +29,18 @@ render_codex_update_menu() {
 EOF
 }
 
+render_codex_update_menu_selected() {
+  printf '\033[2J\033[H'
+  printf '✨ Update available! 0.135.0 -> 0.139.0\n'
+  if (( answer == 1 )); then printf '› '; else printf '  '; fi
+  printf '1. Update now (runs `npm install -g @openai/codex`)\n'
+  if (( answer == 2 )); then printf '› '; else printf '  '; fi
+  printf '2. Skip\n'
+  if (( answer == 3 )); then printf '› '; else printf '  '; fi
+  printf '3. Skip until next version\n'
+  printf '  Press enter to continue\n'
+}
+
 read_codex_update_selection() {
   answer=1
   local ch=""
@@ -48,10 +60,12 @@ read_codex_update_selection() {
         if [[ "$seq1$seq2" == "[B" || "$seq1$seq2" == "OB" ]]; then
           if (( answer < 3 )); then
             answer=$((answer + 1))
+            render_codex_update_menu_selected
           fi
         elif [[ "$seq1$seq2" == "[A" || "$seq1$seq2" == "OA" ]]; then
           if (( answer > 1 )); then
             answer=$((answer - 1))
+            render_codex_update_menu_selected
           fi
         fi
         ;;

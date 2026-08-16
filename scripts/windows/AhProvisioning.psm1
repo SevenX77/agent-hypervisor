@@ -218,7 +218,26 @@ function Get-AhWindowsOptionalFeature {
         [string]$Name
     )
 
-    $feature = Get-WindowsOptionalFeature -Online -FeatureName $Name
+    try {
+        $feature = Get-WindowsOptionalFeature `
+            -Online `
+            -FeatureName $Name `
+            -ErrorAction Stop
+    } catch [System.UnauthorizedAccessException] {
+        return [pscustomobject]@{
+            Name = $Name
+            State = 'AccessDenied'
+        }
+    } catch {
+        if ($_.Exception.Message -match '(?i)elevat|access.*denied|permission|拒绝|提升') {
+            return [pscustomobject]@{
+                Name = $Name
+                State = 'AccessDenied'
+            }
+        }
+        throw
+    }
+
     return [pscustomobject]@{
         Name = $Name
         State = [string]$feature.State
@@ -1012,7 +1031,25 @@ function Invoke-AhPhase2Provisioning {
             -StatePath $StatePath
     }
 
-    $unknown = @($featureStatuses | Where-Object { $_.State -ne 'Enabled' -and $_.State -ne 'Disabled' -and $_.State -ne 'EnablePending' })
+    $accessDenied = @($featureStatuses | Where-Object { $_.State -eq 'AccessDenied' })
+    if ($accessDenied.Count -gt 0 -and -not $Fix) {
+        $steps = foreach ($item in $accessDenied) {
+            New-AhSetupStep `
+                -Id "windows:feature:$($item.Name)" `
+                -Status 'permission_denied' `
+                -FixAvailable $true `
+                -Privilege 'admin' `
+                -Detail 'Windows requires elevation to inspect this optional feature.' `
+                -Suggestion 'Rerun this helper with -Fix; it will request UAC elevation for the feature operation.'
+        }
+        return New-AhSetupEnvelope `
+            -OperationId $operationId `
+            -OverallStatus 'permission_denied' `
+            -SelectedDistro $SelectedDistro `
+            -Steps @($steps)
+    }
+
+    $unknown = @($featureStatuses | Where-Object { $_.State -ne 'Enabled' -and $_.State -ne 'Disabled' -and $_.State -ne 'EnablePending' -and $_.State -ne 'AccessDenied' })
     if ($unknown.Count -gt 0) {
         $steps = foreach ($item in $unknown) {
             New-AhSetupStep `

@@ -605,6 +605,15 @@ mod tests {
         let ctx = test_ctx();
         seed_agent(&ctx, "ag_notify_push_wins", "BUSY");
         seed_dispatched_job(&ctx, "ag_notify_push_wins", "job_notify_push_wins");
+        let observations_before_hook: i64 = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id = 'ag_notify_push_wins'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         let lifecycle_id: String = ctx
             .db
             .conn()
@@ -657,7 +666,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(observation_count, 2);
+        assert_eq!(observation_count - observations_before_hook, 2);
         assert!(
             !crate::completion::registry::contains("ag_notify_push_wins"),
             "push success must cancel the pull monitor registry entry"
@@ -693,6 +702,15 @@ mod tests {
         let ctx = test_ctx();
         seed_agent(&ctx, "ag_notify_stale", "BUSY");
         seed_dispatched_job(&ctx, "ag_notify_stale", "job_notify_stale");
+        let observations_before_stale_hook: i64 = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id = 'ag_notify_stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
 
         let response = dispatch(
             &json!({
@@ -739,7 +757,7 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(observation_count, 0);
+        assert_eq!(observation_count, observations_before_stale_hook);
     }
 
     #[tokio::test]

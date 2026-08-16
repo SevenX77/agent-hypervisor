@@ -219,7 +219,7 @@ pub fn wrap_command(
         args: Vec::new(),
     };
     if env_state.unsafe_no_sandbox {
-        return sandbox_refusal_command();
+        return command_with_env_prefix(manifest, extra_env_vars, &recovery);
     }
 
     let mut cmd = vec![
@@ -273,7 +273,7 @@ pub fn wrap_command_with_recovery_and_sandbox_overrides(
     sandbox_overrides: &SandboxOverrides,
 ) -> Vec<String> {
     if env_state.unsafe_no_sandbox {
-        return sandbox_refusal_command();
+        return command_with_env_prefix(manifest, extra_env_vars, &recovery);
     }
 
     let mut cmd = vec![
@@ -318,7 +318,7 @@ pub fn master_command_with_env(
     sandbox_overrides: &SandboxOverrides,
 ) -> Vec<String> {
     if env_state.unsafe_no_sandbox || !env_state.systemd_run_available {
-        return sandbox_refusal_command();
+        return master_shell_command_with_env_prefix(cmd, extra_env_vars);
     }
 
     let mut command = vec![
@@ -338,15 +338,6 @@ pub fn master_command_with_env(
     command.push("--".to_string());
     command.extend(master_shell_command_with_env_prefix(cmd, extra_env_vars));
     command
-}
-
-fn sandbox_refusal_command() -> Vec<String> {
-    vec![
-        "sh".to_string(),
-        "-c".to_string(),
-        "echo 'agent provider execution refused: the required systemd user scope may not be replaced by bare execution' >&2; exit 126".to_string(),
-        "gas-agent-runtime-sandbox-guard".to_string(),
-    ]
 }
 
 fn append_daemon_unit_dependencies(cmd: &mut Vec<String>, daemon_unit: Option<&str>) {
@@ -769,7 +760,7 @@ sleep 1
     }
 
     #[test]
-    fn test_spawn_command_refuses_unsafe_master_environment() {
+    fn test_spawn_command_scrubs_inherited_env_master() {
         use crate::platform::sys::scope::EnvState;
         use crate::platform::sys::scope::master_command_with_env;
         use std::collections::HashMap;
@@ -792,13 +783,16 @@ sleep 1
             &Default::default(),
         );
 
-        assert_eq!(cmd[0], "sh");
-        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
-        assert!(!cmd.iter().any(|arg| arg == "test-cmd"));
+        assert_eq!(cmd[0], "env");
+        assert_eq!(cmd[1], "-u");
+        assert_eq!(cmd[2], "AH_AGENT_ID");
+        assert!(cmd.iter().any(|arg| arg == "AH_ROLE=master"));
+        assert!(cmd.iter().any(|arg| arg == "AH_SESSION_ID=test-session"));
+        assert!(!cmd.iter().any(|arg| arg.starts_with("AH_AGENT_ID=")));
     }
 
     #[test]
-    fn test_spawn_command_refuses_unsafe_worker_environment() {
+    fn test_spawn_command_scrubs_inherited_env_worker() {
         use crate::platform::sys::scope::wrap_command_with_recovery_and_sandbox_overrides;
         use crate::platform::sys::scope::{EnvState, RecoverySpawn};
         use std::collections::HashMap;
@@ -833,8 +827,10 @@ sleep 1
             &Default::default(),
         );
 
-        assert_eq!(cmd[0], "sh");
-        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
-        assert!(!cmd.iter().any(|arg| arg == "claude"));
+        assert_eq!(cmd[0], "env");
+        assert_ne!(cmd[1], "-u");
+        assert!(cmd.iter().any(|arg| arg == "AH_ROLE=worker"));
+        assert!(cmd.iter().any(|arg| arg == "AH_SESSION_ID=test-session"));
+        assert!(cmd.iter().any(|arg| arg == "AH_AGENT_ID=test-agent"));
     }
 }

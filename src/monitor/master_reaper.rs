@@ -891,7 +891,7 @@ pub(crate) fn master_revival_redispatch_marker_path(
         .join(format!("redispatch-generation-{revived_generation}.json"))
 }
 
-pub(crate) async fn inject_master_continue_instruction<F, Fut>(
+pub(crate) async fn inject_master_continue_instruction_best_effort<F, Fut>(
     tmux_server: &TmuxServer,
     pane: &crate::tmux::TmuxPaneId,
     redispatch_marker_path: Option<&Path>,
@@ -906,22 +906,25 @@ where
         marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
         "injecting continue instruction into revived master pane"
     );
-    if let Err(err) = writer(
+    match writer(
         tmux_server,
         pane.clone(),
         MASTER_REVIVE_CONTINUE_INSTRUCTION.to_string(),
     )
     .await
     {
-        tracing::warn!(
-            pane = %pane.0,
-            error = %err,
-            marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
-            "revived master continue delivery was not causally confirmed; readiness is blocked"
-        );
-        return Err(err);
+        Ok(()) => {
+            tracing::info!(pane = %pane.0, "continue instruction injected into revived master pane");
+        }
+        Err(err) => {
+            tracing::warn!(
+                pane = %pane.0,
+                error = %err,
+                marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
+                "failed to inject continue instruction into revived master pane; revive continues"
+            );
+        }
     }
-    tracing::info!(pane = %pane.0, "continue instruction delivery confirmed in revived master pane");
     Ok(())
 }
 

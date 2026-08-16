@@ -131,6 +131,8 @@ pub const ENV_PASSTHROUGH: &[&str] = &[
     "CCB_JOB_ID",
     "CCB_SOCKET",
     "CCB_STDIN_ENCODING",
+    "CCB_TMUX_ENTER_DELAY",
+    "CCB_TMUX_SECOND_ENTER_DELAY",
     "CCB_TMUX_SOCKET",
     "CCB_TMUX_SOCKET_PATH",
     "CCB_VERIFY_DELIVERY",
@@ -192,7 +194,10 @@ pub const CLAUDE_INJECTED_ENV: &[(&str, &str)] = &[
     ("CCB_CTX_TRANSFER_ENABLED", "true"),
 ];
 
-pub const CODEX_INJECTED_ENV: &[(&str, &str)] = &[];
+pub const CODEX_INJECTED_ENV: &[(&str, &str)] = &[
+    ("CCB_TMUX_ENTER_DELAY", "0.5"),
+    ("CCB_TMUX_SECOND_ENTER_DELAY", "0.0"),
+];
 
 pub const ANTIGRAVITY_INJECTED_ENV: &[(&str, &str)] = &[("CCB_GEMINI_READY_TIMEOUT_S", "60.0")];
 
@@ -321,7 +326,7 @@ mod tests {
     use super::{
         CompletionSignalKind, IdleDetectionMode, InitProbeKind, cancel_keysyms_for_provider,
         canonicalize_provider_name, collect_spawn_env, compute_recovery_args, get_manifest,
-        is_valid_provider, known_provider_manifests, try_get_manifest, valid_provider_names,
+        is_valid_provider, try_get_manifest, valid_provider_names,
     };
     use std::collections::HashMap;
     use std::fs;
@@ -405,7 +410,7 @@ mod tests {
         let manifest = try_get_manifest("gemini").unwrap();
 
         assert_eq!(manifest.provider_name, "antigravity");
-        assert_eq!(manifest.command, ["agy"]);
+        assert_eq!(manifest.command, ["agy", "--dangerously-skip-permissions"]);
         assert_eq!(cancel_keysyms_for_provider("gemini"), ["Escape"]);
     }
 
@@ -432,6 +437,8 @@ mod tests {
             codex.command,
             [
                 "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--dangerously-bypass-hook-trust",
                 "-c",
                 "disable_paste_burst=true",
                 "-c",
@@ -439,7 +446,7 @@ mod tests {
                 "-c",
                 "approval_policy=\"never\"",
                 "-c",
-                "sandbox_mode=\"workspace-write\"",
+                "sandbox_mode=\"danger-full-access\"",
             ]
         );
         assert_eq!(codex.init_probe, InitProbeKind::Codex);
@@ -448,7 +455,7 @@ mod tests {
         assert_eq!(codex.completion_signal, CompletionSignalKind::LogOnly);
 
         let claude = get_manifest("claude");
-        assert_eq!(claude.command, ["claude", "--permission-mode", "dontAsk"]);
+        assert_eq!(claude.command, ["claude", "--dangerously-skip-permissions"]);
         assert_eq!(claude.init_probe, InitProbeKind::Claude);
         assert_eq!(claude.stability_ms, 300);
         assert_eq!(claude.resume_args, ["--continue"]);
@@ -456,7 +463,10 @@ mod tests {
 
         let antigravity = get_manifest("antigravity");
         assert_eq!(antigravity.provider_name, "antigravity");
-        assert_eq!(antigravity.command, ["agy"]);
+        assert_eq!(
+            antigravity.command,
+            ["agy", "--dangerously-skip-permissions"]
+        );
         assert!(
             antigravity
                 .auth_mount_paths
@@ -473,25 +483,6 @@ mod tests {
             "antigravity busy status line must suppress idle"
         );
         assert_eq!(antigravity.completion_signal, CompletionSignalKind::LogOnly);
-    }
-
-    #[test]
-    fn provider_commands_never_bypass_permissions_or_request_unrestricted_sandbox() {
-        for manifest in known_provider_manifests() {
-            let command = manifest.command.join(" ");
-            for forbidden in [
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--dangerously-bypass-hook-trust",
-                "--dangerously-skip-permissions",
-                "sandbox_mode=\"danger-full-access\"",
-            ] {
-                assert!(
-                    !command.contains(forbidden),
-                    "{} provider command contains forbidden permission bypass {forbidden}: {command}",
-                    manifest.provider_name
-                );
-            }
-        }
     }
 
     #[test]

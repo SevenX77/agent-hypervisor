@@ -21,11 +21,11 @@ use crate::master_revival::{
     remove_master_monitor_key_if_generation_matches, try_claim_master_transition,
 };
 use crate::monitor::master_reaper::{
-    FailedReviveMasterReapTarget, ReviveMasterReadinessCheck, inject_master_continue_instruction,
-    prepare_revive_master_readiness_check, register_revived_master_watch_and_prepare_readiness,
-    reprovision_declared_workers_after_master_revive, revive_master_provider,
-    spawn_master_confirm_timer, spawn_replacement_master_pane,
-    write_master_revival_redispatch_marker,
+    FailedReviveMasterReapTarget, ReviveMasterReadinessCheck,
+    inject_master_continue_instruction_best_effort, prepare_revive_master_readiness_check,
+    register_revived_master_watch_and_prepare_readiness,
+    reprovision_declared_workers_after_master_revive, spawn_master_confirm_timer,
+    spawn_replacement_master_pane, write_master_revival_redispatch_marker,
 };
 use crate::rpc::Ctx;
 use crate::sandbox::{EnvState, path};
@@ -706,13 +706,6 @@ async fn revive_master_after_exit_windowed(
         unixepoch(),
     )?;
     persist_revived_master_cmd(&db, &session_id, &master_cmd)?;
-    let master_provider = revive_master_provider(&master_cmd).ok_or_else(|| {
-        CcbdError::EnvironmentNotSupported {
-            details: format!(
-                "cannot deliver the revived-master continue action safely because the stored command names no supported provider: {master_cmd:?}"
-            ),
-        }
-    })?;
     let readiness_check = register_revived_master_watch_and_prepare_readiness(
         &db,
         &tmux_server,
@@ -726,24 +719,15 @@ async fn revive_master_after_exit_windowed(
         &spawned.master_sandbox_home,
         outcome.monitor_key,
     )?;
-    inject_master_continue_instruction(
+    inject_master_continue_instruction_best_effort(
         tmux_server.as_ref(),
         &spawned.pane,
         redispatch_marker_path.as_deref(),
-        |_tmux, pane, text| {
-            let tmux = tmux_server.clone();
-            let provider = master_provider.clone();
+        |tmux, pane, text| {
+            let tmux = tmux.clone();
             async move {
-                crate::prompt_delivery::deliver_prompt(
-                    tmux,
-                    "revived-master",
-                    &provider,
-                    pane,
-                    text,
-                    true,
-                )
-                .await
-                .map(|_| ())
+                tmux.send_keys_literal(pane.clone(), text).await?;
+                tmux.send_keys_keysym(pane, "Enter".to_string()).await
             }
         },
     )
@@ -1444,7 +1428,7 @@ mod tests {
     use crate::monitor::master_reaper::{
         FailedReviveMasterReapEvent, FailedReviveMasterReapTarget,
         MASTER_REVIVE_CONTINUE_INSTRUCTION, ReviveMasterReadinessCheck,
-        build_master_revive_command, inject_master_continue_instruction,
+        build_master_revive_command, inject_master_continue_instruction_best_effort,
         master_revival_redispatch_marker_path, prepare_revive_master_readiness_check,
         reap_failed_revive_master, set_failed_revive_master_reap_recorder,
         write_master_revival_redispatch_marker,
@@ -3523,6 +3507,7 @@ provider = "bash"
     #[tokio::test(flavor = "multi_thread")]
     async fn master_revive_stale_inflight_dispatch_failure_does_not_overwrite_requeued_job() {
         let _global_env_guard = GLOBAL_ENV_TEST_LOCK.lock().await;
+        let enter_delay = EnvVarGuard::set("CCB_TMUX_ENTER_DELAY", "2.0");
         let file = tempfile::NamedTempFile::new().unwrap();
         let state_dir = tempfile::TempDir::new().unwrap().keep();
         let project_dir = tempfile::TempDir::new().unwrap();
@@ -3655,6 +3640,7 @@ provider = "bash"
         );
         assert_eq!(job.error_reason.as_deref(), Some("RECOVERY_REQUEUED:0"));
 
+        drop(enter_delay);
         // Drive orchestrator ticks until the requeued job is redispatched. run_once()
         // can legitimately return false on a tick where the reprovisioned worker is
         // not IDLE-ready yet, but the requeued job row must remain continuously visible.
@@ -4070,7 +4056,7 @@ provider = "bash"
         let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
         let writer_observed = observed.clone();
-        inject_master_continue_instruction(
+        inject_master_continue_instruction_best_effort(
             &tmux,
             &pane,
             None,
@@ -4090,14 +4076,14 @@ provider = "bash"
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn master_revive_continue_injection_failure_keeps_marker_and_blocks_readiness() {
+    async fn master_revive_continue_injection_failure_keeps_marker_and_does_not_block() {
         let state_dir = tempfile::TempDir::new().unwrap();
         let tmux = TmuxServer::new(state_dir.path());
         let pane = TmuxPaneId("%continue-fail:1.0".to_string());
         let marker = state_dir.path().join("redispatch-marker.json");
         std::fs::write(&marker, "{}").unwrap();
 
-        let result = inject_master_continue_instruction(
+        let result = inject_master_continue_instruction_best_effort(
             &tmux,
             &pane,
             Some(&marker),
@@ -4109,8 +4095,8 @@ provider = "bash"
         .await;
 
         assert!(
-            result.is_err(),
-            "unconfirmed continue delivery must block readiness"
+            result.is_ok(),
+            "continue injection is best-effort and must not block master revive"
         );
         assert!(
             marker.exists(),

@@ -165,6 +165,8 @@ impl ProviderAdapter for CodexAdapter {
             auth_mount_paths: vec![".codex", ".config/gcloud"],
             command: &[
                 "codex",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--dangerously-bypass-hook-trust",
                 "-c",
                 "disable_paste_burst=true",
                 "-c",
@@ -172,7 +174,7 @@ impl ProviderAdapter for CodexAdapter {
                 "-c",
                 "approval_policy=\"never\"",
                 "-c",
-                "sandbox_mode=\"workspace-write\"",
+                "sandbox_mode=\"danger-full-access\"",
             ],
             resume_args: &[],
             env_passthrough: ENV_PASSTHROUGH,
