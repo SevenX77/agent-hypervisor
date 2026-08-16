@@ -1,6 +1,6 @@
 ---
 name: ah-operate
-description: Use when operating an AH session, observing identity-bound jobs, or recovering a stalled Agent seat. It does not create Roadmap, Plan, Task, lifecycle, or authority facts.
+description: Use when driving an ah master/stack through a multi-step task: dispatching briefs, monitoring job transitions, unblocking a stuck or prompt-pending agent, gating design->implementation->review, or closing out a task to PR. When governance bindings are supplied, AH preserves their identities without inventing Roadmap, Plan, Task, lifecycle, or authority facts.
 ---
 
 # ah operation playbook
