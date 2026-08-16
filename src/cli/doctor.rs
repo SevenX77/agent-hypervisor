@@ -532,8 +532,10 @@ mod tests {
         let check = check_legacy_repo_state(tmp.path());
 
         assert_eq!(check.status, DoctorStatus::Warn);
-        assert!(check.detail.contains(".ah-rs.aborted-123"));
-        assert!(!check.detail.contains(".ah"));
+        assert_eq!(
+            check.detail,
+            "found repo-local state entries: .ah-rs.aborted-123"
+        );
         assert_eq!(
             check.suggestion.as_deref(),
             Some("remove stale repo-local state with rm -rf .ah-rs*")
