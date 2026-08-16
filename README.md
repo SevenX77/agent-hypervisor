@@ -1,6 +1,6 @@
-# ah
+# Agent Hypervisor (`ah`)
 
-`ah` is an L2 orchestration daemon and CLI for running multiple AI agent CLIs in isolated tmux-backed workspaces. The daemon (`ahd`) owns state, sessions, workers, recovery, and event streams; the CLI (`ah`) drives it over JSON-RPC on a Unix socket.
+Agent Hypervisor (`ah`) is an L2 orchestration daemon and CLI for running multiple AI agent CLIs in isolated tmux-backed workspaces. The daemon (`ahd`) owns state, sessions, workers, recovery, and event streams; the CLI (`ah`) drives it over JSON-RPC on a Unix socket.
 
 Use it when you want one project-level control plane to coordinate provider agents such as Codex, Claude, Antigravity, or an explicit shell provider.
 
@@ -11,10 +11,10 @@ See [CHANGELOG.md](CHANGELOG.md) for release notes.
 One-line install (Linux x86_64, prebuilt binaries — no Rust toolchain needed):
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SevenX77/ah/releases/latest/download/ah-installer.sh | sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SevenX77/agent-hypervisor/releases/latest/download/ah-installer.sh | sh
 ```
 
-This installs both `ah` and `ahd`. Release archives and checksums are on the [Releases page](https://github.com/SevenX77/ah/releases).
+This installs both `ah` and `ahd`. Release archives and checksums are on the [Releases page](https://github.com/SevenX77/agent-hypervisor/releases).
 
 That is all you need — see [Quick Start](#quick-start) below. (Building from source is only relevant if you want to contribute; see [Development](#development).)
 
@@ -557,7 +557,7 @@ cargo test              # full test suite
 Or install straight from source:
 
 ```bash
-cargo install --git https://github.com/SevenX77/ah --bin ah --bin ahd
+cargo install --git https://github.com/SevenX77/agent-hypervisor --bin ah --bin ahd
 ```
 
 ## License

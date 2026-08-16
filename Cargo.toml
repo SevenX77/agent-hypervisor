@@ -4,7 +4,7 @@ version = "1.14.3"
 edition = "2024"
 authors = ["sevenx"]
 description = "L2 Scheduling Daemon for Agent Hypervisor"
-repository = "https://github.com/SevenX77/ah"
+repository = "https://github.com/SevenX77/agent-hypervisor"
 
 [dependencies]
 # 异步运行时
