@@ -1,0 +1,10 @@
+Agent Hypervisor (ah)
+Copyright 2026 SevenX77
+
+This distribution includes and adapts the Work Execution implementation from
+the Zeroth project, source revision
+24a6c38afa9c9b0e9cda1c5b2d3fac7dab337d03. That adapted material is provided
+under the Apache License, Version 2.0. See LICENSE-APACHE.
+
+The pre-existing Agent Hypervisor implementation and portions incorporated
+into Zeroth remain available under the MIT License. See LICENSE.

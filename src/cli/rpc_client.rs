@@ -344,7 +344,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message};
+    use super::{
+        CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message,
+    };
     use serde_json::json;
     use std::ffi::OsString;
 
@@ -416,10 +418,7 @@ mod tests {
             rpc_error_message(&json!({"data": {"error_code": "AGENT_NOT_FOUND"}})),
             "AGENT_NOT_FOUND"
         );
-        assert_eq!(
-            rpc_error_message(&json!({"message": "boom"})),
-            "boom"
-        );
+        assert_eq!(rpc_error_message(&json!({"message": "boom"})), "boom");
     }
 
     #[test]
@@ -476,7 +475,10 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("no ah.toml found"), "got: {message}");
-        assert!(message.contains("--config"), "the fix must be named: {message}");
+        assert!(
+            message.contains("--config"),
+            "the fix must be named: {message}"
+        );
     }
 
     /// #43: a bare `--config ah.toml` used to hash the empty string, sending

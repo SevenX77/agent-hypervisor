@@ -75,6 +75,9 @@ pub struct OutboxRecord {
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Exact provider-process lifecycle that emitted this record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_id: Option<String>,
     /// Hook event name for `HookEvent` records (`stop`, `idle`, …).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event: Option<String>,
@@ -107,6 +110,7 @@ impl OutboxRecord {
             kind: OutboxKind::HookEvent,
             agent_id: agent_id.into(),
             provider: None,
+            lifecycle_id: None,
             event: Some(event.into()),
             attempt_cookie: None,
             job_id: None,
@@ -340,8 +344,10 @@ fn apply_hook_event(
         "source": "outbox",
         "hook_event": record.event,
         "provider": record.provider,
+        "lifecycle_id": record.lifecycle_id,
         "event_id": record.event_id,
         "attempt_cookie": record.attempt_cookie,
+        "provider_payload": record.payload.as_ref(),
         "schema_version": 1,
     })
     .to_string();

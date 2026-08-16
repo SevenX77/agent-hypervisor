@@ -1,6 +1,6 @@
 //! Agent pidfd readiness task that marks unexpected process exit.
 
-use crate::db::{self, Db};
+use crate::db::{self as db, Db};
 use crate::monitor::MonitorHandle;
 use crate::platform::sys::proc_info::ProcessLiveness;
 use std::sync::Arc;

@@ -43,7 +43,7 @@ pub fn resolve_agent_log_root(
     }
 
     let sandbox_dir = state_dir.join("sandboxes").join(session_id).join(agent_id);
-    let home_root = match crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir) {
+    let home_root = match crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir) {
         Ok(path) => path,
         Err(_) => return unavailable("sandbox_home_unavailable"),
     };
@@ -51,9 +51,19 @@ pub fn resolve_agent_log_root(
         return unavailable("unsupported_provider");
     };
 
+    classify_log_root(root)
+}
+
+fn classify_log_root(root: PathBuf) -> LogRootResolution {
     match std::fs::read_dir(&root) {
         Ok(_) => LogRootResolution::Available(root),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => unavailable("log_root_missing"),
+        // Interactive providers may create the transcript directory only when
+        // their first turn starts. The reader treats a missing directory as an
+        // empty stream, so retain the expected path and register the monitor
+        // before dispatch instead of leaving the first turn unobserved.
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            LogRootResolution::Available(root)
+        }
         Err(_) => unavailable("log_root_unreadable"),
     }
 }
@@ -62,12 +72,7 @@ pub fn resolve_agent_log_root(
 /// is the single owner of that fact; both worker completion and master revive
 /// readiness read it from here rather than spelling the path themselves.
 pub fn provider_log_root_in_home(provider: &str, home_root: &Path) -> Option<PathBuf> {
-    match crate::provider::manifest::canonicalize_provider_name(provider) {
-        "codex" => Some(home_root.join(".codex/sessions")),
-        "claude" => Some(home_root.join(".claude/projects")),
-        "antigravity" => Some(home_root.join(".gemini/antigravity-cli")),
-        _ => None,
-    }
+    crate::provider::adapter(provider).and_then(|adapter| adapter.transcript_root(home_root))
 }
 
 fn unavailable(reason: &'static str) -> LogRootResolution {
@@ -85,7 +90,7 @@ mod tests {
         let sandbox_dir = state_dir.join("sandboxes").join("s1").join("a1");
         fs::create_dir_all(&sandbox_dir).unwrap();
         let home_root =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         let sessions = home_root.join(".codex/sessions");
         fs::create_dir_all(&sessions).unwrap();
 
@@ -102,7 +107,7 @@ mod tests {
         let sandbox_dir = state_dir.join("sandboxes").join("s1").join("a1");
         fs::create_dir_all(&sandbox_dir).unwrap();
         let home_root =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         let projects = home_root.join(".claude/projects");
         fs::create_dir_all(&projects).unwrap();
 
@@ -119,7 +124,7 @@ mod tests {
         let sandbox_dir = state_dir.join("sandboxes").join("s1").join("a1");
         fs::create_dir_all(&sandbox_dir).unwrap();
         let home_root =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         let antigravity = home_root.join(".gemini/antigravity-cli");
         fs::create_dir_all(&antigravity).unwrap();
 
@@ -143,14 +148,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_log_root_returns_ui_fallback_immediately() {
+    fn missing_log_root_remains_available_for_deferred_provider_creation() {
         let temp = tempfile::TempDir::new().unwrap();
-        let state_dir = temp.path();
-        let sandbox_dir = state_dir.join("sandboxes").join("s1").join("a1");
-        fs::create_dir_all(&sandbox_dir).unwrap();
+        let expected = temp.path().join("missing/.codex/sessions");
+        let result = super::classify_log_root(expected.clone()).expect_available();
 
-        let result = super::resolve_agent_log_root(state_dir, "s1", "a1", "codex", false);
-
-        assert_eq!(result.expect_unavailable_reason(), "log_root_missing");
+        assert_eq!(result, expected);
+        assert!(!result.exists());
     }
 }

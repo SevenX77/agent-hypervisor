@@ -12,7 +12,11 @@ pub use registry::{
 };
 pub use writer::{send_text_to_pane, send_text_to_pane_with_options};
 
-pub async fn send_text_to_registered_pane(agent_id: &str, text: String) -> Result<(), CcbdError> {
+pub async fn send_text_to_registered_pane(
+    agent_id: &str,
+    provider: &str,
+    text: String,
+) -> Result<(), CcbdError> {
     let Some((pane, socket_name)) = registry::pane_binding(agent_id) else {
         tracing::warn!(
             agent_id,
@@ -21,7 +25,7 @@ pub async fn send_text_to_registered_pane(agent_id: &str, text: String) -> Resul
         return Ok(());
     };
     let tmux = std::sync::Arc::new(crate::tmux::TmuxServer::from_socket_name(socket_name));
-    send_text_to_pane(tmux, agent_id, pane, text).await
+    send_text_to_pane(tmux, agent_id, provider, pane, text).await
 }
 
 pub async fn shutdown_reader(

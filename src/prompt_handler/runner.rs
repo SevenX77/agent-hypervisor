@@ -13,11 +13,15 @@ use crate::tmux::{TmuxPaneId, TmuxServer};
 use std::time::Duration;
 
 const DEFAULT_ACTION_SETTLE_DELAY: Duration = Duration::from_millis(200);
+const ACTION_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(2);
 const CAN_INPUT_PROBE_CAPTURE_ATTEMPTS: usize = 3;
 const UNKNOWN_STABLE_SCAN_THRESHOLD: usize = 3;
 
 pub trait PromptIo: Send + Sync {
     fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError>;
+    fn capture_control_state(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
+        self.capture_pane(pane_id)
+    }
     fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError>;
     fn send_key_keysym(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError>;
 }
@@ -35,6 +39,10 @@ impl TmuxPromptIo {
 impl PromptIo for TmuxPromptIo {
     fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
         self.tmux.capture_pane_sync(pane_id)
+    }
+
+    fn capture_control_state(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
+        self.tmux.capture_pane_control_sync(pane_id)
     }
 
     fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
@@ -154,6 +162,7 @@ pub fn handle_prompt_chain(ctx: RunnerContext<'_>, max_depth: usize) -> PromptRu
     let mut unknown_stability = UnknownStability::default();
     let unknown_scan_limit = max_depth.max(UNKNOWN_STABLE_SCAN_THRESHOLD);
     let mut matched_case_id: Option<String> = None;
+    let mut confirmed_action_capture: Option<String> = None;
 
     loop {
         tracing::info!(
@@ -163,7 +172,11 @@ pub fn handle_prompt_chain(ctx: RunnerContext<'_>, max_depth: usize) -> PromptRu
             max_depth,
             "prompt runner capturing pane"
         );
-        let capture = match ctx.tmux_session_handle.capture_pane(ctx.pane_id) {
+        let capture = match confirmed_action_capture
+            .take()
+            .map(Ok)
+            .unwrap_or_else(|| ctx.tmux_session_handle.capture_pane(ctx.pane_id))
+        {
             Ok(capture) => capture,
             Err(error) => {
                 if let Some(snapshot) = unknown_stability.last_snapshot() {
@@ -367,18 +380,17 @@ pub fn handle_prompt_chain(ctx: RunnerContext<'_>, max_depth: usize) -> PromptRu
                     action_count = actions.len(),
                     "prompt runner executing known prompt actions"
                 );
-                if let Err(error) = execute_actions(&ctx, &case_id, &actions, depth) {
-                    return PromptRunOutcome::ExecutorFailed { error, depth };
-                }
+                let post_action_capture =
+                    match execute_actions(&ctx, &case_id, &actions, depth, capture.clone()) {
+                        Ok(capture) => capture,
+                        Err(error) => {
+                            return PromptRunOutcome::ExecutorFailed { error, depth };
+                        }
+                    };
                 depth += 1;
                 previous_hash = Some(sanitized_hash);
                 same_hash_skips = 0;
-
-                // TODO(Phase 2/3): replace this fixed settle delay with capture-hash
-                // stability detection so slow terminal refreshes do not look unchanged.
-                if !ctx.action_settle_delay.is_zero() {
-                    std::thread::sleep(ctx.action_settle_delay);
-                }
+                confirmed_action_capture = Some(post_action_capture);
             }
             PromptGateDecision::Unknown {
                 sanitized_hash,
@@ -432,18 +444,24 @@ pub fn handle_prompt_chain(ctx: RunnerContext<'_>, max_depth: usize) -> PromptRu
                                 depth,
                             };
                         }
-                        if let Err(error) = execute_actions(&ctx, "llm-haiku-4.5", &actions, depth)
-                        {
-                            return PromptRunOutcome::ExecutorFailed { error, depth };
-                        }
+                        let post_action_capture = match execute_actions(
+                            &ctx,
+                            "llm-haiku-4.5",
+                            &actions,
+                            depth,
+                            capture.clone(),
+                        ) {
+                            Ok(capture) => capture,
+                            Err(error) => {
+                                return PromptRunOutcome::ExecutorFailed { error, depth };
+                            }
+                        };
                         depth += 1;
                         previous_hash = Some(sanitized_hash);
                         same_hash_skips = 0;
                         empty_capture_skips = 0;
                         unknown_stability.reset();
-                        if !ctx.action_settle_delay.is_zero() {
-                            std::thread::sleep(ctx.action_settle_delay);
-                        }
+                        confirmed_action_capture = Some(post_action_capture);
                         continue;
                     }
                     LlmSlowPathDecision::Pending { reason } => {
@@ -866,47 +884,77 @@ fn execute_actions(
     case_id: &str,
     actions: &[PromptAction],
     depth: usize,
-) -> Result<(), CcbdError> {
+    mut before: String,
+) -> Result<String, CcbdError> {
     for action in actions {
-        match action.validate() {
-            Ok(ValidatedAction::Key(keysym)) => {
-                tracing::info!(
-                    agent_id = ctx.agent_id,
-                    depth,
-                    case_id,
-                    keysym,
-                    "prompt runner sending keysym"
-                );
-                ctx.tmux_session_handle
-                    .send_key_keysym(ctx.pane_id, &keysym)
-                    .map_err(|error| log_action_error(ctx, depth, case_id, error))?;
-            }
-            Ok(ValidatedAction::Literal(literal)) => {
-                tracing::info!(
-                    agent_id = ctx.agent_id,
-                    depth,
-                    case_id,
-                    literal,
-                    "prompt runner sending literal"
-                );
-                ctx.tmux_session_handle
-                    .send_key_literal(ctx.pane_id, &literal)
-                    .map_err(|error| log_action_error(ctx, depth, case_id, error))?;
-            }
-            Err(error) => {
-                tracing::warn!(
-                    agent_id = ctx.agent_id,
-                    depth,
-                    case_id,
-                    reason = %error,
-                    impact = "invalid prompt action rejected before terminal input",
-                    "prompt runner rejected prompt action"
-                );
-                return Err(CcbdError::from(error));
-            }
-        }
+        let validated = action.validate().map_err(CcbdError::from)?;
+        let action_name = match &validated {
+            ValidatedAction::Key(_) => "startup_prompt_key",
+            ValidatedAction::Literal(_) => "startup_prompt_literal",
+        };
+        let outcome = crate::guarded_action::run_guarded_action_sync_from_before(
+            action_name,
+            before,
+            ACTION_CONFIRMATION_TIMEOUT,
+            ctx.action_settle_delay,
+            || ctx.tmux_session_handle.capture_control_state(ctx.pane_id),
+            || match &validated {
+                ValidatedAction::Key(keysym) => {
+                    tracing::info!(
+                        agent_id = ctx.agent_id,
+                        depth,
+                        case_id,
+                        keysym,
+                        "prompt runner sending keysym"
+                    );
+                    ctx.tmux_session_handle.send_key_keysym(ctx.pane_id, keysym)
+                }
+                ValidatedAction::Literal(literal) => {
+                    tracing::info!(
+                        agent_id = ctx.agent_id,
+                        depth,
+                        case_id,
+                        literal,
+                        "prompt runner sending literal"
+                    );
+                    ctx.tmux_session_handle
+                        .send_key_literal(ctx.pane_id, literal)
+                }
+            },
+            |before, after| assess_prompt_action(&validated, &before.value, &after.value),
+        )
+        .map_err(|error| {
+            log_action_error(
+                ctx,
+                depth,
+                case_id,
+                CcbdError::PtyIoError(error.to_string()),
+            )
+        })?;
+        before = outcome.confirmed.value;
     }
-    Ok(())
+    Ok(before)
+}
+
+fn assess_prompt_action(
+    action: &ValidatedAction,
+    before: &str,
+    after: &str,
+) -> crate::guarded_action::ActionAssessment {
+    use crate::guarded_action::ActionAssessment;
+    if before == after {
+        return ActionAssessment::Mismatch {
+            reason: "terminal control state did not change after prompt action".into(),
+        };
+    }
+    if matches!(action, ValidatedAction::Key(key) if key == "Enter")
+        && sanitize_pane_text(before) == sanitize_pane_text(after)
+    {
+        return ActionAssessment::Mismatch {
+            reason: "Enter changed decoration but did not dismiss or advance the prompt".into(),
+        };
+    }
+    ActionAssessment::Confirmed
 }
 
 fn log_action_error(
@@ -1118,13 +1166,23 @@ mod tests {
         format!("{stale_prompt}\n{filler}\n{active_tail}")
     }
 
+    fn selected_menu(capture: &str, selected_text: &str) -> String {
+        capture.replacen(
+            selected_text,
+            &format!("\u{1b}[7m{selected_text}\u{1b}[0m"),
+            1,
+        )
+    }
+
     #[test]
     fn single_layer_known_prompt_then_idle_returns_no_action_needed() {
         let kb = PromptKb::new(default_cases());
         let pane = pane();
         let marker = MarkerMatcher::from_manifest(&get_manifest("codex"));
+        let selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
         let io = FakePromptIo::new(&[
             CODEX_UPDATE_MENU,
+            &selected,
             "ready\n  › ",
             "ready\n  › x",
             "ready\n  › ",
@@ -1147,8 +1205,10 @@ mod tests {
         let kb = PromptKb::new(default_cases());
         let pane = pane();
         let marker = MarkerMatcher::from_manifest(&get_manifest("codex"));
+        let selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
         let io = FakePromptIo::new(&[
             CODEX_UPDATE_MENU,
+            &selected,
             "ready\n  › ",
             "ready\n  › x",
             "ready\n  › ",
@@ -1267,9 +1327,14 @@ mod tests {
         let kb = PromptKb::new(default_cases());
         let pane = pane();
         let marker = MarkerMatcher::from_manifest(&get_manifest("codex"));
+        let trust = "Do you trust this directory?\n1) Yes\n2) No";
+        let trust_selected = selected_menu(trust, "1) Yes");
+        let update_selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
         let io = FakePromptIo::new(&[
-            "Do you trust this directory?\n1) Yes\n2) No",
+            trust,
+            &trust_selected,
             CODEX_UPDATE_MENU,
+            &update_selected,
             "ready\n  › ",
             "ready\n  › x",
             "ready\n  › ",
@@ -1299,10 +1364,18 @@ mod tests {
         let kb = PromptKb::new(default_cases());
         let pane = pane();
         let marker = MarkerMatcher::default();
+        let trust_directory = "Do you trust this directory?\n1) Yes\n2) No";
+        let trust_workspace = "Do you trust this workspace?\n1) Yes\n2) No";
+        let trust_directory_selected = selected_menu(trust_directory, "1) Yes");
+        let trust_workspace_selected = selected_menu(trust_workspace, "1) Yes");
+        let update_selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
         let io = FakePromptIo::new(&[
-            "Do you trust this directory?\n1) Yes\n2) No",
+            trust_directory,
+            &trust_directory_selected,
             CODEX_UPDATE_MENU,
-            "Do you trust this workspace?\n1) Yes\n2) No",
+            &update_selected,
+            trust_workspace,
+            &trust_workspace_selected,
             CODEX_UPDATE_MENU,
         ]);
 
@@ -1326,17 +1399,18 @@ mod tests {
     }
 
     #[test]
-    fn same_hash_stuck_after_action_returns_pending() {
+    fn enter_that_does_not_dismiss_prompt_stops_before_any_next_action() {
         let kb = PromptKb::new(default_cases());
         let pane = pane();
         let marker = MarkerMatcher::default();
-        let io = FakePromptIo::new(&[CODEX_UPDATE_MENU, CODEX_UPDATE_MENU, CODEX_UPDATE_MENU]);
+        let selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
+        let io = FakePromptIo::new(&[CODEX_UPDATE_MENU, &selected, CODEX_UPDATE_MENU]);
 
         let outcome = handle_prompt_chain(ctx(&io, &pane, &kb, &marker), 1);
 
         assert!(matches!(
             outcome,
-            PromptRunOutcome::Pending { depth: 1, .. }
+            PromptRunOutcome::ExecutorFailed { depth: 0, .. }
         ));
         assert_eq!(io.sent(), ["key:Down", "key:Enter"]);
     }
@@ -1369,7 +1443,14 @@ mod tests {
         let pane = pane();
         let capture = CODEX_UPDATE_MENU;
         let ack_io = FakePromptIo::new(&[capture, capture, capture]);
-        let direct_io = FakePromptIo::new(&[capture, "ready\n  › ", "ready\n  › x", "ready\n  › "]);
+        let selected = selected_menu(CODEX_UPDATE_MENU, "2. Skip");
+        let direct_io = FakePromptIo::new(&[
+            capture,
+            &selected,
+            "ready\n  › ",
+            "ready\n  › x",
+            "ready\n  › ",
+        ]);
         let ack_ctx = RunnerContext::new("ag_test", &pane, "codex", &ack_io, &kb)
             .with_scan_purpose(PromptScanPurpose::AckVisualDiff)
             .with_action_settle_delay(Duration::ZERO);

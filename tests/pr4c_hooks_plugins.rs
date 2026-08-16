@@ -2,11 +2,11 @@
 
 use ah::cli::rpc_client::{CliError, RpcClient, RpcFuture};
 use ah::cli::start::{StartOptions, start_from_options};
-use ah::provider::extensions::{ExtensionConfig, HookGroup, HookItem};
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HookPushContext, build_ah_hook_command, prepare_home_layout_with_extensions,
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
+use ah::provider::extensions::{ExtensionConfig, HookGroup, HookItem};
 use ah::provider::manifest::{collect_spawn_env, get_manifest};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -30,7 +30,7 @@ fn claude_hook_materializes_settings_and_symlink() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &hooks_config("PreToolUse", script.to_str().unwrap()),
         None,
@@ -66,6 +66,7 @@ fn hook_push_context_extends_prepare_home_layout_signature() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_hook_ctx".to_string(),
         provider: "claude".to_string(),
+        lifecycle_id: "lifecycle-ag-hook-ctx".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -74,7 +75,7 @@ fn hook_push_context_extends_prepare_home_layout_signature() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &ExtensionConfig::default(),
         Some(&hook_ctx),
@@ -103,6 +104,7 @@ fn hook_push_disabled_context_does_not_inject_ah_hook() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_hook_ctx_off".to_string(),
         provider: "claude".to_string(),
+        lifecycle_id: "lifecycle-ag-hook-ctx-off".to_string(),
         ahd_socket_path: sandbox.path().join("state/ahd.sock"),
         enabled: false,
     };
@@ -111,7 +113,7 @@ fn hook_push_disabled_context_does_not_inject_ah_hook() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &ExtensionConfig::default(),
         Some(&hook_ctx),
@@ -132,6 +134,7 @@ fn hook_push_command_bakes_agent_id_socket_and_ccb_socket() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_cmd".to_string(),
         provider: "codex".to_string(),
+        lifecycle_id: "lifecycle-ag-cmd".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -165,6 +168,7 @@ fn hook_push_command_uses_provider_timeout_units_and_hook_json() {
         let hook_ctx = HookPushContext {
             agent_id: format!("ag_{provider}"),
             provider: provider.to_string(),
+            lifecycle_id: format!("lifecycle-ag-{provider}"),
             ahd_socket_path: socket.clone(),
             enabled: true,
         };
@@ -196,7 +200,7 @@ fn codex_plugin_materializes_config_and_cache() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &plugins_config(["github@openai-curated"]),
         None,
     )
@@ -326,6 +330,7 @@ fn claude_hook_push_injection_preserves_user_hooks() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_claude_push".to_string(),
         provider: "claude".to_string(),
+        lifecycle_id: "lifecycle-ag-claude-push".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -334,7 +339,7 @@ fn claude_hook_push_injection_preserves_user_hooks() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &hooks_config("Stop", script.to_str().unwrap()),
         Some(&hook_ctx),
@@ -371,6 +376,7 @@ fn f3_claude_hook_push_injection_is_idempotent() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_claude_idempotent".to_string(),
         provider: "claude".to_string(),
+        lifecycle_id: "lifecycle-ag-claude-idempotent".to_string(),
         ahd_socket_path: sandbox.path().join("state/ahd.sock"),
         enabled: true,
     };
@@ -380,7 +386,7 @@ fn f3_claude_hook_push_injection_is_idempotent() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &config,
         Some(&hook_ctx),
@@ -391,7 +397,7 @@ fn f3_claude_hook_push_injection_is_idempotent() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &config,
         Some(&hook_ctx),
@@ -420,6 +426,7 @@ fn codex_hook_push_injection_writes_hooks_json_and_feature_flag() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_codex_push".to_string(),
         provider: "codex".to_string(),
+        lifecycle_id: "lifecycle-ag-codex-push".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -428,7 +435,7 @@ fn codex_hook_push_injection_writes_hooks_json_and_feature_flag() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -451,6 +458,10 @@ fn codex_hook_push_injection_writes_hooks_json_and_feature_flag() {
     assert!(
         hooks_json["hooks"]["Stop"].is_array(),
         "Stop hook must be present"
+    );
+    assert!(
+        hooks_json["hooks"]["UserPromptSubmit"].is_array(),
+        "UserPromptSubmit hook must provide provider-native turn-start evidence"
     );
     assert!(hooks_text.contains("agent notify --agent-id"));
     assert!(hooks_text.contains("--agent-id ag_codex_push"));
@@ -491,6 +502,7 @@ fn codex_hook_push_injection_preserves_user_hooks_json() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_codex_merge".to_string(),
         provider: "codex".to_string(),
+        lifecycle_id: "lifecycle-ag-codex-merge".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -499,7 +511,7 @@ fn codex_hook_push_injection_preserves_user_hooks_json() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -526,6 +538,7 @@ fn f3_codex_hook_push_injection_is_idempotent() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_codex_idempotent".to_string(),
         provider: "codex".to_string(),
+        lifecycle_id: "lifecycle-ag-codex-idempotent".to_string(),
         ahd_socket_path: sandbox.path().join("state/ahd.sock"),
         enabled: true,
     };
@@ -534,7 +547,7 @@ fn f3_codex_hook_push_injection_is_idempotent() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -543,7 +556,7 @@ fn f3_codex_hook_push_injection_is_idempotent() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -551,8 +564,10 @@ fn f3_codex_hook_push_injection_is_idempotent() {
 
     assert_eq!(first.home_root, second.home_root);
     let hooks_json = read_json(&second.home_root.join(".codex/hooks.json"));
-    let commands = collect_claude_commands(hooks_json["hooks"]["Stop"].as_array().unwrap());
-    assert_eq!(count_ah_notify_commands(&commands), 1);
+    for event in ["UserPromptSubmit", "Stop"] {
+        let commands = collect_claude_commands(hooks_json["hooks"][event].as_array().unwrap());
+        assert_eq!(count_ah_notify_commands(&commands), 1, "event={event}");
+    }
 }
 
 #[test]
@@ -576,6 +591,7 @@ fn antigravity_hook_push_injection_writes_global_named_stop_hook_and_preserves_s
     let hook_ctx = HookPushContext {
         agent_id: "ag_antigravity_push".to_string(),
         provider: "antigravity".to_string(),
+        lifecycle_id: "lifecycle-ag-antigravity-push".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -584,7 +600,7 @@ fn antigravity_hook_push_injection_writes_global_named_stop_hook_and_preserves_s
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -596,11 +612,13 @@ fn antigravity_hook_push_injection_writes_global_named_stop_hook_and_preserves_s
             .join(".gemini/antigravity-cli/settings.json"),
     );
     let hook = &hooks_json["ah-completion-push"]["Stop"][0];
-    let command = hook["hooks"][0]["command"].as_str().unwrap();
+    let invocation_hook = &hooks_json["ah-completion-push"]["PreInvocation"][0];
+    let command = hook["command"].as_str().unwrap();
 
-    assert_eq!(hook["matcher"], "");
-    assert_eq!(hook["hooks"][0]["type"], "command");
-    assert_eq!(hook["hooks"][0]["timeout"], 5);
+    assert!(hook.get("matcher").is_none());
+    assert!(invocation_hook.get("matcher").is_none());
+    assert_eq!(hook["type"], "command");
+    assert_eq!(hook["timeout"], 5);
     assert!(command.contains("CCB_SOCKET="));
     assert!(command.contains("agent notify --agent-id"));
     assert!(command.contains("--agent-id ag_antigravity_push"));
@@ -609,6 +627,12 @@ fn antigravity_hook_push_injection_writes_global_named_stop_hook_and_preserves_s
     assert!(command.contains(&format!("--socket {}", socket.display())));
     assert!(command.contains("--hook-json"));
     assert!(command.contains("--hook-debug-log"));
+    assert!(
+        invocation_hook["command"]
+            .as_str()
+            .unwrap()
+            .contains("--event preinvocation")
+    );
     assert!(command.contains("/hooks-debug/ag_antigravity_push.log"));
     assert_eq!(settings["colorScheme"], "dark");
     assert_eq!(settings["model"], "gemini-3-pro");
@@ -636,6 +660,7 @@ fn antigravity_hook_push_disabled_context_does_not_write_hooks_json() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_antigravity_off".to_string(),
         provider: "antigravity".to_string(),
+        lifecycle_id: "lifecycle-ag-antigravity-off".to_string(),
         ahd_socket_path: sandbox.path().join("state/ahd.sock"),
         enabled: false,
     };
@@ -644,7 +669,7 @@ fn antigravity_hook_push_disabled_context_does_not_write_hooks_json() {
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -665,12 +690,9 @@ fn antigravity_hook_push_injection_preserves_user_hooks_json() {
         serde_json::to_string_pretty(&json!({
             "user-completion": {
                 "Stop": [{
-                    "matcher": "",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "/usr/local/bin/user-agy-stop",
-                        "timeout": 9
-                    }]
+                    "type": "command",
+                    "command": "/usr/local/bin/user-agy-stop",
+                    "timeout": 9
                 }],
                 "PreToolUse": [{
                     "matcher": "Bash",
@@ -690,6 +712,7 @@ fn antigravity_hook_push_injection_preserves_user_hooks_json() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_antigravity_merge".to_string(),
         provider: "antigravity".to_string(),
+        lifecycle_id: "lifecycle-ag-antigravity-merge".to_string(),
         ahd_socket_path: socket.clone(),
         enabled: true,
     };
@@ -698,7 +721,7 @@ fn antigravity_hook_push_injection_preserves_user_hooks_json() {
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -714,6 +737,10 @@ fn antigravity_hook_push_injection_preserves_user_hooks_json() {
         hooks_json["ah-completion-push"]["Stop"].is_array(),
         "ah-owned Stop named hook must be appended beside user named hooks: {hooks_json:?}"
     );
+    assert!(
+        hooks_json["ah-completion-push"]["PreInvocation"].is_array(),
+        "ah-owned PreInvocation hook must provide provider-native working evidence"
+    );
 }
 
 #[test]
@@ -725,11 +752,8 @@ fn f3_antigravity_hook_push_injection_is_idempotent() {
         serde_json::to_string_pretty(&json!({
             "user-completion": {
                 "Stop": [{
-                    "matcher": "",
-                    "hooks": [{
-                        "type": "command",
-                        "command": "/usr/local/bin/user-agy-stop"
-                    }]
+                    "type": "command",
+                    "command": "/usr/local/bin/user-agy-stop"
                 }]
             }
         }))
@@ -741,6 +765,7 @@ fn f3_antigravity_hook_push_injection_is_idempotent() {
     let hook_ctx = HookPushContext {
         agent_id: "ag_antigravity_idempotent".to_string(),
         provider: "antigravity".to_string(),
+        lifecycle_id: "lifecycle-ag-antigravity-idempotent".to_string(),
         ahd_socket_path: sandbox.path().join("state/ahd.sock"),
         enabled: true,
     };
@@ -749,7 +774,7 @@ fn f3_antigravity_hook_push_injection_is_idempotent() {
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -758,7 +783,7 @@ fn f3_antigravity_hook_push_injection_is_idempotent() {
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &ExtensionConfig::default(),
         Some(&hook_ctx),
     )
@@ -766,9 +791,11 @@ fn f3_antigravity_hook_push_injection_is_idempotent() {
 
     assert_eq!(first.home_root, second.home_root);
     let hooks_json = read_json(&second.home_root.join(".gemini/config/hooks.json"));
-    let commands =
-        collect_claude_commands(hooks_json["ah-completion-push"]["Stop"].as_array().unwrap());
-    assert_eq!(count_ah_notify_commands(&commands), 1);
+    for event in ["PreInvocation", "Stop"] {
+        let commands =
+            collect_direct_commands(hooks_json["ah-completion-push"][event].as_array().unwrap());
+        assert_eq!(count_ah_notify_commands(&commands), 1, "event={event}");
+    }
     assert!(
         hooks_json
             .to_string()
@@ -792,7 +819,7 @@ fn claude_plugin_materializes_enabled_plugins() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &plugins_config(["claude-audit"]),
         None,
@@ -826,7 +853,7 @@ fn provider_home_layout_without_skills_does_not_create_skills_dir() {
                 provider,
                 sandbox.path(),
                 workspace.path(),
-                ah::provider::home_layout::HomeLayoutRole::Worker,
+                ah::home_materialization::HomeLayoutRole::Worker,
                 "worker",
                 &ExtensionConfig::default(),
                 None,
@@ -838,7 +865,7 @@ fn provider_home_layout_without_skills_does_not_create_skills_dir() {
                 provider,
                 sandbox.path(),
                 workspace.path(),
-                ah::provider::home_layout::HomeLayoutRole::Worker,
+                ah::home_materialization::HomeLayoutRole::Worker,
                 &ExtensionConfig::default(),
                 None,
             )
@@ -870,7 +897,7 @@ fn claude_skill_materializes_project_skill_symlink() {
         "claude",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         "worker",
         &skills_config(["domain-review"]),
         None,
@@ -901,7 +928,7 @@ fn codex_skill_materializes_project_skill_symlink() {
         "codex",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &skills_config(["domain-review"]),
         None,
     )
@@ -930,7 +957,7 @@ fn antigravity_skill_materializes_project_skill_symlink() {
         "antigravity",
         sandbox.path(),
         workspace.path(),
-        ah::provider::home_layout::HomeLayoutRole::Worker,
+        ah::home_materialization::HomeLayoutRole::Worker,
         &skills_config(["domain-review"]),
         None,
     )
@@ -983,6 +1010,13 @@ fn collect_claude_commands(hooks: &[Value]) -> Vec<String> {
     hooks
         .iter()
         .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
+        .filter_map(|item| item["command"].as_str().map(str::to_string))
+        .collect()
+}
+
+fn collect_direct_commands(hooks: &[Value]) -> Vec<String> {
+    hooks
+        .iter()
         .filter_map(|item| item["command"].as_str().map(str::to_string))
         .collect()
 }

@@ -1,10 +1,10 @@
 #![cfg(unix)]
 
 use ah::error::CcbdError;
-use ah::provider::extensions::ExtensionConfig;
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeLayoutRole, prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
+use ah::provider::extensions::ExtensionConfig;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::ffi::OsString;

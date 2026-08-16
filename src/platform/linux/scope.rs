@@ -219,7 +219,7 @@ pub fn wrap_command(
         args: Vec::new(),
     };
     if env_state.unsafe_no_sandbox {
-        return command_with_env_prefix(manifest, extra_env_vars, &recovery);
+        return sandbox_refusal_command();
     }
 
     let mut cmd = vec![
@@ -273,7 +273,7 @@ pub fn wrap_command_with_recovery_and_sandbox_overrides(
     sandbox_overrides: &SandboxOverrides,
 ) -> Vec<String> {
     if env_state.unsafe_no_sandbox {
-        return command_with_env_prefix(manifest, extra_env_vars, &recovery);
+        return sandbox_refusal_command();
     }
 
     let mut cmd = vec![
@@ -318,7 +318,7 @@ pub fn master_command_with_env(
     sandbox_overrides: &SandboxOverrides,
 ) -> Vec<String> {
     if env_state.unsafe_no_sandbox || !env_state.systemd_run_available {
-        return shell_command_with_env_prefix(cmd, extra_env_vars);
+        return sandbox_refusal_command();
     }
 
     let mut command = vec![
@@ -338,6 +338,15 @@ pub fn master_command_with_env(
     command.push("--".to_string());
     command.extend(master_shell_command_with_env_prefix(cmd, extra_env_vars));
     command
+}
+
+fn sandbox_refusal_command() -> Vec<String> {
+    vec![
+        "sh".to_string(),
+        "-c".to_string(),
+        "echo 'agent provider execution refused: the required systemd user scope may not be replaced by bare execution' >&2; exit 126".to_string(),
+        "gas-agent-runtime-sandbox-guard".to_string(),
+    ]
 }
 
 fn append_daemon_unit_dependencies(cmd: &mut Vec<String>, daemon_unit: Option<&str>) {
@@ -445,7 +454,7 @@ fn claude_gateway_bridge_shell(
     ah_bin: Option<&Path>,
 ) -> Option<String> {
     claude_gateway_bridge_shell_with_ah_resolver(inner, extra_env_vars, ah_bin, || {
-        crate::provider::home_layout::resolve_current_ah_binary_strict()
+        crate::home_materialization::resolve_current_ah_binary_strict()
     })
 }
 
@@ -456,7 +465,7 @@ fn claude_gateway_bridge_shell_for_exe_path(
     current_exe: &Path,
 ) -> Option<String> {
     claude_gateway_bridge_shell_with_ah_resolver(inner, extra_env_vars, None, || {
-        crate::provider::home_layout::resolve_ah_binary_strict(current_exe).ok_or_else(|| {
+        crate::home_materialization::resolve_ah_binary_strict(current_exe).ok_or_else(|| {
             format!(
                 "cannot resolve ah binary next to ahd: no sibling ah beside {}",
                 current_exe.display()
@@ -484,29 +493,6 @@ fn claude_gateway_bridge_shell_with_ah_resolver(
         ),
         Err(err) => format!("echo {} >&2; exit 126", shell_quote(&err)),
     })
-}
-
-fn shell_command_with_env_prefix(
-    shell_cmd: &str,
-    extra_env_vars: &HashMap<String, String>,
-) -> Vec<String> {
-    let mut cmd = Vec::new();
-    let is_master = extra_env_vars.get("AH_ROLE").map(|s| s.as_str()) == Some("master");
-    if !extra_env_vars.is_empty() || is_master {
-        cmd.push("env".to_string());
-        if is_master {
-            cmd.push("-u".to_string());
-            cmd.push("AH_AGENT_ID".to_string());
-        }
-        let mut env_entries = extra_env_vars
-            .iter()
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>();
-        env_entries.sort();
-        cmd.extend(env_entries);
-    }
-    cmd.extend(["sh".to_string(), "-lc".to_string(), shell_cmd.to_string()]);
-    cmd
 }
 
 fn shell_quote(input: &str) -> String {
@@ -783,7 +769,7 @@ sleep 1
     }
 
     #[test]
-    fn test_spawn_command_scrubs_inherited_env_master() {
+    fn test_spawn_command_refuses_unsafe_master_environment() {
         use crate::platform::sys::scope::EnvState;
         use crate::platform::sys::scope::master_command_with_env;
         use std::collections::HashMap;
@@ -806,19 +792,13 @@ sleep 1
             &Default::default(),
         );
 
-        // Under no systemd, it falls back to shell_command_with_env_prefix
-        // The output command should look like: ["env", "-u", "AH_AGENT_ID", "AH_ROLE=master", "AH_SESSION_ID=test-session", "sh", "-lc", "test-cmd"]
-        assert_eq!(cmd[0], "env");
-        assert_eq!(cmd[1], "-u");
-        assert_eq!(cmd[2], "AH_AGENT_ID");
-        // Verify AH_ROLE=master and AH_SESSION_ID=test-session are in the env arguments
-        assert!(cmd.iter().any(|arg| arg == "AH_ROLE=master"));
-        assert!(cmd.iter().any(|arg| arg == "AH_SESSION_ID=test-session"));
-        assert!(!cmd.iter().any(|arg| arg.starts_with("AH_AGENT_ID=")));
+        assert_eq!(cmd[0], "sh");
+        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
+        assert!(!cmd.iter().any(|arg| arg == "test-cmd"));
     }
 
     #[test]
-    fn test_spawn_command_scrubs_inherited_env_worker() {
+    fn test_spawn_command_refuses_unsafe_worker_environment() {
         use crate::platform::sys::scope::wrap_command_with_recovery_and_sandbox_overrides;
         use crate::platform::sys::scope::{EnvState, RecoverySpawn};
         use std::collections::HashMap;
@@ -853,12 +833,8 @@ sleep 1
             &Default::default(),
         );
 
-        // For workers, it sets all three, so no "-u" is needed (it overrides the environment variable).
-        // Let's assert that the generated command has env prefix with all three variables, and no "-u AH_AGENT_ID"
-        assert_eq!(cmd[0], "env");
-        assert_ne!(cmd[1], "-u");
-        assert!(cmd.iter().any(|arg| arg == "AH_ROLE=worker"));
-        assert!(cmd.iter().any(|arg| arg == "AH_SESSION_ID=test-session"));
-        assert!(cmd.iter().any(|arg| arg == "AH_AGENT_ID=test-agent"));
+        assert_eq!(cmd[0], "sh");
+        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
+        assert!(!cmd.iter().any(|arg| arg == "claude"));
     }
 }

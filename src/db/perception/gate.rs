@@ -22,7 +22,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 ///
 /// Returns `Ok(true)` iff the CAS write applied; `Ok(false)` for a rejected precondition.
 pub(crate) fn transit_agent_perception_state_sync(
-    conn: &mut Connection,
+    conn: &Connection,
     agent_id: &str,
     from_states: &[&str],
     to_state: &str,

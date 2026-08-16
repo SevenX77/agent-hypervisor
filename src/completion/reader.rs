@@ -13,6 +13,7 @@ pub type LogCursorMap = BTreeMap<PathBuf, u64>;
 pub struct LogReadState {
     pub cursors: LogCursorMap,
     pub user_entry_seen_paths: BTreeSet<PathBuf>,
+    pub user_prompt_fingerprints: BTreeMap<PathBuf, String>,
 }
 
 impl LogReadState {
@@ -20,6 +21,7 @@ impl LogReadState {
         Self {
             cursors,
             user_entry_seen_paths: BTreeSet::new(),
+            user_prompt_fingerprints: BTreeMap::new(),
         }
     }
 }
@@ -32,8 +34,17 @@ pub struct LogCompletion {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LogActivity {
+    pub parsed: LogParseResult,
+    pub raw_path: PathBuf,
+    pub raw_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogTailReadResult {
+    pub activities: Vec<LogActivity>,
     pub completions: Vec<LogCompletion>,
+    pub completion_prompt_fingerprints: BTreeMap<(PathBuf, u64), String>,
     pub cursors: LogCursorMap,
     pub state: LogReadState,
 }
@@ -104,52 +115,10 @@ pub fn read_provider_assistant_progress_after_cursors(
     Ok(false)
 }
 
+#[cfg(test)]
 pub(crate) fn has_pending_tasks_in_transcript(bytes: &[u8]) -> bool {
-    use regex::Regex;
-    use serde_json::Value;
-    use std::collections::HashSet;
-
-    thread_local! {
-        static RE_TASK_ID: Regex = Regex::new(r"[a-zA-Z0-9\-]+/task-\d+").unwrap();
-        static RE_TASK_FINISHED: Regex = Regex::new(r#"Task id "([^"]+)" (?:was )?(?:finished|cancell?ed)"#).unwrap();
-    }
-
-    let mut started_tasks = HashSet::new();
-    let mut finished_tasks = HashSet::new();
-
-    let mut offset = 0;
-    while offset < bytes.len() {
-        let relative_end = bytes[offset..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .unwrap_or(bytes.len() - offset);
-        let line_end = offset + relative_end;
-        let line = &bytes[offset..line_end];
-        if !line.is_empty() {
-            if let Ok(val) = serde_json::from_slice::<Value>(line) {
-                if let Some(content) = val.get("content").and_then(Value::as_str) {
-                    if content.contains("Status: RUNNING")
-                        || content.contains("running as a background task")
-                    {
-                        RE_TASK_ID.with(|re| {
-                            for cap in re.captures_iter(content) {
-                                started_tasks.insert(cap[0].to_string());
-                            }
-                        });
-                    }
-                    RE_TASK_FINISHED.with(|re| {
-                        for cap in re.captures_iter(content) {
-                            finished_tasks.insert(cap[1].to_string());
-                        }
-                    });
-                }
-            }
-        }
-        offset = line_end + 1;
-    }
-
-    let pending_count = started_tasks.difference(&finished_tasks).count();
-    pending_count > 0
+    crate::provider::adapter("antigravity")
+        .is_some_and(|adapter| adapter.transcript_has_pending_work(bytes))
 }
 
 pub fn read_provider_log_tail_with_state(
@@ -157,7 +126,9 @@ pub fn read_provider_log_tail_with_state(
     log_root: &Path,
     state: &LogReadState,
 ) -> io::Result<LogTailReadResult> {
+    let mut activities = Vec::new();
     let mut completions = Vec::new();
+    let mut completion_prompt_fingerprints = BTreeMap::new();
     let mut updated_state = state.clone();
     let mut files = Vec::new();
     collect_provider_log_files(provider, log_root, &mut files)?;
@@ -170,6 +141,7 @@ pub fn read_provider_log_tail_with_state(
         let requires_user_entry = provider_requires_user_entry(provider);
         if requires_user_entry && consumed_offset > bytes.len() as u64 {
             updated_state.user_entry_seen_paths.remove(&path);
+            updated_state.user_prompt_fingerprints.remove(&path);
         }
         let mut seen_user_entry =
             requires_user_entry && updated_state.user_entry_seen_paths.contains(&path);
@@ -194,14 +166,36 @@ pub fn read_provider_log_tail_with_state(
             let line = String::from_utf8_lossy(line);
             let parsed = parse_provider_log_line(provider, line.as_ref());
             match parsed {
-                LogParseResult::UserMessage { .. } if requires_user_entry => {
+                LogParseResult::TurnStarted { .. } => {
+                    activities.push(LogActivity {
+                        parsed,
+                        raw_path: path.clone(),
+                        raw_offset: next_line_start as u64,
+                    });
+                }
+                LogParseResult::UserMessage {
+                    ref prompt_fingerprint,
+                    ..
+                } if requires_user_entry => {
                     seen_user_entry = true;
                     updated_state.user_entry_seen_paths.insert(path.clone());
+                    if let Some(prompt_fingerprint) = prompt_fingerprint {
+                        updated_state
+                            .user_prompt_fingerprints
+                            .insert(path.clone(), prompt_fingerprint.clone());
+                    } else {
+                        updated_state.user_prompt_fingerprints.remove(&path);
+                    }
+                    activities.push(LogActivity {
+                        parsed,
+                        raw_path: path.clone(),
+                        raw_offset: next_line_start as u64,
+                    });
                 }
                 LogParseResult::TurnComplete { .. } if !requires_user_entry || seen_user_entry => {
-                    if provider == "antigravity"
-                        && has_pending_tasks_in_transcript(&bytes[..line_end])
-                    {
+                    let completion_is_deferred = crate::provider::adapter(provider)
+                        .is_some_and(|adapter| adapter.completion_is_deferred(&bytes, line_end));
+                    if completion_is_deferred {
                         // Defer completion: do not push to completions
                     } else {
                         completions.push(LogCompletion {
@@ -209,9 +203,18 @@ pub fn read_provider_log_tail_with_state(
                             raw_path: path.clone(),
                             raw_offset: next_line_start as u64,
                         });
+                        if let Some(prompt_fingerprint) =
+                            updated_state.user_prompt_fingerprints.get(&path)
+                        {
+                            completion_prompt_fingerprints.insert(
+                                (path.clone(), next_line_start as u64),
+                                prompt_fingerprint.clone(),
+                            );
+                        }
                         if requires_user_entry {
                             seen_user_entry = false;
                             updated_state.user_entry_seen_paths.remove(&path);
+                            updated_state.user_prompt_fingerprints.remove(&path);
                         }
                     }
                 }
@@ -227,7 +230,9 @@ pub fn read_provider_log_tail_with_state(
     }
 
     Ok(LogTailReadResult {
+        activities,
         completions,
+        completion_prompt_fingerprints,
         cursors: updated_state.cursors.clone(),
         state: updated_state,
     })
@@ -269,32 +274,12 @@ fn collect_provider_log_files(
 }
 
 fn provider_log_file_matches(provider: &str, path: &Path) -> bool {
-    match provider {
-        "codex" => path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("rollout-") && name.ends_with(".jsonl")),
-        "claude" => path.extension().and_then(|extension| extension.to_str()) == Some("jsonl"),
-        "antigravity" => antigravity_transcript_path_matches(path),
-        _ => false,
-    }
+    crate::provider::adapter(provider).is_some_and(|adapter| adapter.transcript_file_matches(path))
 }
 
 fn provider_requires_user_entry(provider: &str) -> bool {
-    matches!(provider, "claude" | "antigravity")
-}
-
-fn antigravity_transcript_path_matches(path: &Path) -> bool {
-    let components = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect::<Vec<_>>();
-    let len = components.len();
-    len >= 5
-        && components[len - 5] == "brain"
-        && components[len - 3] == ".system_generated"
-        && components[len - 2] == "logs"
-        && components[len - 1] == "transcript.jsonl"
+    crate::provider::adapter(provider)
+        .is_some_and(|adapter| adapter.transcript_requires_user_entry())
 }
 
 #[cfg(test)]
@@ -405,6 +390,32 @@ mod tests {
     }
 
     #[test]
+    fn missing_root_can_be_polled_until_the_first_codex_transcript_appears() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().join("sessions");
+
+        let before =
+            read_provider_log_tail_with_state("codex", &root, &LogReadState::default()).unwrap();
+        assert!(before.activities.is_empty());
+        assert!(before.completions.is_empty());
+
+        let file = root.join("2026/08/rollout-session.jsonl");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(
+            &file,
+            concat!(
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
+                "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"last_agent_message\":\"done\"}}\n",
+            ),
+        )
+        .unwrap();
+
+        let after = read_provider_log_tail_with_state("codex", &root, &before.state).unwrap();
+        assert_eq!(after.activities.len(), 1);
+        assert_eq!(after.completions.len(), 1);
+    }
+
+    #[test]
     fn complete_before_cursor_is_ignored() {
         let temp = tempfile::TempDir::new().unwrap();
         let file = temp.path().join("rollout-session.jsonl");
@@ -500,11 +511,18 @@ mod tests {
                     turn_id: None,
                     reply: Some("PONG".to_string()),
                 },
-                raw_path: file,
+                raw_path: file.clone(),
                 raw_offset: fs::metadata(temp.path().join("project/session.jsonl"))
                     .unwrap()
                     .len(),
             }]
+        );
+        let completion_offset = fs::metadata(&file).unwrap().len();
+        assert_eq!(
+            result
+                .completion_prompt_fingerprints
+                .get(&(file, completion_offset)),
+            Some(&crate::runtime_observation::prompt_fingerprint("echo PONG"))
         );
     }
 
@@ -636,7 +654,10 @@ mod tests {
         let file = write_antigravity_fixture(
             temp.path(),
             "conv-1",
-            include_str!("../../tests/fixtures/antigravity_log/final_reply.jsonl"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/final_reply.jsonl"
+            )),
         );
 
         let result =
@@ -661,7 +682,10 @@ mod tests {
         let file = write_antigravity_fixture(
             temp.path(),
             "conv-1",
-            include_str!("../../tests/fixtures/antigravity_log/multi_turn.jsonl"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/multi_turn.jsonl"
+            )),
         );
 
         let result =
@@ -676,11 +700,14 @@ mod tests {
                     reply: Some("First answer".to_string()),
                 },
                 raw_path: file.clone(),
-                raw_offset: include_str!("../../tests/fixtures/antigravity_log/multi_turn.jsonl")
-                    .lines()
-                    .take(2)
-                    .map(|line| line.len() as u64 + 1)
-                    .sum(),
+                raw_offset: include_str!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/fixtures/antigravity_log/multi_turn.jsonl"
+                ))
+                .lines()
+                .take(2)
+                .map(|line| line.len() as u64 + 1)
+                .sum(),
             }
         );
         assert_eq!(
@@ -696,10 +723,22 @@ mod tests {
     fn antigravity_tool_call_permission_and_cancel_samples_do_not_complete() {
         let temp = tempfile::TempDir::new().unwrap();
         for (idx, fixture) in [
-            include_str!("../../tests/fixtures/antigravity_log/tool_call_in_progress.jsonl"),
-            include_str!("../../tests/fixtures/antigravity_log/tool_failure_no_final.jsonl"),
-            include_str!("../../tests/fixtures/antigravity_log/permission_required_no_final.jsonl"),
-            include_str!("../../tests/fixtures/antigravity_log/cancelled_no_final.jsonl"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/tool_call_in_progress.jsonl"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/tool_failure_no_final.jsonl"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/permission_required_no_final.jsonl"
+            )),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/cancelled_no_final.jsonl"
+            )),
         ]
         .into_iter()
         .enumerate()
@@ -720,10 +759,13 @@ mod tests {
             .path()
             .join("brain/conv-1/.system_generated/logs/transcript.jsonl");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
-        let stale_final = include_str!("../../tests/fixtures/antigravity_log/final_reply.jsonl")
-            .lines()
-            .nth(1)
-            .unwrap();
+        let stale_final = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/final_reply.jsonl"
+        ))
+        .lines()
+        .nth(1)
+        .unwrap();
         fs::write(&file, format!("{stale_final}\n")).unwrap();
 
         let result =
@@ -742,7 +784,10 @@ mod tests {
         let _file = write_antigravity_fixture(
             temp.path(),
             "conv-1",
-            include_str!("../../tests/fixtures/antigravity_log/premature_completion_waiting.jsonl"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/premature_completion_waiting.jsonl"
+            )),
         );
 
         let result =
@@ -794,8 +839,14 @@ mod tests {
 
     #[test]
     fn test_has_pending_tasks_in_transcript_fixtures_regression() {
-        let finished_str = include_str!("../../tests/fixtures/antigravity_log/finished.jsonl");
-        let canceled_str = include_str!("../../tests/fixtures/antigravity_log/canceled.jsonl");
+        let finished_str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/finished.jsonl"
+        ));
+        let canceled_str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/canceled.jsonl"
+        ));
 
         assert!(
             !super::has_pending_tasks_in_transcript(finished_str.as_bytes()),

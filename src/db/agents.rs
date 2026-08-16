@@ -12,14 +12,35 @@ pub(crate) fn insert_agent_sync(
     state: &str,
     pid: Option<i64>,
 ) -> Result<(), CcbdError> {
+    let lifecycle_id = crate::runtime_observation::store::new_lifecycle_id();
+    insert_agent_with_lifecycle_id_sync(
+        conn,
+        agent_id,
+        session_id,
+        provider,
+        &lifecycle_id,
+        state,
+        pid,
+    )
+}
+
+pub(crate) fn insert_agent_with_lifecycle_id_sync(
+    conn: &Connection,
+    agent_id: &str,
+    session_id: &str,
+    provider: &str,
+    lifecycle_id: &str,
+    state: &str,
+    pid: Option<i64>,
+) -> Result<(), CcbdError> {
     if agent_id.starts_with("master:") {
         return Err(CcbdError::IpcInvalidRequest(
             "agent_id prefix 'master:' is reserved for master hook sentinels".to_string(),
         ));
     }
     match conn.execute(
-        "INSERT INTO agents (id, session_id, provider, state, pid) VALUES (?, ?, ?, ?, ?)",
-        params![agent_id, session_id, provider, state, pid],
+        "INSERT INTO agents (id, session_id, provider, lifecycle_id, state, pid) VALUES (?, ?, ?, ?, ?, ?)",
+        params![agent_id, session_id, provider, lifecycle_id, state, pid],
     ) {
         Ok(_) => {}
         Err(err) if is_constraint_error(&err) => {
@@ -37,8 +58,8 @@ pub(crate) fn insert_agent_sync(
             conn.execute("DELETE FROM agents WHERE id = ?", params![agent_id])
                 .map_err(|err| map_db_error("delete killed agent before insert", err))?;
             conn.execute(
-                "INSERT INTO agents (id, session_id, provider, state, pid) VALUES (?, ?, ?, ?, ?)",
-                params![agent_id, session_id, provider, state, pid],
+                "INSERT INTO agents (id, session_id, provider, lifecycle_id, state, pid) VALUES (?, ?, ?, ?, ?, ?)",
+                params![agent_id, session_id, provider, lifecycle_id, state, pid],
             )
             .map_err(|err| {
                 if is_constraint_error(&err) {
@@ -91,22 +112,23 @@ pub(crate) fn query_agent_sync(
     agent_id: &str,
 ) -> Result<Option<Agent>, CcbdError> {
     conn.query_row(
-        "SELECT id, session_id, provider, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE id = ?",
+        "SELECT id, session_id, provider, lifecycle_id, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE id = ?",
         params![agent_id],
         |row| {
             Ok(Agent {
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 provider: row.get(2)?,
-                state: row.get(3)?,
-                state_version: row.get(4)?,
-                pid: row.get(5)?,
-                exit_code: row.get(6)?,
-                error_code: row.get(7)?,
-                sub_state: row.get(8)?,
-                config_hash: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
+                lifecycle_id: row.get(3)?,
+                state: row.get(4)?,
+                state_version: row.get(5)?,
+                pid: row.get(6)?,
+                exit_code: row.get(7)?,
+                error_code: row.get(8)?,
+                sub_state: row.get(9)?,
+                config_hash: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         },
     )
@@ -119,7 +141,7 @@ pub(crate) fn query_agents_by_state_sync(
     state: &str,
 ) -> Result<Vec<Agent>, CcbdError> {
     let mut stmt = conn
-        .prepare("SELECT id, session_id, provider, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE state = ? ORDER BY updated_at ASC, id ASC")
+        .prepare("SELECT id, session_id, provider, lifecycle_id, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE state = ? ORDER BY updated_at ASC, id ASC")
         .map_err(|err| map_db_error("prepare query agents by state", err))?;
     let rows = stmt
         .query_map(params![state], |row| {
@@ -127,15 +149,16 @@ pub(crate) fn query_agents_by_state_sync(
                 id: row.get(0)?,
                 session_id: row.get(1)?,
                 provider: row.get(2)?,
-                state: row.get(3)?,
-                state_version: row.get(4)?,
-                pid: row.get(5)?,
-                exit_code: row.get(6)?,
-                error_code: row.get(7)?,
-                sub_state: row.get(8)?,
-                config_hash: row.get(9)?,
-                created_at: row.get(10)?,
-                updated_at: row.get(11)?,
+                lifecycle_id: row.get(3)?,
+                state: row.get(4)?,
+                state_version: row.get(5)?,
+                pid: row.get(6)?,
+                exit_code: row.get(7)?,
+                error_code: row.get(8)?,
+                sub_state: row.get(9)?,
+                config_hash: row.get(10)?,
+                created_at: row.get(11)?,
+                updated_at: row.get(12)?,
             })
         })
         .map_err(|err| map_db_error("query agents by state", err))?;
@@ -197,6 +220,30 @@ pub async fn insert_agent(
     spawn_db("agents::insert_agent", move || {
         let conn = db.conn();
         insert_agent_sync(&conn, &agent_id, &session_id, &provider, &state, pid)
+    })
+    .await
+}
+
+pub(crate) async fn insert_agent_with_lifecycle_id(
+    db: Db,
+    agent_id: String,
+    session_id: String,
+    provider: String,
+    lifecycle_id: String,
+    state: String,
+    pid: Option<i64>,
+) -> Result<(), CcbdError> {
+    spawn_db("agents::insert_agent_with_lifecycle_id", move || {
+        let conn = db.conn();
+        insert_agent_with_lifecycle_id_sync(
+            &conn,
+            &agent_id,
+            &session_id,
+            &provider,
+            &lifecycle_id,
+            &state,
+            pid,
+        )
     })
     .await
 }

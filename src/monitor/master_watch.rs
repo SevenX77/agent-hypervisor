@@ -6,6 +6,7 @@ use crate::db::system::{
     snapshot_master_death_session_activity,
 };
 use crate::error::CcbdError;
+use crate::home_materialization::sandbox_home_for_sandbox_dir;
 use crate::master_revival::{
     MasterDeathDecision, MasterReviveAttemptDecision, MasterTransitionOutcome,
     begin_master_recovery_readiness_wait_for_master_watch,
@@ -20,13 +21,12 @@ use crate::master_revival::{
     remove_master_monitor_key_if_generation_matches, try_claim_master_transition,
 };
 use crate::monitor::master_reaper::{
-    FailedReviveMasterReapTarget, ReviveMasterReadinessCheck,
-    inject_master_continue_instruction_best_effort, prepare_revive_master_readiness_check,
-    register_revived_master_watch_and_prepare_readiness,
-    reprovision_declared_workers_after_master_revive, spawn_master_confirm_timer,
-    spawn_replacement_master_pane, write_master_revival_redispatch_marker,
+    FailedReviveMasterReapTarget, ReviveMasterReadinessCheck, inject_master_continue_instruction,
+    prepare_revive_master_readiness_check, register_revived_master_watch_and_prepare_readiness,
+    reprovision_declared_workers_after_master_revive, revive_master_provider,
+    spawn_master_confirm_timer, spawn_replacement_master_pane,
+    write_master_revival_redispatch_marker,
 };
-use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
 use crate::rpc::Ctx;
 use crate::sandbox::{EnvState, path};
 use crate::tmux::{TmuxPaneId, TmuxServer};
@@ -706,6 +706,13 @@ async fn revive_master_after_exit_windowed(
         unixepoch(),
     )?;
     persist_revived_master_cmd(&db, &session_id, &master_cmd)?;
+    let master_provider = revive_master_provider(&master_cmd).ok_or_else(|| {
+        CcbdError::EnvironmentNotSupported {
+            details: format!(
+                "cannot deliver the revived-master continue action safely because the stored command names no supported provider: {master_cmd:?}"
+            ),
+        }
+    })?;
     let readiness_check = register_revived_master_watch_and_prepare_readiness(
         &db,
         &tmux_server,
@@ -719,15 +726,24 @@ async fn revive_master_after_exit_windowed(
         &spawned.master_sandbox_home,
         outcome.monitor_key,
     )?;
-    inject_master_continue_instruction_best_effort(
+    inject_master_continue_instruction(
         tmux_server.as_ref(),
         &spawned.pane,
         redispatch_marker_path.as_deref(),
-        |tmux, pane, text| {
-            let tmux = tmux.clone();
+        |_tmux, pane, text| {
+            let tmux = tmux_server.clone();
+            let provider = master_provider.clone();
             async move {
-                tmux.send_keys_literal(pane.clone(), text).await?;
-                tmux.send_keys_keysym(pane, "Enter".to_string()).await
+                crate::prompt_delivery::deliver_prompt(
+                    tmux,
+                    "revived-master",
+                    &provider,
+                    pane,
+                    text,
+                    true,
+                )
+                .await
+                .map(|_| ())
             }
         },
     )
@@ -1225,8 +1241,10 @@ async fn revive_master_readiness_ready(
             if let Some(ready) = revive_master_readiness_ack_override(session_id) {
                 return Ok(ready);
             }
-            Ok(master_runtime_matches(db, session_id, expected_pid, expected_generation)?
-                && master_process_is_alive(expected_pid))
+            Ok(
+                master_runtime_matches(db, session_id, expected_pid, expected_generation)?
+                    && master_process_is_alive(expected_pid),
+            )
         }
     }
 }
@@ -1426,7 +1444,7 @@ mod tests {
     use crate::monitor::master_reaper::{
         FailedReviveMasterReapEvent, FailedReviveMasterReapTarget,
         MASTER_REVIVE_CONTINUE_INSTRUCTION, ReviveMasterReadinessCheck,
-        build_master_revive_command, inject_master_continue_instruction_best_effort,
+        build_master_revive_command, inject_master_continue_instruction,
         master_revival_redispatch_marker_path, prepare_revive_master_readiness_check,
         reap_failed_revive_master, set_failed_revive_master_reap_recorder,
         write_master_revival_redispatch_marker,
@@ -2633,8 +2651,8 @@ provider = "bash"
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(temp.path().join(".codex/sessions")).unwrap();
 
-        let check = prepare_revive_master_readiness_check("s_ack_mode", "codex", temp.path())
-            .unwrap();
+        let check =
+            prepare_revive_master_readiness_check("s_ack_mode", "codex", temp.path()).unwrap();
 
         assert_eq!(check.mode_name(), "ack");
         assert_eq!(check.strength(), "semantic");
@@ -3505,7 +3523,6 @@ provider = "bash"
     #[tokio::test(flavor = "multi_thread")]
     async fn master_revive_stale_inflight_dispatch_failure_does_not_overwrite_requeued_job() {
         let _global_env_guard = GLOBAL_ENV_TEST_LOCK.lock().await;
-        let enter_delay = EnvVarGuard::set("CCB_TMUX_ENTER_DELAY", "2.0");
         let file = tempfile::NamedTempFile::new().unwrap();
         let state_dir = tempfile::TempDir::new().unwrap().keep();
         let project_dir = tempfile::TempDir::new().unwrap();
@@ -3638,7 +3655,6 @@ provider = "bash"
         );
         assert_eq!(job.error_reason.as_deref(), Some("RECOVERY_REQUEUED:0"));
 
-        drop(enter_delay);
         // Drive orchestrator ticks until the requeued job is redispatched. run_once()
         // can legitimately return false on a tick where the reprovisioned worker is
         // not IDLE-ready yet, but the requeued job row must remain continuously visible.
@@ -3942,12 +3958,15 @@ provider = "bash"
             .unwrap();
         }
 
-        let master_sandbox_dir =
-            crate::sandbox::path::resolve_sandbox_dir(&state_dir, &session_id, "master", &state_dir)
-                .unwrap();
+        let master_sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
+            &state_dir,
+            &session_id,
+            "master",
+            &state_dir,
+        )
+        .unwrap();
         let expected_home =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&master_sandbox_dir)
-                .unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&master_sandbox_dir).unwrap();
         let env_capture = state_dir.join("batch-g-revived-master-env");
         let redispatch_marker = master_revival_redispatch_marker_path(&state_dir, &session_id, 6);
         let expected_socket = state_dir.join("ahd.sock");
@@ -4051,7 +4070,7 @@ provider = "bash"
         let observed = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
 
         let writer_observed = observed.clone();
-        inject_master_continue_instruction_best_effort(
+        inject_master_continue_instruction(
             &tmux,
             &pane,
             None,
@@ -4071,14 +4090,14 @@ provider = "bash"
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn master_revive_continue_injection_failure_keeps_marker_and_does_not_block() {
+    async fn master_revive_continue_injection_failure_keeps_marker_and_blocks_readiness() {
         let state_dir = tempfile::TempDir::new().unwrap();
         let tmux = TmuxServer::new(state_dir.path());
         let pane = TmuxPaneId("%continue-fail:1.0".to_string());
         let marker = state_dir.path().join("redispatch-marker.json");
         std::fs::write(&marker, "{}").unwrap();
 
-        let result = inject_master_continue_instruction_best_effort(
+        let result = inject_master_continue_instruction(
             &tmux,
             &pane,
             Some(&marker),
@@ -4090,8 +4109,8 @@ provider = "bash"
         .await;
 
         assert!(
-            result.is_ok(),
-            "continue injection is best-effort and must not block master revive"
+            result.is_err(),
+            "unconfirmed continue delivery must block readiness"
         );
         assert!(
             marker.exists(),

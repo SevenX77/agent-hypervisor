@@ -88,7 +88,7 @@ pub fn print_tmux_hint(socket: &Path) -> Result<(), CliError> {
 
 #[cfg(test)]
 mod tests {
-    use super::session_row;
+    use super::{print_terminal_job, session_row};
     use serde_json::json;
 
     #[test]
@@ -106,6 +106,14 @@ mod tests {
         assert_eq!(row.session_id, "sess_1");
         assert_eq!(row.status, "CLOSED");
         assert_eq!(row.db_tracked_agents, "2");
+    }
+
+    #[test]
+    fn cancelled_and_killed_jobs_are_not_successful_terminal_results() {
+        for status in ["CANCELLED", "KILLED"] {
+            let error = print_terminal_job(json!({"status": status})).unwrap_err();
+            assert!(error.to_string().contains(status));
+        }
     }
 }
 
@@ -126,7 +134,12 @@ pub fn print_terminal_job(result: Value) -> Result<(), CliError> {
             eprintln!("{reason}");
             std::process::exit(2);
         }
-        Some("CANCELLED") => Ok(()),
+        Some("CANCELLED") => Err(CliError::InvalidResponse(
+            "job terminated with status CANCELLED".into(),
+        )),
+        Some("KILLED") => Err(CliError::InvalidResponse(
+            "job terminated with status KILLED".into(),
+        )),
         Some(other) => Err(CliError::InvalidResponse(format!(
             "job.wait returned non-terminal status {other}"
         ))),

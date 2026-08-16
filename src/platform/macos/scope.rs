@@ -36,6 +36,12 @@ impl SystemctlRunner for RealSystemctlRunner {
         ))
     }
 
+    fn unit_is_active(&self, unit: &str) -> Result<bool, io::Error> {
+        Err(io::Error::other(format!(
+            "macOS: execution-scope observation for {unit} is unsupported"
+        )))
+    }
+
     fn stop_unit(&self, unit: &str) -> Result<(), io::Error> {
         Err(io::Error::other(format!(
             "macOS: systemctl stop {unit} is unsupported until PR-4 ownership cascade"

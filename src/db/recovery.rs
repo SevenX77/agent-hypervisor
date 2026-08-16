@@ -437,6 +437,7 @@ pub(crate) fn replace_killed_agent_and_requeue_job_sync(
     spec: &AgentSpawnSpec,
     config_hash: &str,
     pid: i64,
+    lifecycle_id: &str,
     captured_intent: Option<&AgentRecoveryIntent>,
 ) -> Result<usize, CcbdError> {
     let mut conn = db.conn();
@@ -471,11 +472,12 @@ pub(crate) fn replace_killed_agent_and_requeue_job_sync(
         .map_err(|err| CcbdError::DbConstraintViolation(format!("delete killed agent: {err}")))?;
     run_replace_killed_agent_after_delete_test_hook();
 
-    crate::db::agents::insert_agent_sync(
+    crate::db::agents::insert_agent_with_lifecycle_id_sync(
         &tx,
         &spec.agent_id,
         session_id,
         &spec.provider,
+        lifecycle_id,
         "SPAWNING",
         Some(pid),
     )?;
@@ -1103,6 +1105,7 @@ mod tests {
                 &spec,
                 "hash-atomic",
                 222,
+                "lifecycle-atomic",
                 Some(&intent),
             )
         });

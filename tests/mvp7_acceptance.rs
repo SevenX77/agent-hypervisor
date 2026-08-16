@@ -5,7 +5,7 @@ mod common;
 use ah::db;
 use ah::db::agents::query_agent_state;
 use ah::db::sessions::insert_session;
-use ah::provider::home_layout::prepare_home_layout;
+use ah::home_materialization::prepare_home_layout;
 use ah::rpc::Ctx;
 use ah::rpc::handlers::{
     handle_agent_kill, handle_agent_read, handle_agent_send, handle_agent_spawn,

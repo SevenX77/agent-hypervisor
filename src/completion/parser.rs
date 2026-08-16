@@ -29,7 +29,9 @@ pub fn check_pending_tasks_from_log_root(
     for path in cursors.keys() {
         if let Ok(bytes) = std::fs::read(path) {
             checked_any = true;
-            if crate::completion::reader::has_pending_tasks_in_transcript(&bytes) {
+            if crate::provider::adapter(provider)
+                .is_some_and(|adapter| adapter.transcript_has_pending_work(&bytes))
+            {
                 return Some(true);
             }
         }
@@ -45,87 +47,23 @@ pub fn classify_terminality(
     _prompt_text: Option<&str>,
     has_pending_tasks: Option<bool>,
 ) -> CompletionTerminality {
-    if provider == "antigravity" {
-        // 1. Prioritize transcript task tracking signal if available.
-        if let Some(pending) = has_pending_tasks {
-            if pending {
-                return CompletionTerminality::DeferredBackgroundWork {
-                    reason: "ANTIGRAVITY_DEFERRED_BACKGROUND_WORK".to_string(),
-                };
-            } else {
-                return CompletionTerminality::Terminal;
-            }
-        }
-
-        // 2. Fallback to prose matching if transcript is not accessible (e.g. in unit tests).
-        let reply_lower = candidate_reply.to_lowercase();
-        let english = [
-            "waiting for",
-            "still running",
-            "running in the background",
-            "background cargo",
-            "i'll wait",
-            "will report",
-            "i'll update",
-            "once it finishes",
-        ];
-        for p in &english {
-            if reply_lower.contains(p) {
-                return CompletionTerminality::DeferredBackgroundWork {
-                    reason: "ANTIGRAVITY_DEFERRED_BACKGROUND_WORK".to_string(),
-                };
-            }
-        }
-
-        let chinese = ["等待", "等后台", "还在跑", "仍在运行", "跑完后", "稍后回报"];
-        for p in &chinese {
-            if candidate_reply.contains(p) {
-                return CompletionTerminality::DeferredBackgroundWork {
-                    reason: "ANTIGRAVITY_DEFERRED_BACKGROUND_WORK".to_string(),
-                };
-            }
-        }
-
-        thread_local! {
-            static RE_BACKGROUND_RUN: regex::Regex = regex::Regex::new(r"后台.*跑").unwrap();
-            static RE_COMPLETE_REPORT: regex::Regex = regex::Regex::new(r"完成后.*报告").unwrap();
-        }
-
-        let mut is_deferred = false;
-        RE_BACKGROUND_RUN.with(|re| {
-            if re.is_match(candidate_reply) {
-                is_deferred = true;
-            }
-        });
-        if is_deferred {
-            return CompletionTerminality::DeferredBackgroundWork {
-                reason: "ANTIGRAVITY_DEFERRED_BACKGROUND_WORK".to_string(),
-            };
-        }
-
-        RE_COMPLETE_REPORT.with(|re| {
-            if re.is_match(candidate_reply) {
-                is_deferred = true;
-            }
-        });
-        if is_deferred {
-            return CompletionTerminality::DeferredBackgroundWork {
-                reason: "ANTIGRAVITY_DEFERRED_BACKGROUND_WORK".to_string(),
-            };
-        }
-    }
-
-    CompletionTerminality::Terminal
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.classify_terminality(candidate_reply, has_pending_tasks))
+        .unwrap_or(CompletionTerminality::Terminal)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogParseResult {
+    TurnStarted {
+        turn_id: Option<String>,
+    },
     TurnComplete {
         turn_id: Option<String>,
         reply: Option<String>,
     },
     UserMessage {
         turn_id: Option<String>,
+        prompt_fingerprint: Option<String>,
     },
     NotTerminal,
     UnknownDegrade {
@@ -138,12 +76,9 @@ pub fn parse_provider_log_line(provider: &str, line: &str) -> LogParseResult {
         return LogParseResult::NotTerminal;
     };
 
-    match provider {
-        "codex" => parse_codex_log_value(&value),
-        "claude" => parse_claude_log_value(&value),
-        "antigravity" => parse_antigravity_log_value(&value),
-        _ => LogParseResult::NotTerminal,
-    }
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.parse_transcript_value(&value))
+        .unwrap_or(LogParseResult::NotTerminal)
 }
 
 pub fn provider_log_line_has_assistant_progress(provider: &str, line: &str) -> bool {
@@ -151,177 +86,8 @@ pub fn provider_log_line_has_assistant_progress(provider: &str, line: &str) -> b
         return false;
     };
 
-    match provider {
-        "claude" => claude_log_value_has_assistant_progress(&value),
-        _ => false,
-    }
-}
-
-fn parse_codex_log_value(value: &Value) -> LogParseResult {
-    if value.get("type").and_then(Value::as_str) != Some("event_msg") {
-        return LogParseResult::NotTerminal;
-    }
-    let Some(payload) = value.get("payload") else {
-        return LogParseResult::NotTerminal;
-    };
-    if payload.get("type").and_then(Value::as_str) != Some("task_complete") {
-        if payload.get("type").and_then(Value::as_str) == Some("agent_message")
-            && payload.get("phase").and_then(Value::as_str) == Some("final_answer")
-        {
-            tracing::debug!(
-                payload_type = "agent_message",
-                phase = "final_answer",
-                "ignored terminal-looking codex log line without task_complete"
-            );
-        }
-        return LogParseResult::NotTerminal;
-    }
-
-    LogParseResult::TurnComplete {
-        turn_id: payload
-            .get("turn_id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        reply: payload
-            .get("last_agent_message")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    }
-}
-
-fn parse_claude_log_value(value: &Value) -> LogParseResult {
-    if is_claude_user_entry(value) {
-        return LogParseResult::UserMessage {
-            turn_id: value
-                .get("promptId")
-                .and_then(Value::as_str)
-                .map(str::to_string),
-        };
-    }
-
-    if value.get("type").and_then(Value::as_str) != Some("assistant") {
-        return LogParseResult::NotTerminal;
-    }
-    let Some(message) = value.get("message") else {
-        return LogParseResult::NotTerminal;
-    };
-    if message.get("type").and_then(Value::as_str) != Some("message")
-        || message.get("role").and_then(Value::as_str) != Some("assistant")
-    {
-        return LogParseResult::NotTerminal;
-    }
-
-    match message.get("stop_reason").and_then(Value::as_str) {
-        Some("end_turn" | "stop_sequence" | "max_tokens") => {
-            let Some(reply) = claude_text_reply(message) else {
-                return LogParseResult::NotTerminal;
-            };
-            LogParseResult::TurnComplete {
-                turn_id: None,
-                reply: Some(reply),
-            }
-        }
-        Some("tool_use") => LogParseResult::NotTerminal,
-        Some(stop_reason) => {
-            tracing::warn!(stop_reason, "unknown Claude stop_reason in completion log");
-            LogParseResult::UnknownDegrade {
-                reason: "claude_unknown_stop_reason".to_string(),
-            }
-        }
-        None => {
-            tracing::warn!("missing Claude stop_reason in completion log");
-            LogParseResult::UnknownDegrade {
-                reason: "claude_missing_stop_reason".to_string(),
-            }
-        }
-    }
-}
-
-fn is_claude_user_entry(value: &Value) -> bool {
-    if value.get("type").and_then(Value::as_str) == Some("user") {
-        return true;
-    }
-    value
-        .get("message")
-        .and_then(|message| message.get("role"))
-        .and_then(Value::as_str)
-        == Some("user")
-}
-
-fn claude_log_value_has_assistant_progress(value: &Value) -> bool {
-    if value.get("type").and_then(Value::as_str) != Some("assistant") {
-        return false;
-    }
-    let Some(message) = value.get("message") else {
-        return false;
-    };
-    if message.get("type").and_then(Value::as_str) != Some("message")
-        || message.get("role").and_then(Value::as_str) != Some("assistant")
-    {
-        return false;
-    }
-    message
-        .get("content")
-        .and_then(Value::as_array)
-        .is_some_and(|content| {
-            content.iter().any(|item| {
-                matches!(
-                    item.get("type").and_then(Value::as_str),
-                    Some("text" | "tool_use" | "thinking")
-                )
-            })
-        })
-}
-
-fn claude_text_reply(message: &Value) -> Option<String> {
-    let content = message.get("content")?.as_array()?;
-    let text_parts = content
-        .iter()
-        .filter_map(|item| {
-            if item.get("type").and_then(Value::as_str) == Some("text") {
-                item.get("text").and_then(Value::as_str)
-            } else {
-                None
-            }
-        })
-        .collect::<Vec<_>>();
-
-    if text_parts.is_empty() {
-        None
-    } else {
-        Some(text_parts.join(""))
-    }
-}
-
-fn parse_antigravity_log_value(value: &Value) -> LogParseResult {
-    if value.get("source").and_then(Value::as_str) == Some("USER_EXPLICIT")
-        && value.get("type").and_then(Value::as_str) == Some("USER_INPUT")
-    {
-        return LogParseResult::UserMessage { turn_id: None };
-    }
-
-    if value.get("source").and_then(Value::as_str) != Some("MODEL")
-        || value.get("type").and_then(Value::as_str) != Some("PLANNER_RESPONSE")
-        || value.get("status").and_then(Value::as_str) != Some("DONE")
-    {
-        return LogParseResult::NotTerminal;
-    }
-
-    if value
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .is_some_and(|tool_calls| !tool_calls.is_empty())
-    {
-        return LogParseResult::NotTerminal;
-    }
-
-    LogParseResult::TurnComplete {
-        turn_id: None,
-        reply: value
-            .get("content")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-    }
+    crate::provider::adapter(provider)
+        .is_some_and(|adapter| adapter.transcript_has_assistant_progress(&value))
 }
 
 #[cfg(test)]
@@ -341,6 +107,37 @@ mod tests {
             LogParseResult::TurnComplete {
                 turn_id: Some("turn-1".to_string()),
                 reply: Some("PONG".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn codex_task_started_emits_turn_started() {
+        let line = r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}"#;
+
+        let parsed = parse_provider_log_line("codex", line);
+
+        assert_eq!(
+            parsed,
+            LogParseResult::TurnStarted {
+                turn_id: Some("turn-1".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn claude_user_message_carries_prompt_fingerprint() {
+        let line = r#"{"type":"user","promptId":"prompt-1","message":{"role":"user","content":"echo PONG\n"}}"#;
+
+        let parsed = parse_provider_log_line("claude", line);
+
+        assert_eq!(
+            parsed,
+            LogParseResult::UserMessage {
+                turn_id: Some("prompt-1".to_string()),
+                prompt_fingerprint: Some(crate::runtime_observation::prompt_fingerprint(
+                    "echo PONG\n"
+                )),
             }
         );
     }
@@ -440,22 +237,53 @@ mod tests {
 
     #[test]
     fn antigravity_user_input_emits_user_message_baseline() {
-        let line = include_str!("../../tests/fixtures/antigravity_log/final_reply.jsonl")
-            .lines()
-            .next()
-            .unwrap();
+        let line = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/final_reply.jsonl"
+        ))
+        .lines()
+        .next()
+        .unwrap();
 
         let parsed = parse_provider_log_line("antigravity", line);
 
-        assert_eq!(parsed, LogParseResult::UserMessage { turn_id: None });
+        assert_eq!(
+            parsed,
+            LogParseResult::UserMessage {
+                turn_id: None,
+                prompt_fingerprint: Some(crate::runtime_observation::prompt_fingerprint(
+                    "Summarize the current state"
+                )),
+            }
+        );
+    }
+
+    #[test]
+    fn antigravity_user_request_wrapper_excludes_runtime_metadata_from_fingerprint() {
+        let line = r#"{"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE","content":"<USER_REQUEST>\nReply with exactly: antigravity-ok\n</USER_REQUEST>\n<ADDITIONAL_METADATA>\nruntime-only\n</ADDITIONAL_METADATA>"}"#;
+
+        let parsed = parse_provider_log_line("antigravity", line);
+
+        assert_eq!(
+            parsed,
+            LogParseResult::UserMessage {
+                turn_id: None,
+                prompt_fingerprint: Some(crate::runtime_observation::prompt_fingerprint(
+                    "Reply with exactly: antigravity-ok\n"
+                )),
+            }
+        );
     }
 
     #[test]
     fn antigravity_final_planner_response_emits_turn_complete() {
-        let line = include_str!("../../tests/fixtures/antigravity_log/final_reply.jsonl")
-            .lines()
-            .nth(1)
-            .unwrap();
+        let line = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/final_reply.jsonl"
+        ))
+        .lines()
+        .nth(1)
+        .unwrap();
 
         let parsed = parse_provider_log_line("antigravity", line);
 
@@ -470,10 +298,13 @@ mod tests {
 
     #[test]
     fn antigravity_planner_response_with_tool_call_is_not_terminal() {
-        let line = include_str!("../../tests/fixtures/antigravity_log/tool_call_in_progress.jsonl")
-            .lines()
-            .nth(1)
-            .unwrap();
+        let line = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/tool_call_in_progress.jsonl"
+        ))
+        .lines()
+        .nth(1)
+        .unwrap();
 
         let parsed = parse_provider_log_line("antigravity", line);
 
@@ -482,10 +313,13 @@ mod tests {
 
     #[test]
     fn antigravity_cancelled_planner_response_is_not_terminal() {
-        let line = include_str!("../../tests/fixtures/antigravity_log/cancelled_no_final.jsonl")
-            .lines()
-            .nth(1)
-            .unwrap();
+        let line = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/antigravity_log/cancelled_no_final.jsonl"
+        ))
+        .lines()
+        .nth(1)
+        .unwrap();
 
         let parsed = parse_provider_log_line("antigravity", line);
 
@@ -613,7 +447,7 @@ mod tests {
         fs::create_dir_all(&sandbox_dir).unwrap();
 
         let home_root =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         let log_dir =
             home_root.join(".gemini/antigravity-cli/brain/conv-uuid-1234/.system_generated/logs");
         fs::create_dir_all(&log_dir).unwrap();

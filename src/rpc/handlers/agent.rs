@@ -1,15 +1,19 @@
-use super::params::{
-    extension_config_from_params, required_i64, required_str, should_press_enter_after_paste,
-};
+use super::params::{extension_config_from_params, required_i64, required_str};
 use super::sessions::session_window_lock;
-use crate::db::agents::{insert_agent, query_agent, query_agent_state, update_agent_config_hash};
+use crate::db::agents::{
+    insert_agent_with_lifecycle_id, query_agent, query_agent_state, update_agent_config_hash,
+};
 use crate::db::agents_lifecycle::mark_agent_killed;
 use crate::db::events::{insert_event, query_event_by_request_id, query_events_since};
 use crate::db::events_progress::record_send_progress;
 use crate::db::sessions::{apply_master_notify_event, query_session_by_id};
-use crate::db::state_machine::{mark_agent_idle_hook_event, mark_agent_waiting_for_ack};
+use crate::db::state_machine::mark_agent_waiting_for_ack;
 use crate::db::system::remove_agent_sandbox_dir_sync;
 use crate::error::CcbdError;
+use crate::home_materialization::{
+    HomeLayoutRole, HookPushContext, is_ccb_sandbox_home,
+    prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
+};
 use crate::marker::{
     MarkerMatcher, PromptTimerScanContext, TimerKind, parser_registry, registry,
     spawn_marker_timer_task_with_prompt,
@@ -18,12 +22,11 @@ use crate::monitor;
 use crate::monitor::agent_watch::spawn_agent_pidfd_watch_task;
 use crate::provider::bundles::{BundleRole, resolve_bundles_for_provider};
 use crate::provider::fingerprint::{ConfigFingerprintInput, ConfigRole, compute_config_hash};
-use crate::provider::home_layout::{
-    HomeLayoutRole, HookPushContext, is_ccb_sandbox_home,
-    prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
-};
-use crate::provider::manifest::compute_recovery_args;
+use crate::provider::manifest::{compute_recovery_args, press_enter_after_paste};
 use crate::rpc::Ctx;
+use crate::runtime_observation::intake::{
+    HookCompletionObservation, WorkingObservation, observe_hook_completion, observe_working,
+};
 use crate::sandbox::{SandboxOverrides, path, systemd};
 use crate::tmux::agent_session_name;
 #[cfg(unix)]
@@ -93,6 +96,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     }
     let provider = required_str(&params, "provider")?;
     let manifest = crate::provider::manifest::try_get_manifest(provider)?;
+    let lifecycle_id = crate::runtime_observation::store::new_lifecycle_id();
     let extensions = extension_config_from_params(&params)?;
     let extra_env_vars = match params.get("extra_env_vars") {
         Some(value) => {
@@ -172,6 +176,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
         let hook_push_ctx = HookPushContext {
             agent_id: agent_id.to_string(),
             provider: manifest.provider_name.to_string(),
+            lifecycle_id: lifecycle_id.clone(),
             ahd_socket_path: ctx.state_dir.join("ahd.sock"),
             enabled: hook_push_enabled,
         };
@@ -358,11 +363,12 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
         };
         match db_action {
             AgentSpawnDbAction::InsertDefault => {
-                if let Err(err) = insert_agent(
+                if let Err(err) = insert_agent_with_lifecycle_id(
                     ctx.db.clone(),
                     agent_id.to_string(),
                     session_id.to_string(),
                     provider.to_string(),
+                    lifecycle_id.clone(),
                     "SPAWNING".to_string(),
                     Some(pid as i64),
                 )
@@ -392,6 +398,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
                     &spawn_spec,
                     &expected_hash,
                     pid as i64,
+                    &lifecycle_id,
                     captured_intent.as_ref(),
                 ) {
                     cleanup_spawn_resources(
@@ -875,6 +882,10 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
         .get("event_id")
         .and_then(Value::as_str)
         .map(str::to_string);
+    let lifecycle_id = params
+        .get("lifecycle_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
 
     if let Some((session_id, master_generation)) = parse_master_agent_id(&agent_id)? {
         return handle_master_notify(
@@ -900,9 +911,174 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
             agent.provider
         )));
     }
+    if let Some(reported_lifecycle_id) = lifecycle_id.as_deref()
+        && reported_lifecycle_id != agent.lifecycle_id
+    {
+        tracing::warn!(
+            agent_id = %agent_id,
+            provider = %agent.provider,
+            reported_lifecycle_id,
+            current_lifecycle_id = %agent.lifecycle_id,
+            event = %event,
+            "ignored stale provider hook from an earlier lifecycle"
+        );
+        return Ok(json!({
+            "agent_id": agent_id,
+            "event": event,
+            "role": "worker",
+            "provider": agent.provider,
+            "event_id": event_id,
+            "lifecycle_id": reported_lifecycle_id,
+            "accepted": true,
+            "ignored_stale": true,
+            "transitioned": false,
+            "changes": 0,
+            "affected_job_id": null,
+        }));
+    }
     let provider = provider.unwrap_or(agent.provider);
 
-    if event != "stop" {
+    let provider_turn_id = params
+        .get("provider_turn_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let provider_session_id = params
+        .get("provider_session_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let provider_invocation_num = params
+        .get("provider_invocation_num")
+        .and_then(Value::as_u64);
+    let provider_fully_idle = params.get("provider_fully_idle").and_then(Value::as_bool);
+    let provider_termination_reason = params
+        .get("provider_termination_reason")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let provider_error = params
+        .get("provider_error")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+
+    let prompt_fingerprint = params
+        .get("prompt_fingerprint")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let disposition = classify_worker_hook(
+        &provider,
+        &event,
+        prompt_fingerprint.is_some(),
+        provider_fully_idle,
+        provider_error.is_some(),
+    );
+
+    if disposition == WorkerHookDisposition::IgnoreUnverifiedCompletion {
+        tracing::warn!(
+            agent_id = %agent_id,
+            provider = %provider,
+            event_id = ?event_id,
+            provider_error = ?provider_error,
+            provider_termination_reason = ?provider_termination_reason,
+            "ignored Antigravity Stop hook without clean fully-idle completion proof"
+        );
+        return Ok(json!({
+            "agent_id": agent_id,
+            "event": event,
+            "role": "worker",
+            "provider": provider,
+            "event_id": event_id,
+            "lifecycle_id": lifecycle_id,
+            "accepted": true,
+            "ignored_unverified_completion": true,
+            "transitioned": false,
+            "changes": 0,
+            "affected_job_id": null,
+        }));
+    }
+
+    if disposition == WorkerHookDisposition::IgnoreUncorrelated {
+        tracing::warn!(
+            agent_id = %agent_id,
+            provider = %provider,
+            event_id = ?event_id,
+            "ignored UserPromptSubmit hook without a prompt fingerprint"
+        );
+        return Ok(json!({
+            "agent_id": agent_id,
+            "event": event,
+            "role": "worker",
+            "provider": provider,
+            "event_id": event_id,
+            "lifecycle_id": lifecycle_id,
+            "accepted": true,
+            "ignored_uncorrelated": true,
+            "transitioned": false,
+            "changes": 0,
+            "affected_job_id": null,
+        }));
+    }
+
+    if disposition == WorkerHookDisposition::Working {
+        let evidence_id = event_id
+            .as_deref()
+            .map(|id| format!("hook:{id}"))
+            .unwrap_or_else(|| {
+                format!(
+                    "hook:{event}:{}:{}:{}",
+                    agent.lifecycle_id,
+                    provider_session_id.as_deref().unwrap_or("unknown-session"),
+                    provider_invocation_num
+                        .map(|number| number.to_string())
+                        .as_deref()
+                        .unwrap_or("unknown-invocation")
+                )
+            });
+        let outcome = observe_working(WorkingObservation {
+            db: ctx.db.clone(),
+            agent_id: agent_id.clone(),
+            provider: provider.clone(),
+            expected_lifecycle_id: agent.lifecycle_id.clone(),
+            source: crate::runtime_observation::EvidenceSource::OfficialHook,
+            evidence_id,
+            provider_turn_id: provider_turn_id.clone(),
+            prompt_fingerprint,
+        })
+        .await?;
+        if let Some(job_id) = outcome.affected_job.as_deref()
+            && (outcome.state_changed || outcome.observation_inserted)
+        {
+            crate::orchestrator::pubsub::notify_job_update(job_id);
+        }
+        tracing::info!(
+            agent_id = %agent_id,
+            provider = %provider,
+            event_id = ?event_id,
+            provider_turn_id = ?provider_turn_id,
+            provider_session_id = ?provider_session_id,
+            provider_invocation_num = ?provider_invocation_num,
+            provider_fully_idle = ?provider_fully_idle,
+            state_changed = outcome.state_changed,
+            observation_inserted = outcome.observation_inserted,
+            affected_job_id = ?outcome.affected_job,
+            "processed provider-native working hook"
+        );
+        return Ok(json!({
+            "agent_id": agent_id,
+            "event": event,
+            "role": "worker",
+            "provider": provider,
+            "event_id": event_id,
+            "lifecycle_id": lifecycle_id,
+            "accepted": true,
+            "ignored_stale": false,
+            "provider_fully_idle": provider_fully_idle,
+            "transitioned": outcome.state_changed,
+            "changes": usize::from(outcome.state_changed),
+            "observation_inserted": outcome.observation_inserted,
+            "affected_job_id": outcome.affected_job,
+        }));
+    }
+
+    if disposition == WorkerHookDisposition::Unsupported {
         tracing::info!(
             hook_source = "agent.notify",
             role = "worker",
@@ -941,14 +1117,15 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
         "received agent.notify hook"
     );
 
-    let (changes, affected_job_id) = mark_agent_idle_hook_event(
-        ctx.db.clone(),
-        agent_id.clone(),
-        provider.clone(),
-        event.clone(),
-        event_id.clone(),
+    let (changes, affected_job_id) = observe_hook_completion(HookCompletionObservation {
+        db: ctx.db.clone(),
+        agent_id: agent_id.clone(),
+        provider: provider.clone(),
+        hook_event: event.clone(),
+        event_id: event_id.clone(),
         reply,
-    )
+        expected_lifecycle_id: lifecycle_id.clone(),
+    })
     .await?;
     tracing::info!(
         changes,
@@ -970,7 +1147,9 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
         "role": "worker",
         "provider": provider,
         "event_id": event_id,
+        "lifecycle_id": lifecycle_id,
         "accepted": true,
+        "ignored_stale": false,
         "transitioned": changes > 0,
         "changes": changes,
         "affected_job_id": affected_job_id,
@@ -979,6 +1158,48 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
 
 fn normalize_hook_event(event: &str) -> String {
     event.to_ascii_lowercase()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkerHookDisposition {
+    Working,
+    Completion,
+    IgnoreUncorrelated,
+    IgnoreUnverifiedCompletion,
+    Unsupported,
+}
+
+fn classify_worker_hook(
+    provider: &str,
+    event: &str,
+    has_prompt_fingerprint: bool,
+    provider_fully_idle: Option<bool>,
+    provider_has_error: bool,
+) -> WorkerHookDisposition {
+    if event == "userpromptsubmit" {
+        return if has_prompt_fingerprint {
+            WorkerHookDisposition::Working
+        } else {
+            WorkerHookDisposition::IgnoreUncorrelated
+        };
+    }
+    if provider == "antigravity" && event == "preinvocation" {
+        return WorkerHookDisposition::Working;
+    }
+    if event != "stop" {
+        return WorkerHookDisposition::Unsupported;
+    }
+    if provider != "antigravity" {
+        return WorkerHookDisposition::Completion;
+    }
+    if provider_has_error || provider_fully_idle.is_none() {
+        return WorkerHookDisposition::IgnoreUnverifiedCompletion;
+    }
+    if provider_fully_idle == Some(false) {
+        WorkerHookDisposition::Working
+    } else {
+        WorkerHookDisposition::Completion
+    }
 }
 
 fn parse_master_agent_id(agent_id: &str) -> Result<Option<(String, i64)>, CcbdError> {
@@ -1206,9 +1427,10 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     let write_result = crate::agent_io::send_text_to_pane_with_options(
         ctx.tmux_server.clone(),
         agent_id,
+        &agent.provider,
         pane_id,
         text.to_string(),
-        should_press_enter_after_paste(&agent.provider, text),
+        press_enter_after_paste(&agent.provider, text),
     )
     .await;
 
@@ -1257,6 +1479,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
             ctx.state_dir.clone(),
             capture_baseline,
             matcher,
+            super::ack::AckEvidenceMode::for_provider(&agent.provider),
         );
     }
 
@@ -1366,4 +1589,45 @@ async fn cleanup_spawn_resources(
     }
     drop(fifo_file);
     let _ = fs::remove_file(fifo_path);
+}
+
+#[cfg(test)]
+mod hook_status_tests {
+    use super::{WorkerHookDisposition, classify_worker_hook};
+
+    #[test]
+    fn codex_and_claude_prompt_hooks_require_dispatch_correlation() {
+        assert_eq!(
+            classify_worker_hook("codex", "userpromptsubmit", true, None, false),
+            WorkerHookDisposition::Working
+        );
+        assert_eq!(
+            classify_worker_hook("claude", "userpromptsubmit", false, None, false),
+            WorkerHookDisposition::IgnoreUncorrelated
+        );
+    }
+
+    #[test]
+    fn antigravity_stop_requires_clean_fully_idle_proof() {
+        assert_eq!(
+            classify_worker_hook("antigravity", "preinvocation", false, None, false),
+            WorkerHookDisposition::Working
+        );
+        assert_eq!(
+            classify_worker_hook("antigravity", "stop", false, Some(false), false),
+            WorkerHookDisposition::Working
+        );
+        assert_eq!(
+            classify_worker_hook("antigravity", "stop", false, Some(true), false),
+            WorkerHookDisposition::Completion
+        );
+        assert_eq!(
+            classify_worker_hook("antigravity", "stop", false, None, false),
+            WorkerHookDisposition::IgnoreUnverifiedCompletion
+        );
+        assert_eq!(
+            classify_worker_hook("antigravity", "stop", false, Some(true), true),
+            WorkerHookDisposition::IgnoreUnverifiedCompletion
+        );
+    }
 }

@@ -1,0 +1,51 @@
+# ah.toml — ccbd-rust 过渡拓扑(2026-07-09 codex 配额耗尽期,7/11 后再议切回)
+# 变更:a1 codex→antigravity(主力实施);a2 摘除(保 codex 残余 2% 应急额度)
+# 2026-07-09 CLI 层配置(用户拍板):审计=opus4.8+最高档;master=sonnet5+medium
+# (operator 推荐,编排决策不需要长思考);statusline 按 operator 监控需求配
+# (角色·模型·effort·context%,capture-pane 一眼读)。effortLevel 持久化上限是
+# xhigh(max 为 session-only)。agy effort 嵌在宿主模型名(Flash High)、codex
+# 宿主配置 gpt-5.5+xhigh,均随沙箱物化继承,无需在此配置。
+version = "1"
+
+# claude 席位(master + a4)共用宿主的一次登录:每个沙箱仍有自己的 CLAUDE_CONFIG_DIR,
+# 但 CLAUDE_SECURESTORAGE_CONFIG_DIR 一律指向这里,刷新就地写回,不会把别的席位刷成过期。
+# 取值要求:已存在的真实目录、非符号链接;`~` 展开为运行 ah 的用户的家目录,
+# 因此这份配置可以跨机器提交共享,不必写死某一台的绝对路径。
+[providers.claude]
+shared_credentials_dir = "~/.claude"
+
+[master]
+cmd = "claude"
+enabled = true
+
+[master.settings]
+model = "claude-sonnet-5"
+effortLevel = "medium"
+autoCompactEnabled = true
+
+[master.settings.statusLine]
+type = "command"
+command = "jq -r '\"master · \\(.model.display_name) \\(.effort.level // \"?\") · ctx \\(.context_window.used_percentage // 0)%\"'"
+
+[completion]
+hook_push_enabled = true
+hook_push_events = ["stop"]
+hook_push_providers = ["claude", "codex", "antigravity"]
+
+[agents.a1]
+provider = "antigravity"
+
+[agents.a3]
+provider = "antigravity"
+
+[agents.a4]
+provider = "claude"
+
+[agents.a4.settings]
+model = "claude-opus-4-8"
+effortLevel = "xhigh"
+autoCompactEnabled = true
+
+[agents.a4.settings.statusLine]
+type = "command"
+command = "jq -r '\"a4-audit · \\(.model.display_name) \\(.effort.level // \"?\") · ctx \\(.context_window.used_percentage // 0)%\"'"

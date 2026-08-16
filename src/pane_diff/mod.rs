@@ -939,8 +939,11 @@ mod tests {
 
     #[test]
     fn ui_only_marker_recapture_completes_real_antigravity_idle_capture_after_two_ticks() {
-        let bytes =
-            include_str!("../../tests/fixtures/pane_idle/REAL-a3-idle-capture.txt").to_string();
+        let bytes = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pane_idle/REAL-a3-idle-capture.txt"
+        ))
+        .to_string();
         let obs = PaneDiffObservation {
             agent_id: "a_pd_real_idle_capture".to_string(),
             text: bytes.clone(),

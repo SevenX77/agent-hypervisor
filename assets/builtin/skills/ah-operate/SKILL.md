@@ -1,6 +1,6 @@
 ---
 name: ah-operate
-description: Use when driving an ah master/stack through a multi-step task: dispatching briefs, monitoring job transitions, unblocking a stuck or prompt-pending agent, gating design->implementation->review, or closing out a task to PR.
+description: Use when operating an AH session, observing identity-bound jobs, or recovering a stalled Agent seat. It does not create Roadmap, Plan, Task, lifecycle, or authority facts.
 ---
 
 # ah operation playbook
@@ -25,15 +25,15 @@ For `PROMPT_PENDING`, capture the pane, read the options, verify the highlighted
 
 For a `STUCK` dead-end, read pane truth first. Then cancel, kill, and re-dispatch when the current task is unrecoverable.
 
-## Gate rhythm
+## Governed job boundary
 
-Run the work as brief -> design stop -> operator review -> implement -> double review -> PM audit -> operator close-out.
+AH executes a supplied job. It does not infer a Task from conversation and does not invent a Design, Plan, review round, or acceptance gate. When a coordinator supplies a governance binding, preserve the exact Roadmap stream, Roadmap node, Plan revision and step, Task, Attempt, Run, Context, Episode, Module, Capability, worktree, and physical/semantic scope identities. A terminal AH job is a runtime observation only; the owning coordinator disposes the Task result.
 
-The master never self-merges. Correct scope drift by injection when needed, and keep each phase tied to the files and task boundaries in the current brief.
+For autonomous repository delivery, use the root `autonomous_delivery_loop`. It selects only owner-consistent active Plan steps, obtains the worktree lease, and supplies the AH binding. Manual `ah ask` remains an ordinary interaction unless the caller explicitly supplies that persisted binding.
 
 ## Close-out discipline
 
-Add only target files. Never use broad staging.
+Add only target files. Never use broad staging or update a protected ref from the worker seat.
 
 When CI is red, disprove it first before rerunning: a parallel same-commit job with one red and one green is a flake signature, but still rerun once and look for pre-existing evidence. Never merge red.
 

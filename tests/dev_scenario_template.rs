@@ -1,9 +1,9 @@
-use ah::provider::builtin;
-use ah::provider::extensions::ExtensionConfig;
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeLayoutRole, compose_rules_with_layers,
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
+use ah::provider::builtin;
+use ah::provider::extensions::ExtensionConfig;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{LazyLock, Mutex, MutexGuard};
@@ -63,7 +63,8 @@ unsafe fn restore_env(key: &str, old: &Option<OsString>) {
 }
 
 fn scenario_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("examples/scenarios/dev-programming")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/work_execution/scenario_packages/dev-programming")
 }
 
 fn rules_file(slot: &str) -> PathBuf {

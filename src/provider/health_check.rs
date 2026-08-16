@@ -897,9 +897,9 @@ mod tests {
         );
     }
 
-    /// Test 5 — regression guard (GREEN now and after): real completion from the
-    /// marker/log signal is untouched by P0-1 and must still mark the agent IDLE
-    /// and complete the job. Only the pane inference paths are being deleted.
+    /// Test 5 — regression guard: provider-native transcript completion still
+    /// marks the agent IDLE and completes the job. Terminal marker inference is
+    /// intentionally excluded for Codex.
     #[tokio::test(flavor = "multi_thread")]
     async fn test_completion_still_works_from_hook_or_log() {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -908,10 +908,30 @@ mod tests {
         let job_id = "job_p01_log_completion";
         seed_codex_dispatched_job(&db, agent_id, job_id);
 
+        let lifecycle_id: String = db
+            .conn()
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id = ?",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
         let (changes, affected_job) =
-            crate::db::state_machine::mark_agent_idle_matched(db.clone(), agent_id.to_string())
-                .await
-                .unwrap();
+            crate::runtime_observation::intake::observe_transcript_completion(
+                crate::runtime_observation::intake::TranscriptCompletionObservation {
+                    db: db.clone(),
+                    agent_id: agent_id.to_string(),
+                    provider: "codex".to_string(),
+                    reply: Some("alpha".to_string()),
+                    raw_path: "/tmp/codex-rollout.jsonl".to_string(),
+                    raw_offset: 42,
+                    provider_turn_id: None,
+                    expected_lifecycle_id: lifecycle_id,
+                    prompt_fingerprint: None,
+                },
+            )
+            .await
+            .unwrap();
 
         let state: String = db
             .conn()

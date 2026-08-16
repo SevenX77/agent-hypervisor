@@ -1,10 +1,10 @@
 #![cfg(unix)]
 
-use ah::provider::builtin;
-use ah::provider::extensions::ExtensionConfig;
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeLayoutRole, prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
+use ah::provider::builtin;
+use ah::provider::extensions::ExtensionConfig;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, MutexGuard};

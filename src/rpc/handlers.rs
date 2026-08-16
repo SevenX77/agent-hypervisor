@@ -13,8 +13,8 @@ mod system;
 
 #[allow(unused_imports)]
 pub(crate) use ack::{
-    ACK_IDLE_SCAN_REOPEN_DELAY_MS, CAPTURE_SEED_POLL_MS, CAPTURE_SEED_STABILITY_MS,
-    spawn_new_capture_seed,
+    ACK_IDLE_SCAN_REOPEN_DELAY_MS, AckEvidenceMode, CAPTURE_SEED_POLL_MS,
+    CAPTURE_SEED_STABILITY_MS, spawn_new_capture_seed,
 };
 pub use ack::{
     AckBusyOutcome, ack_mark_busy_or_resolve, fallback_ack_to_crashed, fallback_ack_to_stuck,
@@ -47,7 +47,6 @@ pub use system::{handle_system_dump, handle_system_shutdown};
 mod tests {
     use super::ack::capture_seed_matches;
     use super::events::stuck_frame_for_filter;
-    use super::params::should_press_enter_after_paste;
     use super::{
         CAPTURE_SEED_POLL_MS, CAPTURE_SEED_STABILITY_MS, handle_agent_assert_state,
         handle_agent_discard_evidence, handle_agent_kill, handle_agent_read, handle_agent_send,
@@ -186,10 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn test_antigravity_paste_enter_decision_is_provider_based() {
-        assert!(!should_press_enter_after_paste("antigravity", "foo\n"));
-        assert!(should_press_enter_after_paste("antigravity", "foo"));
-        assert!(should_press_enter_after_paste("codex", "foo\n"));
+    fn every_provider_uses_an_explicit_enter_after_tmux_paste() {
+        for provider in crate::provider::manifest::valid_provider_names() {
+            assert!(crate::provider::manifest::press_enter_after_paste(
+                provider, "foo\n"
+            ));
+            assert!(crate::provider::manifest::press_enter_after_paste(
+                provider, "foo"
+            ));
+        }
     }
 
     #[test]
@@ -702,8 +706,7 @@ mod tests {
         )
         .unwrap();
         let master_home =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&master_sandbox_dir)
-                .unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&master_sandbox_dir).unwrap();
         std::fs::create_dir_all(master_home.join(".claude")).unwrap();
         std::fs::write(master_home.join(".claude/.credentials.json"), b"secret").unwrap();
         {

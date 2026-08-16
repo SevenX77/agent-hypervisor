@@ -1,9 +1,21 @@
 //! Built-in ah rule resources embedded into the ccbd binary.
 
-pub const MASTER_KERNEL: &str = include_str!("../../assets/builtin/master_kernel.md");
-pub const WORKER_KERNEL: &str = include_str!("../../assets/builtin/worker_kernel.md");
-pub const DEFAULT_MASTER: &str = include_str!("../../assets/builtin/defaults/master.md");
-pub const DEFAULT_WORKER: &str = include_str!("../../assets/builtin/defaults/worker.md");
+pub const MASTER_KERNEL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/builtin/master_kernel.md"
+));
+pub const WORKER_KERNEL: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/builtin/worker_kernel.md"
+));
+pub const DEFAULT_MASTER: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/builtin/defaults/master.md"
+));
+pub const DEFAULT_WORKER: &str = include_str!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/assets/builtin/defaults/worker.md"
+));
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BuiltinSkillScope {
@@ -21,22 +33,34 @@ pub struct BuiltinSkill {
 pub const BUILTIN_SKILLS: &[BuiltinSkill] = &[
     BuiltinSkill {
         name: "ah-commands",
-        skill_md: include_str!("../../assets/builtin/skills/ah-commands/SKILL.md"),
+        skill_md: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/builtin/skills/ah-commands/SKILL.md"
+        )),
         scope: BuiltinSkillScope::MasterOnly,
     },
     BuiltinSkill {
         name: "ah-config",
-        skill_md: include_str!("../../assets/builtin/skills/ah-config/SKILL.md"),
+        skill_md: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/builtin/skills/ah-config/SKILL.md"
+        )),
         scope: BuiltinSkillScope::MasterOnly,
     },
     BuiltinSkill {
         name: "ah-runtime-state",
-        skill_md: include_str!("../../assets/builtin/skills/ah-runtime-state/SKILL.md"),
+        skill_md: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/builtin/skills/ah-runtime-state/SKILL.md"
+        )),
         scope: BuiltinSkillScope::MasterOnly,
     },
     BuiltinSkill {
         name: "ah-operate",
-        skill_md: include_str!("../../assets/builtin/skills/ah-operate/SKILL.md"),
+        skill_md: include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/assets/builtin/skills/ah-operate/SKILL.md"
+        )),
         scope: BuiltinSkillScope::MasterOnly,
     },
 ];

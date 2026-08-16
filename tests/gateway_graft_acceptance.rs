@@ -7,7 +7,7 @@ use ah::claude_gateway::{
     register_worker, run_internal_bridge, validate_credential_path_not_wsl_windows_mount,
     write_seed_credentials_guarded,
 };
-use ah::provider::home_layout::prepare_home_layout_with_claude_credentials;
+use ah::home_materialization::prepare_home_layout_with_claude_credentials;
 use serde_json::json;
 use std::ffi::OsString;
 use std::io::{Read, Write};

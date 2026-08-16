@@ -15,7 +15,7 @@
 //! 真 CLI smoke (验证 `CLAUDE_CONFIG_DIR` / `CODEX_HOME` 真被识别) 走 VPS-gated,
 //! 不在本文件实现 (见 tasks.md T1)。
 
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeOverrides, prepare_home_layout, prepare_home_layout_with_claude_credentials,
 };
 use std::collections::BTreeMap;

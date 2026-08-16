@@ -1,18 +1,16 @@
-//! The login doorman for `ah start` (decision 0006).
+//! Login gate for `ah start` and the explicit `ah login` recovery command.
 //!
-//! Before a project's seats are spawned, every provider the project uses must
-//! have a healthy login in THIS environment. When one is missing, the doorman
-//! does what `aws sso login` taught operators to expect: in an interactive
-//! terminal it launches the provider's own login flow right there and
-//! continues once it succeeds; anywhere else it fails with a remedy the
-//! operator can paste. ah itself never touches a credential value — the
-//! provider's login program and the operator's browser do all of it.
+//! Provider Adapters own storage paths, official commands, headless routes,
+//! terminal markers, and upstream documentation. This gate only orders the
+//! providers required by one project and refuses to start seats until the
+//! corresponding provider flow has produced causal completion evidence.
 
 use crate::cli::config::ProjectConfig;
 use crate::cli::rpc_client::CliError;
-use crate::provider::auth_store::{
-    AuthStoreStatus, check_auth_store_for, login_command, login_remedy,
+use crate::provider::auth_flow::{
+    authentication_is_healthy, headless_environment, run_official_login,
 };
+use crate::provider::auth_store::{AuthStoreStatus, check_auth_store_for, login_remedy};
 use std::collections::BTreeSet;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -28,15 +26,12 @@ pub fn providers_in_config(config: &ProjectConfig) -> BTreeSet<String> {
             crate::provider::manifest::canonicalize_provider_name(&agent.provider).to_string(),
         );
     }
-    // A shell needs no login.
     providers.remove("bash");
     providers
 }
 
-/// Checks every provider the config uses and, where allowed, opens the door.
-///
-/// `interactive` should be true only when stdin and stdout are the operator's
-/// terminal — a login flow launched anywhere else would hang a pipeline.
+/// Checks every provider the config uses and starts its official login flow
+/// when the caller is attached to an operator terminal.
 pub fn ensure_provider_logins(
     config: &ProjectConfig,
     home: &Path,
@@ -60,58 +55,120 @@ fn ensure_provider_logins_for_os(
     os: &str,
 ) -> Result<(), CliError> {
     for provider in providers_in_config(config) {
-        let status = check_auth_store_for(&provider, home, claude_store_override, os);
-        if status.is_healthy() {
+        let override_path = provider_store_override(&provider, claude_store_override);
+        let status = check_auth_store_for(&provider, home, override_path, os);
+        if authentication_is_healthy(&provider, home, override_path, os) {
             continue;
         }
         if let AuthStoreStatus::ForeignEnvironment { path, target } = &status {
-            // Not fixable by logging in: the store must stop reaching across
-            // the boundary first, and it is the operator's file to change.
             return Err(CliError::Config(foreign_store_message(
                 &provider, path, target,
             )));
         }
-        if interactive && let Some(command) = login_command(&provider) {
-            eprintln!(
-                "{provider}: {} — launching `{}` (complete the sign-in in your browser)",
-                describe(&status),
-                command.argv.join(" ")
-            );
-            run_login_in_terminal(command.argv)?;
-            let after = check_auth_store_for(&provider, home, claude_store_override, os);
-            if after.is_healthy() {
-                continue;
-            }
+        if !interactive {
             return Err(CliError::Config(format!(
-                "{provider}: login finished but the store is still {}; run `{}` manually and retry",
-                describe(&after),
+                "{provider}: {}. OAuth consent needs an operator terminal; connect with SSH and run `ah login {provider} --headless` (provider fallback: `{}`)",
+                describe(&status),
                 login_remedy(&provider)
             )));
         }
-        return Err(CliError::Config(format!(
-            "{provider}: {}. Sign in to this environment first: {}",
+
+        let headless = headless_environment();
+        eprintln!(
+            "{provider}: {}; starting the provider's official {} login flow",
             describe(&status),
-            login_remedy(&provider)
-        )));
+            if headless { "headless" } else { "interactive" }
+        );
+        run_official_login(&provider, home, override_path, headless)
+            .map_err(|err| CliError::Config(err.to_string()))?;
+
+        let after = check_auth_store_for(&provider, home, override_path, os);
+        if !authentication_is_healthy(&provider, home, override_path, os) {
+            return Err(CliError::Config(format!(
+                "{provider}: login returned but the store is still {}; run `ah login {provider} --headless` and retry",
+                describe(&after)
+            )));
+        }
     }
     Ok(())
+}
+
+/// Explicit recovery entry for an operator who needs to authenticate before
+/// unattended startup. `force_headless` selects the provider's official
+/// device-code or authorization-code-paste route even outside SSH.
+pub fn login_provider(
+    provider: &str,
+    home: &Path,
+    claude_store_override: Option<&Path>,
+    interactive: bool,
+    force_headless: bool,
+) -> Result<(), CliError> {
+    let provider = crate::provider::canonical_name(provider)
+        .ok_or_else(|| CliError::Config(format!("unknown provider `{provider}`")))?;
+    if provider == "bash" {
+        return Err(CliError::Config(
+            "provider `bash` does not require login".to_string(),
+        ));
+    }
+    let override_path = provider_store_override(provider, claude_store_override);
+    let status = check_auth_store_for(provider, home, override_path, std::env::consts::OS);
+    if authentication_is_healthy(provider, home, override_path, std::env::consts::OS) {
+        eprintln!("{provider}: login is already healthy in this environment");
+        return Ok(());
+    }
+    if let AuthStoreStatus::ForeignEnvironment { path, target } = &status {
+        return Err(CliError::Config(foreign_store_message(
+            provider, path, target,
+        )));
+    }
+    if !interactive {
+        return Err(CliError::Config(format!(
+            "{provider}: login requires an interactive terminal; connect with SSH and run `ah login {provider} --headless`"
+        )));
+    }
+
+    run_official_login(
+        provider,
+        home,
+        override_path,
+        force_headless || headless_environment(),
+    )
+    .map_err(|err| CliError::Config(err.to_string()))
 }
 
 pub fn stdin_and_stdout_are_terminal() -> bool {
     std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
 }
 
+fn provider_store_override<'a>(
+    provider: &str,
+    claude_store_override: Option<&'a Path>,
+) -> Option<&'a Path> {
+    (provider == "claude")
+        .then_some(claude_store_override)
+        .flatten()
+}
+
 fn describe(status: &AuthStoreStatus) -> String {
     match status {
-        AuthStoreStatus::Healthy { .. } | AuthStoreStatus::NotCheckable { .. } => "ok".to_string(),
+        AuthStoreStatus::Healthy { .. } => "ok".to_string(),
+        AuthStoreStatus::NotCheckable { reason } => {
+            format!("not directly checkable ({reason})")
+        }
         AuthStoreStatus::Missing { path } => {
-            format!("no login in this environment ({} is missing)", path.display())
+            format!(
+                "no login in this environment ({} is missing)",
+                path.display()
+            )
         }
         AuthStoreStatus::LoggedOut { path } => {
             format!("logged out ({} holds a logout stub)", path.display())
         }
         AuthStoreStatus::Unreadable { path, details } => {
-            format!("unreadable credential store ({}: {details})", path.display())
+            format!(
+                "unreadable credential store ({}: {details})",
+                path.display()
+            )
         }
         AuthStoreStatus::ForeignEnvironment { path, target } => format!(
             "credential store reaches into another environment ({} -> {})",
@@ -123,44 +180,16 @@ fn describe(status: &AuthStoreStatus) -> String {
 
 fn foreign_store_message(provider: &str, path: &Path, target: &PathBuf) -> String {
     format!(
-        "{provider}: {} points into the Windows environment ({}). One token chain cannot serve \
-         two environments — the first refresh on either side kills the other (decision 0006). \
-         Remove the link and sign in to this environment instead:\n  rm {}\n  {}",
+        "{provider}: {} points into the Windows environment ({}). One refresh-token chain cannot serve two environments. Remove the link and sign in to this environment instead:\n  rm {}\n  ah login {provider} --headless",
         path.display(),
         target.display(),
-        path.display(),
-        login_remedy(provider)
+        path.display()
     )
-}
-
-/// Runs the provider's login program attached to the operator's terminal.
-fn run_login_in_terminal(argv: &[&str]) -> Result<(), CliError> {
-    let mut command = std::process::Command::new(argv[0]);
-    command.args(&argv[1..]);
-    // Point CLIs that honour $BROWSER at the opener so the sign-in page pops
-    // instead of printing a URL; in WSL that opener is the bridge to the
-    // Windows browser (`ah setup --fix` installs it).
-    if std::env::var_os("BROWSER").is_none() && which::which("xdg-open").is_ok() {
-        command.env("BROWSER", "xdg-open");
-    }
-    let status = command
-        .status()
-        .map_err(|err| {
-            CliError::Config(format!("could not launch `{}`: {err}", argv.join(" ")))
-        })?;
-    if !status.success() {
-        return Err(CliError::Config(format!(
-            "`{}` exited with {status}; sign in and retry",
-            argv.join(" ")
-        )));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn config(raw: &str) -> ProjectConfig {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -176,9 +205,7 @@ mod tests {
 
         assert!(providers_in_config(&config).is_empty());
         let home = tempfile::TempDir::new().unwrap();
-        assert!(
-            ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok()
-        );
+        assert!(ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok());
     }
 
     #[test]
@@ -188,16 +215,14 @@ mod tests {
              [agents.a1]\nprovider = \"codex\"\n\n[agents.a2]\nprovider = \"antigravity\"\n",
         );
 
-        let providers = providers_in_config(&config);
-
         assert_eq!(
-            providers.into_iter().collect::<Vec<_>>(),
+            providers_in_config(&config).into_iter().collect::<Vec<_>>(),
             vec!["antigravity".to_string(), "codex".to_string()]
         );
     }
 
     #[test]
-    fn a_missing_login_fails_non_interactively_with_a_pasteable_remedy() {
+    fn a_missing_login_fails_non_interactively_with_headless_recovery() {
         let config = config(
             "version = \"1\"\n\n[master]\nenabled = false\n\n[agents.a1]\nprovider = \"codex\"\n",
         );
@@ -205,10 +230,15 @@ mod tests {
 
         let err =
             ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").unwrap_err();
-
         let message = err.to_string();
-        assert!(message.contains("codex login"), "got: {message}");
-        assert!(message.contains("no login in this environment"), "got: {message}");
+        assert!(
+            message.contains("ah login codex --headless"),
+            "got: {message}"
+        );
+        assert!(
+            message.contains("no login in this environment"),
+            "got: {message}"
+        );
     }
 
     #[test]
@@ -224,16 +254,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok()
-        );
+        assert!(ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok());
     }
 
-    /// The foreign-link case must not be "fixed" by launching a login over it:
-    /// the login would write through or replace the link and fork the chain.
     #[cfg(unix)]
     #[test]
-    fn a_foreign_store_fails_even_interactively_with_removal_instructions() {
+    fn a_foreign_store_fails_even_when_login_is_available() {
         let config = config(
             "version = \"1\"\n\n[master]\nenabled = false\n\n[agents.a1]\nprovider = \"claude\"\n\n\
              [providers.claude]\nshared_credentials_dir = \"~/.claude\"\n",
@@ -247,20 +273,21 @@ mod tests {
         )
         .unwrap();
 
-        // Interactive=true: the doorman must still refuse rather than launch
-        // a login onto a foreign link. Only run where /mnt/c is actually a
-        // Windows mount (WSL); elsewhere the link is just dangling → Missing.
-        let result =
-            ensure_provider_logins_for_os(&config, home.path(), Some(&shared), false, "linux");
-
-        let err = result.unwrap_err().to_string();
-        // On WSL the /mnt/c target is a real interop mount and the message
-        // carries removal instructions; on native Linux the link is merely
-        // dangling and reads as an unreadable store. Both refuse to proceed.
+        let err =
+            ensure_provider_logins_for_os(&config, home.path(), Some(&shared), false, "linux")
+                .unwrap_err()
+                .to_string();
         assert!(
             err.contains("claude")
                 && (err.contains("rm ") || err.contains("no login") || err.contains("unreadable")),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn bash_is_rejected_by_the_explicit_login_entry() {
+        let home = tempfile::TempDir::new().unwrap();
+        let err = login_provider("bash", home.path(), None, true, true).unwrap_err();
+        assert!(err.to_string().contains("does not require login"));
     }
 }

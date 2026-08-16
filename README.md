@@ -194,9 +194,9 @@ ah version
 ah ps
 ah start [--wait]
 ah up [--force]
-ah ask <agent_id> <text> [--wait] [--request-id <id>]
+ah ask <agent_id> <text> [--wait] [--request-id <id>] [--binding <json-file>]
 ah tell master <text> [--session <session_id>] [--request-id <id>]
-ah pend <job_id>
+ah pend <job_id> [--json]
 ah cancel <job_id>
 ah kill <target_id> [--session] [--force]
 ah watch <agent_id> [--since-event-id <id>]
@@ -224,6 +224,27 @@ ah logs a1
 ah attach agent a1
 ```
 
+### Governed execution and reliable handoff
+
+Existing `ah ask` callers keep the same behavior. A coordinator that already
+owns Roadmap, Plan, Task, Attempt, Run, Context, Episode, and Module identities
+may additionally submit their exact execution binding:
+
+```bash
+ah ask a1 "Implement the admitted plan step" --wait --binding ./binding.json
+```
+
+`ah` validates all binding fields, stores a canonical copy with the Job, and
+returns it in the machine-readable terminal receipt (`ah pend <job-id> --json`).
+It never invents or rewrites coordinator identities. Runtime process state,
+provider turn state, Job completion, upstream acceptance, and Effect proof stay
+separate, so a stale callback cannot complete a new attempt and a displayed
+`BUSY` string cannot hide a dead provider process.
+
+See [Work Execution architecture](docs/work-execution.md) for the ownership and
+state invariants, and [Upgrading to 1.15](docs/upgrade-1.15.md) for compatibility
+details.
+
 ## Runtime Events
 
 Use `ah events --format json` when another process needs the authoritative
@@ -250,11 +271,12 @@ the subscription. If ahd later accepts the stream, the next line is the daemon
 snapshot. If the daemon stream drops, the CLI emits `reason: "daemon_lost"` and
 keeps retrying.
 
-Snapshot schema version 1:
+Snapshot schema version 3 adds provider-neutral, lifecycle-fenced status and
+durable Job receipts. Existing top-level lifecycle fields remain present:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 3,
   "event": "snapshot",
   "sequence": 1,
   "reason": "initial",
@@ -281,7 +303,11 @@ Snapshot schema version 1:
       "master_tmux_alive": true,
       "master_pane_id": "%1",
       "master_pid": 1234,
-      "active_agents": 1
+      "master_last_exit_reason": null,
+      "db_tracked_agents": 1,
+      "live_agents": 1,
+      "cleanup_required": false,
+      "safe_to_cleanup": false
     }
   ],
   "agents": [
@@ -289,15 +315,42 @@ Snapshot schema version 1:
       "agent_id": "a1",
       "session_id": "sess_xxx",
       "provider": "codex",
+      "provider_status": {
+        "agent_id": "a1",
+        "session_id": "sess_xxx",
+        "provider": "codex",
+        "lifecycle_id": "lifecycle_xxx",
+        "turn_id": null,
+        "process": {
+          "resolution": "known",
+          "value": "alive",
+          "source": "process_probe",
+          "observed_at_ms": 1770000000000
+        },
+        "turn": {
+          "resolution": "known",
+          "value": "ready",
+          "source": "official_hook",
+          "observed_at_ms": 1770000000000
+        },
+        "occupancy": "available"
+      },
       "state": "IDLE",
       "sub_state": "Matched",
       "pid": 5678,
       "tmux_session": "agent_a1",
       "tmux_alive": true
     }
-  ]
+  ],
+  "jobs": [],
+  "job_events": [],
+  "job_event_cursor": 0
 }
 ```
+
+`state` and `sub_state` remain for compatibility and diagnostics. New
+integrations should use `provider_status`: unknown, stale, and conflicting
+evidence are represented explicitly instead of being guessed into IDLE/BUSY.
 
 ## `ah.toml`
 
@@ -441,7 +494,11 @@ External integrators typically:
 3. Start the daemon/session with `ah start`.
 4. Drive work through the CLI (`ah ask`, `ah pend`, `ah watch`, `ah events`, `ah logs`, `ah ps`, `ah attach`) or by speaking JSON-RPC to the Unix socket used by `ah`.
 
-The daemon stores state in SQLite under the resolved ah state directory and uses tmux for provider panes. The CLI is the supported public control surface for v1.
+The daemon stores runtime execution state in SQLite under the resolved ah state
+directory and uses tmux for provider panes. The CLI is the supported public
+control surface for v1. An upstream coordinator may supply immutable execution
+identity and scope, but remains the only authority that can admit or accept a
+Task; `ah` owns provider execution, observations, and Job receipts only.
 
 ## Project State & Runtime Data
 
@@ -562,4 +619,6 @@ cargo install --git https://github.com/SevenX77/ah --bin ah --bin ahd
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+This distribution contains MIT-licensed `ah` code and Apache-2.0-licensed
+Work Execution adaptations from Zeroth. See [LICENSE](LICENSE),
+[LICENSE-APACHE](LICENSE-APACHE), and [NOTICE](NOTICE).

@@ -1,6 +1,10 @@
 use crate::db::common::{map_db_error, spawn_db};
 use crate::error::CcbdError;
 use crate::rpc::Ctx;
+use crate::runtime_observation::{
+    EvidenceSource, ProviderObservation, ProviderObservationKind, ProviderProcessState,
+    ProviderStatus, ProviderStatusInput, ProviderTurnState, reduce_provider_status,
+};
 use crate::tmux::{TmuxPaneId, agent_session_name, master_session_name};
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
@@ -96,7 +100,11 @@ pub struct RuntimeAgentSnapshot {
     pub agent_id: String,
     pub session_id: String,
     pub provider: String,
+    /// Provider-neutral status derived from fenced observations.
+    pub provider_status: ProviderStatus,
+    /// Transitional diagnostic only; never use this as provider truth.
     pub state: String,
+    /// Transitional diagnostic only; never use this as provider truth.
     pub sub_state: Option<String>,
     pub pid: Option<i64>,
     pub tmux_session: String,
@@ -107,6 +115,7 @@ pub struct RuntimeAgentSnapshot {
 pub struct RuntimeJobSnapshot {
     pub job_id: String,
     pub agent_id: String,
+    pub provider: String,
     pub request_id: Option<String>,
     pub status: String,
     pub cancel_requested: bool,
@@ -116,6 +125,8 @@ pub struct RuntimeJobSnapshot {
     pub error_reason: Option<String>,
     pub requires_physical_evidence: bool,
     pub requires_test_evidence: bool,
+    /// Canonical JSON captured by the Job owner; consumers parse and compare it exactly.
+    pub governance_binding_json: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -172,15 +183,19 @@ struct InventoryAgent {
     id: String,
     session_id: String,
     provider: String,
+    lifecycle_id: String,
+    turn_id: Option<String>,
+    observations: Vec<ProviderObservation>,
     state: String,
     sub_state: Option<String>,
     pid: Option<i64>,
     created_at: i64,
+    updated_at: i64,
 }
 
 pub fn inactive_runtime_snapshot(input: RuntimeInactiveInput) -> RuntimeSnapshot {
     RuntimeSnapshot {
-        schema_version: 2,
+        schema_version: 3,
         event: "snapshot".to_string(),
         sequence: input.sequence,
         reason: input.reason,
@@ -240,30 +255,21 @@ pub async fn build_runtime_snapshot(
         master_alive_by_session.insert(session.id.clone(), master_tmux_alive);
     }
 
-    let active_agents = agents
-        .iter()
-        .filter(|agent| !is_terminal_agent_state(&agent.state))
-        .collect::<Vec<_>>();
-    let worker_tmux_expected_count = active_agents.len();
     let mut all_active_workers_alive = true;
     let mut agent_snapshots = Vec::with_capacity(agents.len());
+    let now_ms = crate::runtime_observation::store::now_epoch_millis();
     for agent in &agents {
         let tmux_session = agent_session_name(&agent.id);
-        let tmux_alive = if is_terminal_agent_state(&agent.state) {
-            false
-        } else {
-            ctx.tmux_server
-                .session_exists(tmux_session.clone())
-                .await
-                .unwrap_or(false)
-        };
+        let tmux_alive = worker_runtime_alive(ctx, agent, &tmux_session).await;
         if !is_terminal_agent_state(&agent.state) {
             all_active_workers_alive &= tmux_alive;
         }
+        let provider_status = derive_agent_provider_status(agent, tmux_alive, now_ms)?;
         agent_snapshots.push(RuntimeAgentSnapshot {
             agent_id: agent.id.clone(),
             session_id: agent.session_id.clone(),
             provider: agent.provider.clone(),
+            provider_status,
             state: agent.state.clone(),
             sub_state: agent.sub_state.clone(),
             pid: agent.pid,
@@ -271,6 +277,11 @@ pub async fn build_runtime_snapshot(
             tmux_alive,
         });
     }
+    let worker_tmux_expected_count = agents
+        .iter()
+        .zip(agent_snapshots.iter())
+        .filter(|(agent, snapshot)| !is_terminal_agent_state(&agent.state) || snapshot.tmux_alive)
+        .count();
     let mut session_snapshots = Vec::with_capacity(sessions.len());
     let now = now_epoch_seconds();
     for session in &sessions {
@@ -329,7 +340,7 @@ pub async fn build_runtime_snapshot(
     };
 
     Ok(RuntimeSnapshot {
-        schema_version: 2,
+        schema_version: 3,
         event: "snapshot".to_string(),
         sequence: request.sequence,
         reason: request.reason,
@@ -390,6 +401,23 @@ async fn master_runtime_alive(
     }
 }
 
+async fn worker_runtime_alive(ctx: &Ctx, agent: &InventoryAgent, tmux_session: &str) -> bool {
+    let Some(expected_pid) = agent.pid.and_then(positive_pid) else {
+        return false;
+    };
+    let Some(pane) = ctx
+        .tmux_server
+        .find_pane_in_session_by_pid(tmux_session.to_string(), expected_pid)
+        .await
+    else {
+        return false;
+    };
+    match ctx.tmux_server.get_pane_runtime(pane).await {
+        Ok(runtime) => !runtime.dead && i64::from(runtime.pid) == expected_pid,
+        Err(_) => false,
+    }
+}
+
 async fn query_runtime_inventory(
     db: crate::db::Db,
     workspace_path: Option<String>,
@@ -442,11 +470,17 @@ fn query_runtime_inventory_sync(
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| map_db_error("collect runtime sessions", err))?
     };
-    let agents = {
+    let mut agents = {
         let mut stmt = conn
             .prepare(
-                "SELECT agents.id, agents.session_id, agents.provider, agents.state,
-                        agents.sub_state, agents.pid, agents.created_at
+                "SELECT agents.id, agents.session_id, agents.provider, agents.lifecycle_id,
+                        agents.state, agents.sub_state, agents.pid, agents.created_at,
+                        agents.updated_at,
+                        (SELECT jobs.id FROM jobs
+                         WHERE jobs.agent_id = agents.id
+                           AND jobs.status IN ('DISPATCHED', 'QUEUED')
+                         ORDER BY CASE jobs.status WHEN 'DISPATCHED' THEN 0 ELSE 1 END,
+                                  jobs.created_at ASC, jobs.id ASC LIMIT 1)
                  FROM agents
                  JOIN sessions ON sessions.id = agents.session_id
                  JOIN projects ON projects.id = sessions.project_id
@@ -460,16 +494,28 @@ fn query_runtime_inventory_sync(
                     id: row.get(0)?,
                     session_id: row.get(1)?,
                     provider: row.get(2)?,
-                    state: row.get(3)?,
-                    sub_state: row.get(4)?,
-                    pid: row.get(5)?,
-                    created_at: row.get(6)?,
+                    lifecycle_id: row.get(3)?,
+                    state: row.get(4)?,
+                    sub_state: row.get(5)?,
+                    pid: row.get(6)?,
+                    created_at: row.get(7)?,
+                    updated_at: row.get(8)?,
+                    turn_id: row.get(9)?,
+                    observations: Vec::new(),
                 })
             })
             .map_err(|err| map_db_error("query runtime agents", err))?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|err| map_db_error("collect runtime agents", err))?
     };
+    for agent in &mut agents {
+        agent.observations = crate::runtime_observation::store::query_scope_sync(
+            conn,
+            &agent.id,
+            &agent.lifecycle_id,
+            agent.turn_id.as_deref(),
+        )?;
+    }
     let recovery_windows = {
         let mut stmt = conn
             .prepare(
@@ -516,10 +562,11 @@ fn query_runtime_jobs_sync(
 ) -> Result<Vec<RuntimeJobSnapshot>, CcbdError> {
     let mut stmt = conn
         .prepare(
-            "SELECT jobs.id, jobs.agent_id, jobs.request_id, jobs.status,
+            "SELECT jobs.id, jobs.agent_id, agents.provider, jobs.request_id, jobs.status,
                     jobs.cancel_requested, jobs.created_at, jobs.dispatched_at,
                     jobs.completed_at, jobs.error_reason,
-                    jobs.requires_physical_evidence, jobs.requires_test_evidence
+                    jobs.requires_physical_evidence, jobs.requires_test_evidence,
+                    jobs.governance_binding_json
              FROM jobs
              JOIN agents ON agents.id = jobs.agent_id
              JOIN sessions ON sessions.id = agents.session_id
@@ -541,15 +588,17 @@ fn query_runtime_jobs_sync(
             Ok(RuntimeJobSnapshot {
                 job_id: row.get(0)?,
                 agent_id: row.get(1)?,
-                request_id: row.get(2)?,
-                status: row.get(3)?,
-                cancel_requested: row.get::<_, i64>(4)? != 0,
-                created_at: row.get(5)?,
-                dispatched_at: row.get(6)?,
-                completed_at: row.get(7)?,
-                error_reason: row.get(8)?,
-                requires_physical_evidence: row.get::<_, i64>(9)? != 0,
-                requires_test_evidence: row.get::<_, i64>(10)? != 0,
+                provider: row.get(2)?,
+                request_id: row.get(3)?,
+                status: row.get(4)?,
+                cancel_requested: row.get::<_, i64>(5)? != 0,
+                created_at: row.get(6)?,
+                dispatched_at: row.get(7)?,
+                completed_at: row.get(8)?,
+                error_reason: row.get(9)?,
+                requires_physical_evidence: row.get::<_, i64>(10)? != 0,
+                requires_test_evidence: row.get::<_, i64>(11)? != 0,
+                governance_binding_json: row.get(12)?,
             })
         })
         .map_err(|err| map_db_error("query runtime jobs", err))?;
@@ -619,6 +668,78 @@ fn query_runtime_job_events_sync(
         .map_err(|err| map_db_error("collect runtime job events", err))?;
     job_events.reverse();
     Ok((job_events, job_event_cursor))
+}
+
+fn process_probe_observation(
+    agent: &InventoryAgent,
+    tmux_alive: bool,
+    observed_at_ms: i64,
+) -> ProviderObservation {
+    ProviderObservation {
+        observation_id: format!("runtime-process-probe:{}:{observed_at_ms}", agent.id),
+        agent_id: agent.id.clone(),
+        session_id: agent.session_id.clone(),
+        provider: agent.provider.clone(),
+        lifecycle_id: agent.lifecycle_id.clone(),
+        turn_id: None,
+        source: EvidenceSource::ProcessProbe,
+        observed_at_ms,
+        kind: ProviderObservationKind::Process(if tmux_alive {
+            ProviderProcessState::Alive
+        } else {
+            ProviderProcessState::Exited
+        }),
+    }
+}
+
+fn derive_agent_provider_status(
+    agent: &InventoryAgent,
+    tmux_alive: bool,
+    now_ms: i64,
+) -> Result<ProviderStatus, CcbdError> {
+    let mut observations = agent.observations.clone();
+    observations.push(process_probe_observation(agent, tmux_alive, now_ms));
+    if let Some(observation) = legacy_turn_observation(agent) {
+        observations.push(observation);
+    }
+    reduce_provider_status(&ProviderStatusInput {
+        agent_id: agent.id.clone(),
+        session_id: agent.session_id.clone(),
+        provider: agent.provider.clone(),
+        lifecycle_id: agent.lifecycle_id.clone(),
+        turn_id: agent.turn_id.clone(),
+        now_ms,
+        freshness_ms: 120_000,
+        observations,
+    })
+    .map_err(|err| {
+        CcbdError::IpcInvalidRequest(format!(
+            "derive provider status for agent {}: {err}",
+            agent.id
+        ))
+    })
+}
+
+fn legacy_turn_observation(agent: &InventoryAgent) -> Option<ProviderObservation> {
+    let turn = match agent.state.as_str() {
+        "IDLE" => ProviderTurnState::Ready,
+        "WAITING_FOR_ACK" => ProviderTurnState::Queued,
+        "BUSY" => ProviderTurnState::Working,
+        "PROMPT_PENDING" => ProviderTurnState::AwaitingUser,
+        "STUCK" => ProviderTurnState::Stalled,
+        _ => return None,
+    };
+    Some(ProviderObservation {
+        observation_id: format!("legacy-state:{}:{}", agent.id, agent.updated_at),
+        agent_id: agent.id.clone(),
+        session_id: agent.session_id.clone(),
+        provider: agent.provider.clone(),
+        lifecycle_id: agent.lifecycle_id.clone(),
+        turn_id: agent.turn_id.clone(),
+        source: EvidenceSource::LegacyDatabase,
+        observed_at_ms: agent.updated_at.saturating_mul(1_000),
+        kind: ProviderObservationKind::Turn(turn),
+    })
 }
 
 fn is_terminal_agent_state(state: &str) -> bool {
@@ -709,6 +830,7 @@ mod tests {
     use crate::db::jobs::{claim_next_job_sync, insert_job_sync, mark_job_completed_sync};
     use crate::db::sessions::insert_session_sync;
     use crate::rpc::Ctx;
+    use crate::runtime_observation::ResolvedDimension;
     use crate::sandbox::EnvState;
     use crate::tmux::TmuxServer;
     use serde_json::json;
@@ -747,7 +869,7 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(snapshot.schema_version, 2);
+        assert_eq!(snapshot.schema_version, 3);
         assert_eq!(snapshot.event, "snapshot");
         assert_eq!(snapshot.reason, RuntimeSnapshotReason::Initial);
         assert!(!snapshot.active);
@@ -1001,7 +1123,7 @@ mod tests {
         let obj: serde_json::Value = serde_json::from_str(&response).unwrap();
 
         assert_eq!(obj["id"], 99);
-        assert_eq!(obj["result"]["schema_version"], 2);
+        assert_eq!(obj["result"]["schema_version"], 3);
         assert_eq!(obj["result"]["event"], "snapshot");
         assert_eq!(obj["result"]["reason"], "initial");
         assert_eq!(obj["result"]["jobs"], serde_json::json!([]));
@@ -1027,8 +1149,12 @@ mod tests {
             conn.execute(
                 "INSERT INTO jobs (
                     id, agent_id, request_id, prompt_text, status, cancel_requested,
-                    requires_physical_evidence, requires_test_evidence
-                 ) VALUES ('job_v2', 'a_jobs', 'req-v2', 'prompt', 'QUEUED', 1, 1, 0)",
+                    requires_physical_evidence, requires_test_evidence,
+                    governance_binding_json
+                 ) VALUES (
+                    'job_v2', 'a_jobs', 'req-v2', 'prompt', 'QUEUED', 1, 1, 0,
+                    '{\"run_id\":\"RUN-1\"}'
+                 )",
                 [],
             )
             .unwrap();
@@ -1058,10 +1184,15 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(snapshot.schema_version, 2);
+        assert_eq!(snapshot.schema_version, 3);
         assert_eq!(snapshot.jobs.len(), 1);
         assert_eq!(snapshot.jobs[0].job_id, "job_v2");
+        assert_eq!(snapshot.jobs[0].provider, "codex");
         assert_eq!(snapshot.jobs[0].request_id.as_deref(), Some("req-v2"));
+        assert_eq!(
+            snapshot.jobs[0].governance_binding_json.as_deref(),
+            Some("{\"run_id\":\"RUN-1\"}")
+        );
         assert_eq!(snapshot.jobs[0].status, "QUEUED");
         assert!(snapshot.jobs[0].cancel_requested);
         assert!(snapshot.jobs[0].requires_physical_evidence);
@@ -1335,6 +1466,22 @@ mod tests {
     #[tokio::test]
     async fn live_agents_counts_alive_tmux_agent_sessions() {
         let ctx = test_ctx();
+        let tmux_session = agent_session_name("a_live_agent");
+        ctx.tmux_server
+            .ensure_session(tmux_session.clone(), ctx.state_dir.clone())
+            .await
+            .unwrap();
+        let pane = ctx
+            .tmux_server
+            .spawn_window(
+                tmux_session,
+                "worker".into(),
+                ctx.state_dir.clone(),
+                vec!["sh".into(), "-lc".into(), "sleep 30".into()],
+            )
+            .await
+            .unwrap();
+        let worker_pid = i64::from(ctx.tmux_server.get_pane_pid(pane).await.unwrap());
         {
             let conn = ctx.db.conn();
             insert_session_sync(&conn, "s_live_agents", "p_live_agents", "/tmp/live-agents")
@@ -1345,14 +1492,10 @@ mod tests {
                 "s_live_agents",
                 "codex",
                 "IDLE",
-                Some(123),
+                Some(worker_pid),
             )
             .unwrap();
         }
-        ctx.tmux_server
-            .ensure_session(agent_session_name("a_live_agent"), ctx.state_dir.clone())
-            .await
-            .unwrap();
 
         let snapshot = build_runtime_snapshot(
             &ctx,
@@ -1368,6 +1511,148 @@ mod tests {
 
         assert_eq!(snapshot.sessions[0].db_tracked_agents, 1);
         assert_eq!(snapshot.sessions[0].live_agents, 1);
+        assert!(snapshot.agents[0].tmux_alive);
+        assert!(matches!(
+            snapshot.agents[0].provider_status.process,
+            ResolvedDimension::Known {
+                value: ProviderProcessState::Alive,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn retained_dead_tmux_pane_is_not_reported_as_a_live_provider_process() {
+        let ctx = test_ctx();
+        let tmux_session = agent_session_name("a_dead_agent");
+        ctx.tmux_server
+            .ensure_session(tmux_session.clone(), ctx.state_dir.clone())
+            .await
+            .unwrap();
+        let pane = ctx
+            .tmux_server
+            .spawn_window(
+                tmux_session.clone(),
+                "worker".into(),
+                ctx.state_dir.clone(),
+                vec!["sh".into(), "-lc".into(), "exit 0".into()],
+            )
+            .await
+            .unwrap();
+        let worker_pid = i64::from(ctx.tmux_server.get_pane_pid(pane.clone()).await.unwrap());
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        assert!(ctx.tmux_server.session_exists(tmux_session).await.unwrap());
+        assert!(ctx.tmux_server.get_pane_runtime(pane).await.unwrap().dead);
+        {
+            let conn = ctx.db.conn();
+            insert_session_sync(&conn, "s_dead_agents", "p_dead_agents", "/tmp/dead-agents")
+                .unwrap();
+            insert_agent_sync(
+                &conn,
+                "a_dead_agent",
+                "s_dead_agents",
+                "claude",
+                "BUSY",
+                Some(worker_pid),
+            )
+            .unwrap();
+        }
+
+        let snapshot = build_runtime_snapshot(
+            &ctx,
+            RuntimeSnapshotRequest {
+                reason: RuntimeSnapshotReason::Initial,
+                config_path: None,
+                workspace_path: Some("/tmp/dead-agents".into()),
+                sequence: 1,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(snapshot.sessions[0].live_agents, 0);
+        assert!(!snapshot.agents[0].tmux_alive);
+        assert!(matches!(
+            snapshot.agents[0].provider_status.process,
+            ResolvedDimension::Known {
+                value: ProviderProcessState::Exited,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_refuses_busy_when_process_is_gone() {
+        let agent = InventoryAgent {
+            id: "a1".into(),
+            session_id: "s1".into(),
+            provider: "codex".into(),
+            lifecycle_id: "lifecycle-1".into(),
+            turn_id: Some("job-1".into()),
+            observations: Vec::new(),
+            state: "BUSY".into(),
+            sub_state: None,
+            pid: Some(10),
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let status = derive_agent_provider_status(&agent, false, 1_000).unwrap();
+
+        assert_eq!(
+            status.occupancy,
+            crate::runtime_observation::ProviderOccupancy::Conflicted
+        );
+        assert!(matches!(
+            status.process,
+            crate::runtime_observation::ResolvedDimension::Known {
+                value: ProviderProcessState::Exited,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn runtime_projection_prefers_fenced_completion_over_legacy_busy() {
+        let completion = ProviderObservation {
+            observation_id: "hook-stop-1".into(),
+            agent_id: "a1".into(),
+            session_id: "s1".into(),
+            provider: "claude".into(),
+            lifecycle_id: "lifecycle-1".into(),
+            turn_id: Some("job-1".into()),
+            source: EvidenceSource::OfficialHook,
+            observed_at_ms: 990,
+            kind: ProviderObservationKind::Turn(ProviderTurnState::Completed),
+        };
+        let agent = InventoryAgent {
+            id: "a1".into(),
+            session_id: "s1".into(),
+            provider: "claude".into(),
+            lifecycle_id: "lifecycle-1".into(),
+            turn_id: Some("job-1".into()),
+            observations: vec![completion],
+            state: "BUSY".into(),
+            sub_state: None,
+            pid: Some(10),
+            created_at: 1,
+            updated_at: 1,
+        };
+
+        let status = derive_agent_provider_status(&agent, true, 1_000).unwrap();
+
+        assert_eq!(
+            status.occupancy,
+            crate::runtime_observation::ProviderOccupancy::Available
+        );
+        assert!(matches!(
+            status.turn,
+            crate::runtime_observation::ResolvedDimension::Known {
+                value: ProviderTurnState::Completed,
+                source: EvidenceSource::OfficialHook,
+                ..
+            }
+        ));
     }
 
     #[test]

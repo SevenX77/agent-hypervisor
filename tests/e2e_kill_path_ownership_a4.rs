@@ -17,7 +17,7 @@
 
 mod common;
 
-use ah::db::{self};
+use ah::db::{self as db};
 use ah::rpc::Ctx;
 use ah::rpc::router::dispatch;
 use ah::sandbox::EnvState;

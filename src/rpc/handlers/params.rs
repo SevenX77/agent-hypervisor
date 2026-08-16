@@ -11,10 +11,6 @@ pub(super) fn required_str<'a>(params: &'a Value, field: &str) -> Result<&'a str
         .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("missing or invalid field '{field}'")))
 }
 
-pub(super) fn should_press_enter_after_paste(provider: &str, text: &str) -> bool {
-    !(provider == "antigravity" && text.ends_with('\n'))
-}
-
 pub(super) fn required_i64(params: &Value, field: &str) -> Result<i64, CcbdError> {
     params
         .get(field)

@@ -141,7 +141,7 @@ fn claimed_sandbox_homes(state_root: &Path) -> HashSet<PathBuf> {
             };
             for agent in agents.flatten() {
                 if let Ok(home) =
-                    crate::provider::home_layout::sandbox_home_for_sandbox_dir(&agent.path())
+                    crate::home_materialization::sandbox_home_for_sandbox_dir(&agent.path())
                 {
                     claimed.insert(home);
                 }
@@ -395,8 +395,7 @@ mod tests {
         let temp = tempfile::TempDir::new().unwrap();
         let sandbox_dir = temp.path().join("state/ah/proj/sandboxes/s1/a1");
         fs::create_dir_all(&sandbox_dir).unwrap();
-        let home =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
+        let home = crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         fs::create_dir_all(&home).unwrap();
         fs::write(home.join("blob"), b"live").unwrap();
         let mut scope = scope_for(temp.path());
@@ -517,9 +516,10 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert!(!orphan.exists());
         assert_eq!(
-            fs::read_to_string(destination.join(
-                ".ah/sessions/orphans/deadbeef0000/codex/.codex/sessions/rollout.jsonl"
-            ))
+            fs::read_to_string(
+                destination
+                    .join(".ah/sessions/orphans/deadbeef0000/codex/.codex/sessions/rollout.jsonl")
+            )
             .unwrap(),
             "real work"
         );

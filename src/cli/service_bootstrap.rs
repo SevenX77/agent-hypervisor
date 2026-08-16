@@ -618,9 +618,13 @@ mod tests {
         let state_dir = tempfile::TempDir::new().unwrap();
         let unit_name = derive_unit_name(state_dir.path());
         let unit_path = systemd_dir.path().join(&unit_name);
-        fs::write(&unit_path, "[Unit]
+        fs::write(
+            &unit_path,
+            "[Unit]
 Description=hand written
-").unwrap();
+",
+        )
+        .unwrap();
 
         let runner = FakeRunner::new();
         teardown_persistent_unit_in_dir(&runner, systemd_dir.path(), state_dir.path());

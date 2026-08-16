@@ -206,11 +206,8 @@ fn holds_records(path: &Path) -> bool {
     if !metadata.is_dir() {
         return false;
     }
-    fs::read_dir(path).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| holds_records(&entry.path()))
-    })
+    fs::read_dir(path)
+        .is_ok_and(|entries| entries.flatten().any(|entry| holds_records(&entry.path())))
 }
 
 /// Creates the archive root carrying its own `.gitignore`, the way cargo marks
@@ -370,7 +367,8 @@ mod tests {
         let host_secret = temp.path().join("host-credentials.json");
         fs::write(&host_secret, "{\"refresh_token\":\"secret\"}").unwrap();
         write(&home.join(".claude/projects/-tmp-p/s.jsonl"), "claude\n");
-        std::os::unix::fs::symlink(&host_secret, home.join(".claude/projects/linked.json")).unwrap();
+        std::os::unix::fs::symlink(&host_secret, home.join(".claude/projects/linked.json"))
+            .unwrap();
 
         let ArchiveOutcome::Archived { destination, files } =
             archive_session_records_into(&project, &home, "sess_1", "a1")
@@ -446,7 +444,10 @@ mod tests {
         let home = temp.path().join("home");
         write(&home.join(".codex/sessions/r.jsonl"), "turn one\n");
         archive_session_records_into(&project, &home, "sess_1", "a1");
-        write(&home.join(".codex/sessions/r.jsonl"), "turn one\nturn two\n");
+        write(
+            &home.join(".codex/sessions/r.jsonl"),
+            "turn one\nturn two\n",
+        );
 
         let outcome = archive_session_records_into(&project, &home, "sess_1", "a1");
 

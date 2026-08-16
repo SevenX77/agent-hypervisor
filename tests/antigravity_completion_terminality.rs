@@ -64,6 +64,8 @@ async fn antigravity_deferred_background_cargo_reply_does_not_complete_from_log(
         "some_path.jsonl".to_string(),
         100,
         None,
+        "".to_string(),
+        None,
     )
     .await
     .unwrap();
@@ -112,6 +114,8 @@ async fn antigravity_final_test_result_completes_after_deferred_candidate() {
         "some_path.jsonl".to_string(),
         100,
         None,
+        "".to_string(),
+        None,
     )
     .await
     .unwrap();
@@ -129,6 +133,8 @@ async fn antigravity_final_test_result_completes_after_deferred_candidate() {
         Some(reply2.to_string()),
         "some_path.jsonl".to_string(),
         200,
+        None,
+        "".to_string(),
         None,
     )
     .await

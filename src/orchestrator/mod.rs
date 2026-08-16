@@ -28,6 +28,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::Notify;
 
 pub static WAKER: LazyLock<Notify> = LazyLock::new(Notify::new);
+const ORCHESTRATOR_SAFETY_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 pub fn wake_up() {
     WAKER.notify_one();
@@ -126,7 +127,14 @@ pub fn spawn_orchestrator_task(ctx: Ctx) {
             if let Err(err) = run_once(&ctx).await {
                 tracing::warn!(error = %err, "orchestrator tick failed");
             }
-            WAKER.notified().await;
+            // `Notify` is an acceleration signal, not durable work state. Spawn,
+            // readiness, and submit notifications can coalesce while a tick is
+            // already running. Periodically re-read the durable queue so a lost
+            // or coalesced wakeup cannot strand an admitted job forever.
+            tokio::select! {
+                _ = WAKER.notified() => {}
+                _ = tokio::time::sleep(ORCHESTRATOR_SAFETY_POLL_INTERVAL) => {}
+            }
         }
     });
 }
@@ -218,12 +226,19 @@ async fn run_once_with_recovery_respawn(
         let Some(dispatched) = dispatch_queued_job(ctx, &agent.id).await? else {
             continue;
         };
+        let dispatch_seq_id = dispatched.seq_id;
         let job = dispatched.job;
         did_work = true;
 
         crate::agent_io::set_idle_scan_enabled(&agent.id, false);
         let capture_baseline = ctx.tmux_server.capture_pane(pane_id.clone()).await.ok();
-        prepare_log_monitor_before_send(ctx, &agent.session_id, &agent.id, &agent.provider);
+        prepare_log_monitor_before_send(
+            ctx,
+            &agent.session_id,
+            &agent.id,
+            &agent.provider,
+            &agent.lifecycle_id,
+        );
         run_before_dispatch_send_hook_for_test(ctx, &agent.id, pane_id.clone()).await;
         match wait_for_pre_send_dispatchable(ctx, &agent.id, &job.id).await? {
             DispatchReadiness::Ready => {}
@@ -278,10 +293,15 @@ async fn run_once_with_recovery_respawn(
         }
 
         let press_enter_after_paste =
-            !(agent.provider == "antigravity" && job.prompt_text.ends_with('\n'));
+            crate::provider::manifest::press_enter_after_paste(&agent.provider, &job.prompt_text);
+        let mut cli_lifecycle = crate::lifecycle::CliLifecycleProgress::new(
+            crate::lifecycle::CliLifecyclePhase::Standby,
+        );
+        cli_lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::DeliveringPrompt)?;
         let send_result = crate::agent_io::send_text_to_pane_with_options(
             ctx.tmux_server.clone(),
             &agent.id,
+            &agent.provider,
             pane_id.clone(),
             job.prompt_text.clone(),
             press_enter_after_paste,
@@ -341,6 +361,7 @@ async fn run_once_with_recovery_respawn(
             wake_up();
             continue;
         }
+        cli_lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::WaitingForTaskStart)?;
         if db::jobs::recovery_requeued_attempt(job.error_reason.as_deref()).is_some() {
             match db::jobs::clear_recovered_dispatch_marker(ctx.db.clone(), job.id.clone()).await {
                 Ok(changes) if changes > 0 => tracing::info!(
@@ -361,8 +382,8 @@ async fn run_once_with_recovery_respawn(
                 ),
             }
         }
-        spawn_dispatch_ack_stability_busy(ctx.db.clone(), agent.id.clone());
-
+        // Start all observation Adapters before waiting for the Enter action's
+        // second purpose: a causally correlated provider turn.
         if let Some(parser_handle) = parser_registry::get(&agent.id) {
             let marker_handle = spawn_marker_timer_task_with_prompt(
                 agent.id.clone(),
@@ -390,9 +411,49 @@ async fn run_once_with_recovery_respawn(
                     ctx.state_dir.clone(),
                     capture_baseline,
                     Arc::new(matcher),
+                    crate::rpc::handlers::AckEvidenceMode::for_provider(&agent.provider),
                 );
             }
             drop(parser_handle);
+        }
+
+        match crate::lifecycle::await_task_started(
+            ctx.db.clone(),
+            &agent.id,
+            &agent.provider,
+            &agent.lifecycle_id,
+            &job.id,
+        )
+        .await
+        {
+            Ok(evidence) => {
+                cli_lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::Working)?;
+                db::jobs::mark_dispatched_job_delivered(
+                    ctx.db.clone(),
+                    agent.id.clone(),
+                    job.id.clone(),
+                    dispatch_seq_id,
+                )
+                .await?;
+                tracing::info!(
+                    agent_id = %agent.id,
+                    job_id = %job.id,
+                    provider = %agent.provider,
+                    observation_id = %evidence.observation_id,
+                    source = ?evidence.source,
+                    "confirmed provider task start after verified prompt submission"
+                );
+            }
+            Err(err) => {
+                tracing::warn!(
+                    agent_id = %agent.id,
+                    job_id = %job.id,
+                    provider = %agent.provider,
+                    lifecycle_phase = ?cli_lifecycle.phase(),
+                    error = %err,
+                    "composer cleared but task start is unconfirmed; leaving dispatch occupied without advancing"
+                );
+            }
         }
     }
 
@@ -1312,6 +1373,7 @@ fn prepare_log_monitor_before_send(
     session_id: &str,
     agent_id: &str,
     provider: &str,
+    lifecycle_id: &str,
 ) -> bool {
     let root = match crate::completion::log_layout::resolve_agent_log_root(
         &ctx.state_dir,
@@ -1372,6 +1434,7 @@ fn prepare_log_monitor_before_send(
         provider.to_string(),
         root,
         initial_state,
+        lifecycle_id.to_string(),
         cancel_rx,
     );
     true
@@ -1513,26 +1576,6 @@ fn dispatch_send_error_is_pane_missing(err: &CcbdError) -> bool {
         }
         _ => err.to_string().contains("can't find pane"),
     }
-}
-
-fn spawn_dispatch_ack_stability_busy(db: db::Db, agent_id: String) {
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(
-            crate::rpc::handlers::CAPTURE_SEED_STABILITY_MS,
-        ))
-        .await;
-        if let Err(err) = db::state_machine::transit_agent_state(
-            db,
-            agent_id.clone(),
-            vec![db::state_machine::STATE_WAITING_FOR_ACK.to_string()],
-            db::state_machine::STATE_BUSY.to_string(),
-            Some("DISPATCH_ACK_STABLE".to_string()),
-        )
-        .await
-        {
-            tracing::warn!(agent_id = %agent_id, error = %err, "failed to mark agent BUSY after dispatch ACK stability window");
-        }
-    });
 }
 
 #[cfg(test)]
@@ -2007,7 +2050,7 @@ mod tests {
         let _cleanup = AgentGlobalCleanup::new(agent_id);
         let sandbox = ctx.state_dir.join("sandboxes").join("s1").join(agent_id);
         std::fs::create_dir_all(&sandbox).unwrap();
-        let home = crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
+        let home = crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
         let sessions = home.join(".codex/sessions/2026/06");
         std::fs::create_dir_all(&sessions).unwrap();
         let log = sessions.join("rollout-session.jsonl");
@@ -2016,7 +2059,16 @@ mod tests {
         insert_session_sync(&conn, "s1", "p1", "/tmp/foo").unwrap();
         insert_agent_sync(&conn, agent_id, "s1", "codex", "WAITING_FOR_ACK", Some(123)).unwrap();
 
-        let registered = prepare_log_monitor_before_send(&ctx, "s1", agent_id, "codex");
+        let lifecycle_id: String = conn
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        let registered =
+            prepare_log_monitor_before_send(&ctx, "s1", agent_id, "codex", &lifecycle_id);
 
         assert!(registered);
         let cursor = crate::completion::registry::cursor_snapshot(agent_id).unwrap();
@@ -2032,7 +2084,7 @@ mod tests {
         let _cleanup = AgentGlobalCleanup::new(agent_id);
         let sandbox = ctx.state_dir.join("sandboxes").join("s1").join(agent_id);
         std::fs::create_dir_all(&sandbox).unwrap();
-        let home = crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
+        let home = crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
         let sessions = home.join(".codex/sessions/2026/06");
         std::fs::create_dir_all(&sessions).unwrap();
         std::fs::write(sessions.join("rollout-session.jsonl"), b"{\"old\":true}\n").unwrap();
@@ -2358,7 +2410,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn missing_or_unreadable_log_root_switches_to_ui_immediately() {
+    async fn unsafe_no_sandbox_does_not_register_log_monitor() {
         let ctx = test_ctx();
         let agent_id = "orchestrator_missing_log_root";
         let _cleanup = AgentGlobalCleanup::new(agent_id);
@@ -2366,10 +2418,52 @@ mod tests {
         insert_session_sync(&conn, "s1", "p1", "/tmp/foo").unwrap();
         insert_agent_sync(&conn, agent_id, "s1", "codex", "WAITING_FOR_ACK", Some(123)).unwrap();
 
-        let registered = prepare_log_monitor_before_send(&ctx, "s1", agent_id, "codex");
+        let lifecycle_id: String = conn
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        let registered =
+            prepare_log_monitor_before_send(&ctx, "s1", agent_id, "codex", &lifecycle_id);
 
         assert!(!registered);
         assert!(!crate::completion::registry::contains(agent_id));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn safety_poll_processes_a_durable_job_without_a_wakeup() {
+        let ctx = test_ctx();
+        let agent_id = "orchestrator_safety_poll";
+        let job_id = "job_orchestrator_safety_poll";
+        let _cleanup = AgentGlobalCleanup::new(agent_id);
+        {
+            let conn = ctx.db.conn();
+            seed_session(&conn);
+            insert_agent_sync(&conn, agent_id, "s1", "bash", "IDLE", Some(123)).unwrap();
+        }
+
+        super::spawn_orchestrator_task(ctx.clone());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        insert_job_sync(&ctx.db.conn(), job_id, agent_id, None, "echo hi\n").unwrap();
+
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let job = query_job_sync(&ctx.db.conn(), job_id).unwrap().unwrap();
+                if job.status == "FAILED" {
+                    assert_eq!(
+                        job.error_reason.as_deref(),
+                        Some("tmux pane not registered")
+                    );
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("safety poll must not strand durable queued work");
     }
 
     #[tokio::test(flavor = "multi_thread")]

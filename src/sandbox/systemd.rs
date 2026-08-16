@@ -437,14 +437,12 @@ mod tests {
     }
 
     #[test]
-    fn test_master_command_unsafe_path_does_not_inject_oom_wrapper() {
+    fn test_master_command_unsafe_path_is_refused() {
         let cmd = master_command("p1", "claude", &env_state(true), Some("ahd.service"));
 
-        assert!(!cmd.iter().any(|arg| arg.contains("oom_score_adj")));
-        assert!(!cmd.contains(&"--property=OOMScoreAdjust=500".to_string()));
-        let sh_pos = cmd.iter().position(|arg| arg == "sh").unwrap();
-        assert_eq!(cmd[sh_pos + 1], "-lc");
-        assert_eq!(cmd[sh_pos + 2], "claude");
+        assert_eq!(cmd[0], "sh");
+        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
+        assert!(!cmd.iter().any(|arg| arg == "claude"));
     }
 
     #[test]
@@ -586,7 +584,7 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_command_bypass_returns_provider() {
+    fn test_wrap_command_unsafe_path_is_refused() {
         let cmd = wrap_command(
             "ag_1",
             "p1",
@@ -597,14 +595,9 @@ mod tests {
             &get_manifest("bash"),
             &extra_env(),
         );
-        let argv = argv_strings(&cmd);
-
-        assert_eq!(argv.first().map(String::as_str), Some("env"));
-        assert!(argv.contains(&"PS1=$ ".to_string()));
-        assert_eq!(
-            &argv[argv.len() - 4..],
-            ["bash", "--noprofile", "--norc", "-i"]
-        );
+        assert_eq!(cmd.first().map(String::as_str), Some("sh"));
+        assert!(cmd.iter().any(|arg| arg.contains("execution refused")));
+        assert!(!cmd.iter().any(|arg| arg == "bash"));
     }
 
     #[test]
@@ -651,21 +644,22 @@ mod tests {
             "ag_1",
             "p1",
             "ccbd-test",
-            &env_state(true),
+            &env_state(false),
             true,
             Some("ahd.service"),
             &get_manifest("claude"),
             &extra_env(),
         );
         assert!(claude_recovery.contains(&"claude".to_string()));
-        assert!(claude_recovery.contains(&"--dangerously-skip-permissions".to_string()));
+        assert!(claude_recovery.contains(&"--permission-mode".to_string()));
+        assert!(claude_recovery.contains(&"dontAsk".to_string()));
         assert!(claude_recovery.contains(&"--continue".to_string()));
 
         let claude_new = wrap_command(
             "ag_1",
             "p1",
             "ccbd-test",
-            &env_state(true),
+            &env_state(false),
             false,
             Some("ahd.service"),
             &get_manifest("claude"),
@@ -678,7 +672,7 @@ mod tests {
                 "ag_1",
                 "p1",
                 "ccbd-test",
-                &env_state(true),
+                &env_state(false),
                 true,
                 Some("ahd.service"),
                 &get_manifest(provider),

@@ -1,7 +1,7 @@
 #![cfg(unix)]
 #![allow(dead_code)]
 
-use ah::db::{self, agents, events, jobs, sessions, state_machine};
+use ah::db::{self as db, agents, events, jobs, sessions, state_machine};
 use ah::pane_diff::{
     PaneDiffObservation, process_pane_diff_observations, resolve_stuck_watch_config,
 };

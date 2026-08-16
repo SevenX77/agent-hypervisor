@@ -3,13 +3,17 @@ use crate::db::agents::query_agent;
 use crate::db::schema::Session;
 use crate::db::sessions::{
     create_session, list_session_summaries, query_session_by_id, set_session_master_pane_id,
-    update_session_config_hash, update_session_master_cmd,
+    update_session_config_hash, update_session_master_cmd, update_session_master_provider,
 };
 use crate::db::system::{
     cascade_kill_session_agents, cascade_kill_session_agents_for_daemon,
     remove_agent_sandbox_dir_sync, session_agent_ids,
 };
 use crate::error::CcbdError;
+use crate::home_materialization::{
+    HomeLayoutRole, HookPushContext,
+    prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
+};
 use crate::master_revival::{
     mark_session_intentional_killed, master_monitor_key, record_spawned_master_runtime,
     record_spawned_master_runtime_after_claim,
@@ -20,10 +24,6 @@ use crate::monitor::session_watch::{spawn_session_watch_task, unit_name_for_sess
 use crate::provider::bundles::{BundleRole, resolve_bundles_for_provider};
 use crate::provider::extensions::ExtensionConfig;
 use crate::provider::fingerprint::{ConfigFingerprintInput, ConfigRole, compute_config_hash};
-use crate::provider::home_layout::{
-    HomeLayoutRole, HookPushContext,
-    prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
-};
 use crate::rpc::Ctx;
 use crate::sandbox::{SandboxOverrides, path, systemd};
 use crate::tmux::{
@@ -515,6 +515,7 @@ pub(super) async fn prepare_master_pane_plan(
         let hook_push_ctx = HookPushContext {
             agent_id: format!("master:{}:{hook_generation}", params.session_id),
             provider: provider.clone(),
+            lifecycle_id: format!("master-{hook_generation}"),
             ahd_socket_path: ctx.state_dir.join("ahd.sock"),
             enabled: true,
         };
@@ -603,6 +604,7 @@ pub(super) async fn spawn_prepared_master_pane(
     plan: MasterPanePlan,
     arm_revival_watch: bool,
 ) -> Result<SpawnMasterPaneOutcome, CcbdError> {
+    let master_provider = params.resolved_provider();
     let tmux_cmd = systemd::master_command_with_env(
         &plan.session.project_id,
         &params.cmd,
@@ -652,6 +654,8 @@ pub(super) async fn spawn_prepared_master_pane(
         params.cmd.clone(),
     )
     .await?;
+    update_session_master_provider(ctx.db.clone(), params.session_id.clone(), master_provider)
+        .await?;
 
     let mut new_pid = None;
     let mut generation = None;
@@ -763,6 +767,7 @@ pub async fn handle_session_list(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
                 "status": session.status,
                 "master_state": session.master_state,
                 "master_pane_id": session.master_pane_id,
+                "master_provider": session.master_provider,
                 "db_tracked_agents": session.db_tracked_agents,
                 "active_agents": session.active_agents,
                 "created_at": session.created_at,
@@ -836,6 +841,11 @@ mod master_cutover_tests {
                 Some(123),
             )
             .unwrap();
+            conn.execute(
+                "UPDATE sessions SET master_provider = 'claude' WHERE id = 'sess_active'",
+                [],
+            )
+            .unwrap();
             insert_agent_sync(
                 &conn,
                 "agent_crashed",
@@ -853,6 +863,7 @@ mod master_cutover_tests {
         assert_eq!(sessions[0]["id"], "sess_active");
         assert_eq!(sessions[0]["db_tracked_agents"], 1);
         assert_eq!(sessions[0]["active_agents"], 1);
+        assert_eq!(sessions[0]["master_provider"], "claude");
         assert_eq!(
             sessions[0]["db_tracked_agents"], sessions[0]["active_agents"],
             "active_agents must remain a compatibility alias"
@@ -1108,7 +1119,10 @@ mod master_cutover_tests {
             cmd: "sleep 60".to_string(),
             provider: None,
             seat_env: HashMap::from([
-                ("STUDIO_MCP_URL".to_string(), "https://studio.example".to_string()),
+                (
+                    "STUDIO_MCP_URL".to_string(),
+                    "https://studio.example".to_string(),
+                ),
                 ("SHARED".to_string(), "from-seat".to_string()),
                 ("AH_SESSION_ID".to_string(), "hijacked".to_string()),
             ]),
@@ -1122,7 +1136,9 @@ mod master_cutover_tests {
         let plan = prepare_master_pane_plan(&ctx, &params).await.unwrap();
 
         assert_eq!(
-            plan.master_env_vars.get("STUDIO_MCP_URL").map(String::as_str),
+            plan.master_env_vars
+                .get("STUDIO_MCP_URL")
+                .map(String::as_str),
             Some("https://studio.example")
         );
         assert_eq!(
@@ -1130,7 +1146,9 @@ mod master_cutover_tests {
             Some("from-seat")
         );
         assert_eq!(
-            plan.master_env_vars.get("AH_SESSION_ID").map(String::as_str),
+            plan.master_env_vars
+                .get("AH_SESSION_ID")
+                .map(String::as_str),
             Some("s_master_env"),
             "ah runtime identity must win over author-configured env"
         );
@@ -1697,8 +1715,8 @@ mod master_cutover_tests {
         );
 
         let err = wait_for_master_readiness(&ctx, cutover_id, Duration::from_millis(200))
-        .await
-        .unwrap_err();
+            .await
+            .unwrap_err();
 
         assert!(
             err.to_string().contains("exited before readiness"),
@@ -1757,8 +1775,8 @@ mod master_cutover_tests {
         );
 
         let err = wait_for_master_readiness(&ctx, cutover_id, Duration::from_millis(120))
-        .await
-        .unwrap_err();
+            .await
+            .unwrap_err();
 
         assert!(
             err.to_string().contains("readiness timed out"),

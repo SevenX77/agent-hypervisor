@@ -8,7 +8,7 @@ use std::path::Path;
 
 pub use error::TmuxError;
 pub use pane::TmuxPaneId;
-pub use session::{TmuxServer, TmuxWindowSize};
+pub use session::{TmuxPaneRuntime, TmuxServer, TmuxWindowSize};
 
 pub fn agent_session_name(agent_id: &str) -> String {
     format!("agent_{agent_id}")

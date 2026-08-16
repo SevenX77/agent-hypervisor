@@ -3,6 +3,9 @@
 use crate::error::CcbdError;
 use std::path::Path;
 
+pub mod browser;
+pub mod clipboard;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 

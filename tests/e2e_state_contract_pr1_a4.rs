@@ -1,5 +1,5 @@
 //! Executable end-to-end wire-format proof for state-contract PR1
-//! (RuntimeSnapshot `schema_version` 2). This is the JSON surface Studio actually
+//! (RuntimeSnapshot `schema_version` 3). This is the JSON surface Studio actually
 //! consumes: `ah events --format json` reaches server method `runtime.subscribe`,
 //! which serializes the exact same `RuntimeSnapshot` struct produced by
 //! `build_runtime_snapshot`. These tests drive BOTH real emission paths on a fully
@@ -16,8 +16,9 @@
 //!
 //! NON-TAUTOLOGY: the migration test asserts a field FLIPS (FAILED -> CLOSED) only after a
 //! restart runs `db::init`; a pre-PR1 build (no migration) would leave it FAILED. The wire
-//! test pins `"schema_version":2` and the RENAME (`db_tracked_agents` present, legacy
-//! `active_agents` absent) against the raw serialized bytes — a v1 snapshot would fail both.
+//! test pins `"schema_version":3`, provider-neutral status, and the RENAME
+//! (`db_tracked_agents` present, legacy `active_agents` absent) against the raw
+//! serialized bytes — a pre-Work-Execution snapshot would fail these checks.
 
 mod common;
 
@@ -149,12 +150,13 @@ impl Stack {
     }
 
     fn seed_agent(&self, agent_id: &str, session_id: &str, state: &str, pid: Option<i64>) {
+        let lifecycle_id = format!("lifecycle_{agent_id}");
         self.ctx
             .db
             .conn()
             .execute(
-                "INSERT INTO agents (id, session_id, provider, state, pid) VALUES (?, ?, 'bash', ?, ?)",
-                params![agent_id, session_id, state, pid],
+                "INSERT INTO agents (id, session_id, provider, lifecycle_id, state, pid) VALUES (?, ?, 'bash', ?, ?, ?)",
+                params![agent_id, session_id, lifecycle_id, state, pid],
             )
             .unwrap();
     }
@@ -220,11 +222,12 @@ fn session_by_id<'a>(snapshot: &'a Value, session_id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("session {session_id} missing from snapshot: {snapshot}"))
 }
 
-/// (1) WIRE-FORMAT CONTRACT: schema_version 2, the renamed/added per-session keys, and the
-/// new top-level job containers — asserted against the raw serialized JSON of BOTH emission
-/// paths (`runtime.subscribe` router + `ah events` streaming bytes).
+/// (1) WIRE-FORMAT CONTRACT: schema_version 3, provider-neutral status, the
+/// renamed/added per-session keys, and the top-level Job receipt containers —
+/// asserted against the raw serialized JSON of BOTH emission paths
+/// (`runtime.subscribe` router + `ah events` streaming bytes).
 #[tokio::test(flavor = "current_thread")]
-async fn e2e_wire_format_pins_schema_v2_and_new_keys() {
+async fn e2e_wire_format_pins_schema_v3_and_work_execution_keys() {
     let stack = Stack::new();
     stack.seed_session("s_wire", "p_wire", "ACTIVE", 0, None);
     stack.seed_agent("a_wire", "s_wire", "IDLE", None);
@@ -232,9 +235,9 @@ async fn e2e_wire_format_pins_schema_v2_and_new_keys() {
 
     let snap = stack.subscribe_snapshot().await;
 
-    // schema_version is exactly 2 (a pre-PR1 snapshot would emit 1).
-    assert_eq!(snap["schema_version"].as_u64(), Some(2), "snapshot: {snap}");
-    assert_ne!(snap["schema_version"].as_u64(), Some(1));
+    // schema_version is exactly 3 (pre-Work-Execution snapshots emitted 1 or 2).
+    assert_eq!(snap["schema_version"].as_u64(), Some(3), "snapshot: {snap}");
+    assert!(!matches!(snap["schema_version"].as_u64(), Some(1 | 2)));
 
     // Top-level PR1 job containers exist with the right JSON types.
     assert!(snap["jobs"].is_array(), "jobs must be an array: {snap}");
@@ -282,12 +285,41 @@ async fn e2e_wire_format_pins_schema_v2_and_new_keys() {
     assert!(sess["cleanup_required"].is_boolean());
     assert!(sess["safe_to_cleanup"].is_boolean());
 
-    // Raw-bytes non-tautology: pin the literal wire tokens a v1 snapshot could not produce.
+    let agent = snap["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|agent| agent["agent_id"] == "a_wire")
+        .unwrap_or_else(|| panic!("agent a_wire missing from snapshot: {snap}"));
+    let provider_status = &agent["provider_status"];
+    assert_eq!(provider_status["agent_id"], "a_wire");
+    assert_eq!(provider_status["provider"], "bash");
+    assert!(
+        provider_status["lifecycle_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
+    assert!(provider_status["process"]["resolution"].is_string());
+    assert!(provider_status["turn"]["resolution"].is_string());
+    assert!(provider_status["occupancy"].is_string());
+
+    let job = snap["jobs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|job| job["job_id"] == "j_wire")
+        .unwrap_or_else(|| panic!("job j_wire missing from snapshot: {snap}"));
+    assert_eq!(job["provider"], "bash");
+    assert!(job.get("governance_binding_json").is_some());
+
+    // Raw-bytes non-tautology: pin the literal wire tokens a v2 snapshot could not produce.
     let wire = serde_json::to_string(&snap).unwrap();
     assert!(
-        wire.contains("\"schema_version\":2"),
-        "wire bytes must pin schema_version 2: {wire}"
+        wire.contains("\"schema_version\":3"),
+        "wire bytes must pin schema_version 3: {wire}"
     );
+    assert!(wire.contains("provider_status"));
+    assert!(wire.contains("governance_binding_json"));
     assert!(
         wire.contains("db_tracked_agents"),
         "renamed key must appear in wire bytes"
@@ -301,8 +333,8 @@ async fn e2e_wire_format_pins_schema_v2_and_new_keys() {
     let streamed = stack.stream_first_line().await;
     assert_eq!(
         streamed["schema_version"].as_u64(),
-        Some(2),
-        "streaming path must also emit schema_version 2: {streamed}"
+        Some(3),
+        "streaming path must also emit schema_version 3: {streamed}"
     );
     let streamed_sess = session_by_id(&streamed, "s_wire");
     assert!(
@@ -315,6 +347,7 @@ async fn e2e_wire_format_pins_schema_v2_and_new_keys() {
     );
     assert!(streamed["job_events"].is_array());
     assert!(streamed["job_event_cursor"].is_i64() || streamed["job_event_cursor"].is_u64());
+    assert!(streamed["agents"][0].get("provider_status").is_some());
 }
 
 /// (2) MIGRATION END-TO-END: a FAILED session whose master_last_exit_reason is

@@ -459,7 +459,7 @@ mod tests {
         STATE_WAITING_FOR_ACK,
     };
     use crate::db::{Db, init};
-    use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
+    use crate::home_materialization::sandbox_home_for_sandbox_dir;
     use crate::tmux::TmuxPaneId;
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;

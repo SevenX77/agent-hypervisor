@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     status TEXT NOT NULL DEFAULT 'ACTIVE',
     config_hash TEXT,
     master_cmd TEXT,
+    master_provider TEXT,
     master_retry_count INTEGER NOT NULL DEFAULT 0,
     master_next_retry_at INTEGER NOT NULL DEFAULT 0,
     master_generation INTEGER NOT NULL DEFAULT 0,
@@ -73,6 +74,7 @@ CREATE TABLE IF NOT EXISTS agents (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     provider TEXT NOT NULL,
+    lifecycle_id TEXT NOT NULL DEFAULT '',
     state TEXT NOT NULL,
     state_version INTEGER NOT NULL DEFAULT 1,
     pid INTEGER,
@@ -134,6 +136,20 @@ CREATE INDEX IF NOT EXISTS idx_events_agent_seq ON events(agent_id, seq_id);
 CREATE INDEX IF NOT EXISTS idx_events_agent_type_seq ON events(agent_id, event_type, seq_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_events_idempotent ON events(agent_id, request_id) WHERE request_id IS NOT NULL;
 
+CREATE TABLE IF NOT EXISTS provider_status_observations (
+    seq_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_id TEXT NOT NULL UNIQUE,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    lifecycle_id TEXT NOT NULL,
+    turn_id TEXT,
+    observation_json TEXT NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_provider_status_observations_scope
+ON provider_status_observations(agent_id, lifecycle_id, turn_id, observed_at_ms);
+
 CREATE TABLE IF NOT EXISTS evidence (
     id TEXT PRIMARY KEY,
     agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
@@ -166,7 +182,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     completed_at INTEGER,
     cancel_requested INTEGER NOT NULL DEFAULT 0,
     requires_physical_evidence INTEGER NOT NULL DEFAULT 0,
-    requires_test_evidence INTEGER NOT NULL DEFAULT 0
+    requires_test_evidence INTEGER NOT NULL DEFAULT 0,
+    governance_binding_json TEXT
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_jobs_queue ON jobs(agent_id, status, created_at) WHERE status IN ('QUEUED', 'DISPATCHED');
@@ -302,6 +319,7 @@ pub struct Agent {
     pub id: String,
     pub session_id: String,
     pub provider: String,
+    pub lifecycle_id: String,
     pub state: String,
     pub state_version: i64,
     pub pid: Option<i64>,
@@ -352,4 +370,5 @@ pub struct Job {
     pub cancel_requested: bool,
     pub requires_physical_evidence: bool,
     pub requires_test_evidence: bool,
+    pub governance_binding_json: Option<String>,
 }

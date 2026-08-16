@@ -43,6 +43,7 @@ pub struct EnvState {
 pub fn check_environment() -> Result<EnvState, CcbdError> {
     check_environment_with(
         std::env::var("CCBD_UNSAFE_NO_SANDBOX").as_deref() == Ok("1"),
+        effective_user_is_root(),
         || which::which("systemd-run").is_ok(),
         std::env::var_os("INVOCATION_ID").is_some(),
         xdg_runtime_dir_present,
@@ -52,21 +53,25 @@ pub fn check_environment() -> Result<EnvState, CcbdError> {
 
 fn check_environment_with(
     unsafe_no_sandbox: bool,
+    effective_user_is_root: bool,
     systemd_run_probe: impl FnOnce() -> bool,
     under_systemd: bool,
     xdg_runtime_dir_probe: impl FnOnce() -> bool,
     user_manager_reachable_probe: impl FnOnce() -> bool,
 ) -> Result<EnvState, CcbdError> {
-    let systemd_run_available = systemd_run_probe();
-
-    if unsafe_no_sandbox {
-        tracing::warn!("CCBD_UNSAFE_NO_SANDBOX=1 detected; running without systemd scope wrapper");
-        return Ok(EnvState {
-            systemd_run_available,
-            unsafe_no_sandbox,
-            under_systemd,
+    if effective_user_is_root {
+        return Err(CcbdError::EnvironmentNotSupported {
+            details: "agent provider execution as root is forbidden; initialize WSL with a non-root default user and run ah/ahd as that user".into(),
         });
     }
+
+    if unsafe_no_sandbox {
+        return Err(CcbdError::EnvironmentNotSupported {
+            details: "CCBD_UNSAFE_NO_SANDBOX=1 is forbidden for agent provider execution; the required systemd user scope may not be replaced by bare execution".into(),
+        });
+    }
+
+    let systemd_run_available = systemd_run_probe();
 
     if !systemd_run_available {
         return Err(CcbdError::EnvironmentNotSupported {
@@ -92,6 +97,17 @@ fn check_environment_with(
         unsafe_no_sandbox,
         under_systemd,
     })
+}
+
+#[cfg(unix)]
+fn effective_user_is_root() -> bool {
+    // SAFETY: geteuid has no preconditions and does not dereference pointers.
+    unsafe { libc::geteuid() == 0 }
+}
+
+#[cfg(not(unix))]
+fn effective_user_is_root() -> bool {
+    false
 }
 
 fn xdg_runtime_dir_present() -> bool {
@@ -161,30 +177,49 @@ mod tests {
     use crate::error::CcbdError;
 
     #[test]
-    fn test_check_environment_bypass_allows_missing_tools() {
-        let state = check_environment_with(true, || false, false, || false, || false).unwrap();
+    fn test_check_environment_rejects_unsafe_no_sandbox() {
+        let err =
+            check_environment_with(true, false, || false, false, || false, || false).unwrap_err();
 
-        assert!(state.unsafe_no_sandbox);
-        assert!(!state.systemd_run_available);
+        assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
+        assert!(err.to_string().contains("CCBD_UNSAFE_NO_SANDBOX=1"));
+    }
+
+    #[test]
+    fn test_check_environment_rejects_root_before_any_probe() {
+        let err = check_environment_with(
+            false,
+            true,
+            || panic!("must not probe as root"),
+            false,
+            || panic!("must not probe as root"),
+            || panic!("must not probe as root"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
+        assert!(err.to_string().contains("as root is forbidden"));
     }
 
     #[test]
     fn test_check_environment_records_under_systemd() {
-        let state = check_environment_with(false, || true, true, || true, || true).unwrap();
+        let state = check_environment_with(false, false, || true, true, || true, || true).unwrap();
 
         assert!(state.under_systemd);
     }
 
     #[test]
     fn test_check_environment_requires_systemd_without_bypass() {
-        let err = check_environment_with(false, || false, false, || true, || true).unwrap_err();
+        let err =
+            check_environment_with(false, false, || false, false, || true, || true).unwrap_err();
 
         assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
     }
 
     #[test]
     fn test_check_environment_requires_xdg_runtime_dir_without_bypass() {
-        let err = check_environment_with(false, || true, false, || false, || true).unwrap_err();
+        let err =
+            check_environment_with(false, false, || true, false, || false, || true).unwrap_err();
 
         assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
         assert!(err.to_string().contains("XDG_RUNTIME_DIR"));
@@ -192,14 +227,15 @@ mod tests {
 
     #[test]
     fn test_check_environment_allows_xdg_runtime_dir_without_dbus_address() {
-        let state = check_environment_with(false, || true, false, || true, || true).unwrap();
+        let state = check_environment_with(false, false, || true, false, || true, || true).unwrap();
 
         assert!(state.systemd_run_available);
     }
 
     #[test]
     fn test_check_environment_requires_reachable_user_bus_without_bypass() {
-        let err = check_environment_with(false, || true, false, || true, || false).unwrap_err();
+        let err =
+            check_environment_with(false, false, || true, false, || true, || false).unwrap_err();
 
         assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
         assert!(err.to_string().contains("systemd user manager"));

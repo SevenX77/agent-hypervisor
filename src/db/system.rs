@@ -946,7 +946,7 @@ fn startup_reconcile_phase_a_select_candidates(
 /// a deleted session is not (#27).
 pub fn remove_agent_sandbox_dir_sync(state_dir: &Path, session_id: &str, agent_id: &str) {
     let sandbox_dir = state_dir.join("sandboxes").join(session_id).join(agent_id);
-    match crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox_dir) {
+    match crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox_dir) {
         Ok(home_root) => {
             if !archive_before_destroying_home(&sandbox_dir, &home_root, session_id, agent_id) {
                 return;
@@ -1691,8 +1691,8 @@ mod tests {
     use crate::db::sessions::insert_session_sync;
     use crate::db::state_machine::STATE_PROMPT_PENDING;
     use crate::db::{Db, init};
+    use crate::home_materialization::sandbox_home_for_sandbox_dir;
     use crate::monitor::session_watch::unit_name_for_session;
-    use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
     use std::cell::RefCell;
     use std::ffi::OsString;
     use std::fs;
@@ -2934,13 +2934,9 @@ mod tests {
     fn test_remove_agent_sandbox_dir_archives_session_records_to_the_project() {
         let state_dir = tempfile::TempDir::new().unwrap();
         let project = tempfile::TempDir::new().unwrap();
-        let sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
-            state_dir.path(),
-            "s1",
-            "a1",
-            project.path(),
-        )
-        .unwrap();
+        let sandbox_dir =
+            crate::sandbox::path::resolve_sandbox_dir(state_dir.path(), "s1", "a1", project.path())
+                .unwrap();
         let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         fs::create_dir_all(home.join(".codex/sessions")).unwrap();
         fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();

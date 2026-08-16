@@ -12,6 +12,7 @@ pub struct SessionSummary {
     pub status: String,
     pub master_state: String,
     pub master_pane_id: Option<String>,
+    pub master_provider: Option<String>,
     pub db_tracked_agents: i64,
     /// Deprecated compatibility alias for unversioned `session.list` consumers.
     pub active_agents: i64,
@@ -350,6 +351,19 @@ pub(crate) fn update_session_master_cmd_sync(
     Ok(())
 }
 
+pub(crate) fn update_session_master_provider_sync(
+    conn: &Connection,
+    session_id: &str,
+    master_provider: &str,
+) -> Result<(), CcbdError> {
+    conn.execute(
+        "UPDATE sessions SET master_provider = ?2 WHERE id = ?1",
+        params![session_id, master_provider],
+    )
+    .map_err(|err| map_db_error("update session master_provider", err))?;
+    Ok(())
+}
+
 fn notify_runtime_inventory_changed() {
     crate::orchestrator::pubsub::notify_runtime_changed(
         crate::runtime_events::RuntimeSnapshotReason::InventoryChanged,
@@ -368,13 +382,13 @@ pub(crate) fn list_session_summaries_sync(
     let mut stmt = conn
         .prepare(
             "SELECT sessions.id, sessions.project_id, projects.absolute_path, sessions.status, \
-                    sessions.master_state, sessions.master_pane_id, \
+                    sessions.master_state, sessions.master_pane_id, sessions.master_provider, \
                     COALESCE(SUM(CASE WHEN agents.state NOT IN ('CRASHED', 'KILLED') THEN 1 ELSE 0 END), 0) AS db_tracked_agents, \
                     sessions.created_at \
              FROM sessions \
              JOIN projects ON projects.id = sessions.project_id \
              LEFT JOIN agents ON agents.session_id = sessions.id \
-             GROUP BY sessions.id, sessions.project_id, projects.absolute_path, sessions.status, sessions.master_state, sessions.created_at \
+             GROUP BY sessions.id, sessions.project_id, projects.absolute_path, sessions.status, sessions.master_state, sessions.master_pane_id, sessions.master_provider, sessions.created_at \
              ORDER BY sessions.created_at ASC, sessions.id ASC",
         )
         .map_err(|err| map_db_error("prepare session summaries query", err))?;
@@ -387,9 +401,10 @@ pub(crate) fn list_session_summaries_sync(
                 status: row.get(3)?,
                 master_state: row.get(4)?,
                 master_pane_id: row.get(5)?,
-                db_tracked_agents: row.get(6)?,
-                active_agents: row.get(6)?,
-                created_at: row.get(7)?,
+                master_provider: row.get(6)?,
+                db_tracked_agents: row.get(7)?,
+                active_agents: row.get(7)?,
+                created_at: row.get(8)?,
             })
         })
         .map_err(|err| map_db_error("query session summaries", err))?;
@@ -458,6 +473,18 @@ pub async fn update_session_master_cmd(
     spawn_db("sessions::update_session_master_cmd", move || {
         let conn = db.conn();
         update_session_master_cmd_sync(&conn, &session_id, &master_cmd)
+    })
+    .await
+}
+
+pub async fn update_session_master_provider(
+    db: Db,
+    session_id: String,
+    master_provider: String,
+) -> Result<(), CcbdError> {
+    spawn_db("sessions::update_session_master_provider", move || {
+        let conn = db.conn();
+        update_session_master_provider_sync(&conn, &session_id, &master_provider)
     })
     .await
 }

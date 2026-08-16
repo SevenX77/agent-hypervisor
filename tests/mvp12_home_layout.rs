@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeLayoutRole, prepare_home_layout, prepare_home_layout_with_claude_credentials,
     prepare_home_layout_with_role_and_claude_credentials,
 };

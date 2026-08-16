@@ -251,7 +251,10 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     })?;
     reject_removed_layout_field(&raw)?;
     let mut config: ProjectConfig = toml::from_str(&raw)?;
-    normalize_project_config(&mut config, std::env::var_os("HOME").map(PathBuf::from).as_deref());
+    normalize_project_config(
+        &mut config,
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    );
     let diagnostics = validate_project_config(&config);
     if let Some(diagnostic) = diagnostics
         .iter()
@@ -1055,9 +1058,18 @@ provider = "bash"
         )
         .unwrap();
 
-        assert_eq!(config.master.env.get("ONLY_MASTER").map(String::as_str), Some("1"));
-        assert_eq!(config.master.env.get("SHARED").map(String::as_str), Some("master"));
-        assert_eq!(config.env.get("ONLY_PROJECT").map(String::as_str), Some("1"));
+        assert_eq!(
+            config.master.env.get("ONLY_MASTER").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            config.master.env.get("SHARED").map(String::as_str),
+            Some("master")
+        );
+        assert_eq!(
+            config.env.get("ONLY_PROJECT").map(String::as_str),
+            Some("1")
+        );
         assert!(errors(&config).is_empty());
     }
 

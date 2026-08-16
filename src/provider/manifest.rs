@@ -1,9 +1,6 @@
 use crate::error::CcbdError;
 use std::collections::HashMap;
-use std::fs;
-use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct ProviderManifest {
@@ -52,14 +49,6 @@ pub struct ProviderCapabilities {
 }
 
 impl ProviderCapabilities {
-    const NONE: Self = Self {
-        rules_target: false,
-        completion_signal: false,
-        readiness_ack: false,
-        bundles: false,
-        settings: false,
-    };
-
     /// Capabilities the master role requires from whichever provider runs it.
     /// A master without rules never learns the role contract, one without a
     /// completion signal never reports end of turn, and one without readiness
@@ -82,188 +71,17 @@ impl ProviderCapabilities {
 
 /// Capabilities declared by `provider`, or `None` when the name is unknown.
 pub fn provider_capabilities(provider: &str) -> Option<ProviderCapabilities> {
-    MANIFESTS
-        .get(canonicalize_provider_name(provider))
-        .map(|manifest| manifest.capabilities)
+    crate::provider::adapter(provider).map(|adapter| adapter.manifest().capabilities)
 }
 
 pub fn is_recovery_eligible_provider(provider: &str) -> bool {
-    let provider = canonicalize_provider_name(provider);
-    matches!(provider, "codex" | "claude" | "antigravity")
+    crate::provider::adapter(provider).is_some_and(|adapter| adapter.recovery_supported())
 }
 
 pub fn compute_recovery_args(provider: &str, sandbox_home: &Path) -> Vec<String> {
-    match canonicalize_provider_name(provider) {
-        "claude" => vec!["--continue".to_string()],
-        "antigravity" => antigravity_recovery_args(sandbox_home),
-        "codex" => codex_recovery_args(sandbox_home),
-        _ => Vec::new(),
-    }
-}
-
-fn codex_recovery_args(sandbox_home: &Path) -> Vec<String> {
-    match latest_codex_rollout(sandbox_home) {
-        Some(path) => match codex_session_id_from_rollout(&path) {
-            Some(session_id) => vec!["resume".to_string(), session_id],
-            None => {
-                tracing::warn!(
-                    ?path,
-                    "codex recovery falling back to --last: invalid rollout metadata"
-                );
-                vec!["resume".to_string(), "--last".to_string()]
-            }
-        },
-        None => {
-            tracing::warn!(
-                ?sandbox_home,
-                "codex recovery falling back to --last: no rollout metadata found"
-            );
-            vec!["resume".to_string(), "--last".to_string()]
-        }
-    }
-}
-
-fn antigravity_recovery_args(sandbox_home: &Path) -> Vec<String> {
-    match latest_antigravity_conversation(sandbox_home) {
-        Some(path) => match path.file_stem().and_then(|stem| stem.to_str()) {
-            Some(conversation_id) if !conversation_id.is_empty() => {
-                vec!["--conversation".to_string(), conversation_id.to_string()]
-            }
-            _ => {
-                tracing::warn!(
-                    ?path,
-                    "antigravity recovery falling back to --continue: invalid conversation file"
-                );
-                vec!["--continue".to_string()]
-            }
-        },
-        None => {
-            tracing::warn!(
-                ?sandbox_home,
-                "antigravity recovery falling back to --continue: no conversation file found"
-            );
-            vec!["--continue".to_string()]
-        }
-    }
-}
-
-fn latest_antigravity_conversation(sandbox_home: &Path) -> Option<PathBuf> {
-    let conversations_root = sandbox_home.join(".gemini/antigravity-cli/conversations");
-    let mut conversations = Vec::new();
-    collect_antigravity_conversations(&conversations_root, &mut conversations);
-    conversations.sort_by(|left, right| {
-        let left_mtime = left
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        let right_mtime = right
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        left_mtime.cmp(&right_mtime).then_with(|| left.cmp(right))
-    });
-    conversations.pop()
-}
-
-fn collect_antigravity_conversations(dir: &Path, conversations: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(?dir, error = %err, "failed to scan antigravity conversations directory");
-            }
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_file() {
-            continue;
-        }
-        let Some(extension) = path.extension().and_then(|extension| extension.to_str()) else {
-            continue;
-        };
-        // The extension check intentionally excludes SQLite sidecars like *.db-wal and *.db-shm.
-        if matches!(extension, "db" | "pb") {
-            conversations.push(path);
-        }
-    }
-}
-
-fn latest_codex_rollout(sandbox_home: &Path) -> Option<PathBuf> {
-    let sessions_root = sandbox_home.join(".codex/sessions");
-    let mut rollouts = Vec::new();
-    collect_codex_rollouts(&sessions_root, &mut rollouts);
-    rollouts.sort_by(|left, right| {
-        let left_mtime = left
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        let right_mtime = right
-            .metadata()
-            .and_then(|metadata| metadata.modified())
-            .ok();
-        left_mtime.cmp(&right_mtime).then_with(|| left.cmp(right))
-    });
-    rollouts.pop()
-}
-
-fn collect_codex_rollouts(dir: &Path, rollouts: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(err) => {
-            if err.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!(?dir, error = %err, "failed to scan codex sessions directory");
-            }
-            return;
-        }
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_codex_rollouts(&path, rollouts);
-            continue;
-        }
-        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if file_name.starts_with("rollout-") && file_name.ends_with(".jsonl") {
-            rollouts.push(path);
-        }
-    }
-}
-
-fn codex_session_id_from_rollout(path: &Path) -> Option<String> {
-    let file = fs::File::open(path)
-        .map_err(|err| {
-            tracing::warn!(?path, error = %err, "failed to open codex rollout metadata");
-            err
-        })
-        .ok()?;
-    let mut first_line = String::new();
-    BufReader::new(file)
-        .read_line(&mut first_line)
-        .map_err(|err| {
-            tracing::warn!(?path, error = %err, "failed to read codex rollout metadata");
-            err
-        })
-        .ok()?;
-    let value: serde_json::Value = serde_json::from_str(first_line.trim())
-        .map_err(|err| {
-            tracing::warn!(?path, error = %err, "failed to parse codex rollout metadata");
-            err
-        })
-        .ok()?;
-    if value.get("type").and_then(serde_json::Value::as_str) != Some("session_meta") {
-        return None;
-    }
-    let id = value
-        .get("payload")
-        .and_then(|payload| payload.get("id"))
-        .and_then(serde_json::Value::as_str)
-        .filter(|id| !id.is_empty())?;
-    uuid::Uuid::parse_str(id).ok()?;
-    Some(id.to_string())
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.recovery_args(sandbox_home))
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,8 +131,6 @@ pub const ENV_PASSTHROUGH: &[&str] = &[
     "CCB_JOB_ID",
     "CCB_SOCKET",
     "CCB_STDIN_ENCODING",
-    "CCB_TMUX_ENTER_DELAY",
-    "CCB_TMUX_SECOND_ENTER_DELAY",
     "CCB_TMUX_SOCKET",
     "CCB_TMUX_SOCKET_PATH",
     "CCB_VERIFY_DELIVERY",
@@ -376,10 +192,7 @@ pub const CLAUDE_INJECTED_ENV: &[(&str, &str)] = &[
     ("CCB_CTX_TRANSFER_ENABLED", "true"),
 ];
 
-pub const CODEX_INJECTED_ENV: &[(&str, &str)] = &[
-    ("CCB_TMUX_ENTER_DELAY", "0.5"),
-    ("CCB_TMUX_SECOND_ENTER_DELAY", "0.0"),
-];
+pub const CODEX_INJECTED_ENV: &[(&str, &str)] = &[];
 
 pub const ANTIGRAVITY_INJECTED_ENV: &[(&str, &str)] = &[("CCB_GEMINI_READY_TIMEOUT_S", "60.0")];
 
@@ -390,150 +203,37 @@ pub const PANE_LOG_INJECTED_ENV: &[(&str, &str)] = &[
     ("CCB_SYNC_TIMEOUT", "3600"),
 ];
 
-const BASH_INJECTED_ENV: &[(&str, &str)] = &[("PS1", "$ ")];
-pub const VALID_PROVIDER_NAMES: &[&str] = &["bash", "codex", "claude", "antigravity"];
-
 pub fn canonicalize_provider_name(raw: &str) -> &str {
-    match raw {
-        "gemini" => "antigravity",
-        _ => raw,
-    }
+    crate::provider::canonical_name(raw).unwrap_or(raw)
 }
-
-pub static MANIFESTS: LazyLock<HashMap<&'static str, ProviderManifest>> = LazyLock::new(|| {
-    let mut manifests = HashMap::new();
-    manifests.insert(
-        "bash",
-        ProviderManifest {
-            provider_name: "bash",
-            auth_mount_paths: vec![],
-            command: &["bash", "--noprofile", "--norc", "-i"],
-            resume_args: &[],
-            env_passthrough: ENV_PASSTHROUGH,
-            injected_env_vars: BASH_INJECTED_ENV,
-            readiness_timeout_s: 10,
-            requires_home_materialization: false,
-            init_probe: InitProbeKind::Bash,
-            idle_detection_mode: IdleDetectionMode::LineEndRegex,
-            stability_ms: 0,
-            idle_anti_pattern: "",
-            completion_signal: CompletionSignalKind::LogOnly,
-            capabilities: ProviderCapabilities::NONE,
-        },
-    );
-    manifests.insert(
-        "codex",
-        ProviderManifest {
-            provider_name: "codex",
-            auth_mount_paths: vec![".codex", ".config/gcloud"],
-            command: &[
-                "codex",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--dangerously-bypass-hook-trust",
-                "-c",
-                "disable_paste_burst=true",
-                "-c",
-                "trust_level=\"trusted\"",
-                "-c",
-                "approval_policy=\"never\"",
-                "-c",
-                "sandbox_mode=\"danger-full-access\"",
-            ],
-            resume_args: &[],
-            env_passthrough: ENV_PASSTHROUGH,
-            injected_env_vars: CODEX_INJECTED_ENV,
-            readiness_timeout_s: 60,
-            requires_home_materialization: true,
-            init_probe: InitProbeKind::Codex,
-            idle_detection_mode: IdleDetectionMode::ObservedStability,
-            stability_ms: 300,
-            idle_anti_pattern: r"(?im)\besc to interrupt\b|Hooks need review|Trust all and continue|Continue without trusting",
-            completion_signal: CompletionSignalKind::LogOnly,
-            capabilities: ProviderCapabilities {
-                rules_target: true,
-                completion_signal: true,
-                readiness_ack: true,
-                bundles: false,
-                settings: false,
-            },
-        },
-    );
-    manifests.insert(
-        "claude",
-        ProviderManifest {
-            provider_name: "claude",
-            auth_mount_paths: vec![".anthropic", ".claude"],
-            // mvp12 M12.6: --dangerously-skip-permissions bypasses trust dialog + permission prompts (sandbox)
-            command: &["claude", "--dangerously-skip-permissions"],
-            resume_args: &["--continue"],
-            env_passthrough: ENV_PASSTHROUGH,
-            injected_env_vars: CLAUDE_INJECTED_ENV,
-            readiness_timeout_s: 60,
-            requires_home_materialization: true,
-            init_probe: InitProbeKind::Claude,
-            idle_detection_mode: IdleDetectionMode::ObservedStability,
-            stability_ms: 300,
-            idle_anti_pattern: r"(?im)\b(?:esc to interrupt|Architecting|Reading\s+\d+\s+files?|ctrl\+o to expand|paste again to expand)\b",
-            completion_signal: CompletionSignalKind::LogOnly,
-            capabilities: ProviderCapabilities {
-                rules_target: true,
-                completion_signal: true,
-                readiness_ack: true,
-                bundles: true,
-                settings: true,
-            },
-        },
-    );
-    manifests.insert(
-        "antigravity",
-        ProviderManifest {
-            provider_name: "antigravity",
-            auth_mount_paths: vec![".gemini/antigravity-cli"],
-            command: &["agy", "--dangerously-skip-permissions"],
-            resume_args: &[],
-            env_passthrough: ENV_PASSTHROUGH,
-            injected_env_vars: ANTIGRAVITY_INJECTED_ENV,
-            readiness_timeout_s: 60,
-            requires_home_materialization: true,
-            init_probe: InitProbeKind::Antigravity,
-            idle_detection_mode: IdleDetectionMode::LineEndRegex,
-            stability_ms: 300,
-            idle_anti_pattern: r"(?m)^\s*esc to cancel\b",
-            completion_signal: CompletionSignalKind::LogOnly,
-            capabilities: ProviderCapabilities {
-                rules_target: true,
-                completion_signal: true,
-                readiness_ack: true,
-                bundles: false,
-                settings: false,
-            },
-        },
-    );
-    manifests
-});
 
 pub fn get_manifest(provider: &str) -> ProviderManifest {
     try_get_manifest(provider).unwrap_or_else(|err| panic!("{err}"))
 }
 
 pub fn try_get_manifest(provider: &str) -> Result<ProviderManifest, CcbdError> {
-    let canonical = canonicalize_provider_name(provider);
-    MANIFESTS
-        .get(canonical)
-        .cloned()
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.manifest())
         .ok_or_else(|| unknown_provider_error(provider))
 }
 
 pub fn is_valid_provider(provider: &str) -> bool {
-    MANIFESTS.contains_key(canonicalize_provider_name(provider))
+    crate::provider::adapter(provider).is_some()
 }
 
 pub fn valid_provider_names() -> &'static [&'static str] {
-    VALID_PROVIDER_NAMES
+    crate::provider::PROVIDER_NAMES
 }
 
 pub fn valid_provider_names_csv() -> String {
     valid_provider_names().join(", ")
+}
+
+/// Pasting text into a provider TUI and pressing Enter are distinct terminal
+/// actions. A trailing newline in a tmux paste buffer is input content; it is
+/// not evidence that the provider received a submit key.
+pub fn press_enter_after_paste(_provider: &str, _text: &str) -> bool {
+    true
 }
 
 pub fn unknown_provider_message(provider: &str) -> String {
@@ -550,17 +250,17 @@ fn unknown_provider_error(provider: &str) -> CcbdError {
 }
 
 pub fn known_provider_manifests() -> Vec<ProviderManifest> {
-    ["codex", "claude", "antigravity"]
-        .into_iter()
-        .map(get_manifest)
+    crate::provider::adapters()
+        .iter()
+        .filter(|adapter| adapter.name() != "bash")
+        .map(|adapter| adapter.manifest())
         .collect()
 }
 
 pub fn cancel_keysyms_for_provider(provider: &str) -> &'static [&'static str] {
-    match canonicalize_provider_name(provider) {
-        "antigravity" => &["Escape"],
-        _ => &["C-c"],
-    }
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.cancel_keysyms())
+        .unwrap_or(&["C-c"])
 }
 
 pub fn collect_spawn_env(
@@ -619,10 +319,9 @@ fn is_localhost_gateway_base_url(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionSignalKind, IdleDetectionMode, InitProbeKind, MANIFESTS,
-        cancel_keysyms_for_provider, canonicalize_provider_name, collect_spawn_env,
-        compute_recovery_args, get_manifest, is_valid_provider, try_get_manifest,
-        valid_provider_names,
+        CompletionSignalKind, IdleDetectionMode, InitProbeKind, cancel_keysyms_for_provider,
+        canonicalize_provider_name, collect_spawn_env, compute_recovery_args, get_manifest,
+        is_valid_provider, known_provider_manifests, try_get_manifest, valid_provider_names,
     };
     use std::collections::HashMap;
     use std::fs;
@@ -658,15 +357,11 @@ mod tests {
     #[test]
     fn test_builtin_providers_registered() {
         for provider in ["bash", "codex", "claude", "antigravity"] {
-            assert!(
-                MANIFESTS.contains_key(provider),
-                "missing provider {provider}"
-            );
+            assert!(is_valid_provider(provider), "missing provider {provider}");
             assert_eq!(get_manifest(provider).provider_name, provider);
         }
     }
 
-    #[test]
     /// An agent that cannot reach the network cannot authenticate, and the
     /// provider CLIs report that as "not signed in" rather than as a network
     /// failure — so proxy settings have to survive the spawn env filter on every
@@ -693,6 +388,7 @@ mod tests {
         }
     }
 
+    #[test]
     fn canonicalize_provider_name_maps_gemini_alias_only() {
         assert_eq!(canonicalize_provider_name("gemini"), "antigravity");
         assert_eq!(canonicalize_provider_name("antigravity"), "antigravity");
@@ -709,7 +405,7 @@ mod tests {
         let manifest = try_get_manifest("gemini").unwrap();
 
         assert_eq!(manifest.provider_name, "antigravity");
-        assert_eq!(manifest.command, ["agy", "--dangerously-skip-permissions"]);
+        assert_eq!(manifest.command, ["agy"]);
         assert_eq!(cancel_keysyms_for_provider("gemini"), ["Escape"]);
     }
 
@@ -736,8 +432,6 @@ mod tests {
             codex.command,
             [
                 "codex",
-                "--dangerously-bypass-approvals-and-sandbox",
-                "--dangerously-bypass-hook-trust",
                 "-c",
                 "disable_paste_burst=true",
                 "-c",
@@ -745,7 +439,7 @@ mod tests {
                 "-c",
                 "approval_policy=\"never\"",
                 "-c",
-                "sandbox_mode=\"danger-full-access\"",
+                "sandbox_mode=\"workspace-write\"",
             ]
         );
         assert_eq!(codex.init_probe, InitProbeKind::Codex);
@@ -754,7 +448,7 @@ mod tests {
         assert_eq!(codex.completion_signal, CompletionSignalKind::LogOnly);
 
         let claude = get_manifest("claude");
-        assert_eq!(claude.command, ["claude", "--dangerously-skip-permissions"]);
+        assert_eq!(claude.command, ["claude", "--permission-mode", "dontAsk"]);
         assert_eq!(claude.init_probe, InitProbeKind::Claude);
         assert_eq!(claude.stability_ms, 300);
         assert_eq!(claude.resume_args, ["--continue"]);
@@ -762,10 +456,7 @@ mod tests {
 
         let antigravity = get_manifest("antigravity");
         assert_eq!(antigravity.provider_name, "antigravity");
-        assert_eq!(
-            antigravity.command,
-            ["agy", "--dangerously-skip-permissions"]
-        );
+        assert_eq!(antigravity.command, ["agy"]);
         assert!(
             antigravity
                 .auth_mount_paths
@@ -782,6 +473,25 @@ mod tests {
             "antigravity busy status line must suppress idle"
         );
         assert_eq!(antigravity.completion_signal, CompletionSignalKind::LogOnly);
+    }
+
+    #[test]
+    fn provider_commands_never_bypass_permissions_or_request_unrestricted_sandbox() {
+        for manifest in known_provider_manifests() {
+            let command = manifest.command.join(" ");
+            for forbidden in [
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--dangerously-bypass-hook-trust",
+                "--dangerously-skip-permissions",
+                "sandbox_mode=\"danger-full-access\"",
+            ] {
+                assert!(
+                    !command.contains(forbidden),
+                    "{} provider command contains forbidden permission bypass {forbidden}: {command}",
+                    manifest.provider_name
+                );
+            }
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 mod common;
 
-use ah::db::{self, events, jobs, state_machine};
+use ah::db::{self as db, events, jobs, state_machine};
 use ah::rpc::Ctx;
 use ah::rpc::router::dispatch;
 use ah::sandbox::EnvState;

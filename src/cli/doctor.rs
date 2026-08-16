@@ -107,7 +107,10 @@ fn provider_auth_check(home: &Path, manifest: &ProviderManifest) -> DoctorCheck 
         AuthStoreStatus::NotCheckable { reason } => pass(name, reason.to_string()),
         AuthStoreStatus::Missing { path } => warn(
             name,
-            format!("no login in this environment ({} is missing)", path.display()),
+            format!(
+                "no login in this environment ({} is missing)",
+                path.display()
+            ),
             format!("sign in: {}", login_remedy(provider)),
         ),
         AuthStoreStatus::LoggedOut { path } => warn(
@@ -117,7 +120,10 @@ fn provider_auth_check(home: &Path, manifest: &ProviderManifest) -> DoctorCheck 
         ),
         AuthStoreStatus::Unreadable { path, details } => warn(
             name,
-            format!("unreadable credential store ({}: {details})", path.display()),
+            format!(
+                "unreadable credential store ({}: {details})",
+                path.display()
+            ),
             format!("re-create it: {}", login_remedy(provider)),
         ),
         AuthStoreStatus::ForeignEnvironment { path, target } => fail(

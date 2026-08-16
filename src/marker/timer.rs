@@ -1,6 +1,6 @@
 //! Marker timeout task for startup UNKNOWN and long-running BUSY STUCK fallback.
 
-use crate::db::{self, Db};
+use crate::db::{self as db, Db};
 use crate::marker::MarkerMatcher;
 use crate::marker::parser_registry::ParserHandle;
 use crate::tmux::TmuxServer;

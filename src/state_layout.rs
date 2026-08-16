@@ -92,12 +92,13 @@ pub fn resolve_cli_state_layout(
         };
         // Canonicalization must succeed here: hashing an unresolved path is
         // exactly how the empty string became a shared project id.
-        let canonical = config_dir.canonicalize().map_err(|err| {
-            StateLayoutError::BadConfigPath {
-                path: config_dir.clone(),
-                details: format!("cannot canonicalize: {err}"),
-            }
-        })?;
+        let canonical =
+            config_dir
+                .canonicalize()
+                .map_err(|err| StateLayoutError::BadConfigPath {
+                    path: config_dir.clone(),
+                    details: format!("cannot canonicalize: {err}"),
+                })?;
         return Ok(project_layout_for_dir(&canonical));
     }
 

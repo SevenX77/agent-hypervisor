@@ -1,10 +1,11 @@
 [package]
 name = "ah"
-version = "1.14.3"
+version = "1.15.0"
 edition = "2024"
 authors = ["sevenx"]
 description = "L2 Scheduling Daemon for Agent Hypervisor"
 repository = "https://github.com/SevenX77/ah"
+license = "MIT AND Apache-2.0"
 
 [dependencies]
 # 异步运行时

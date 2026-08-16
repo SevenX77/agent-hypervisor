@@ -1,12 +1,12 @@
 #![cfg(unix)]
 
+use ah::home_materialization::{
+    HomeLayoutRole, HookPushContext, prepare_home_layout_with_extensions_for_slot,
+};
 use ah::provider::bundles::{BundleRole, resolve_bundles_for_provider};
 use ah::provider::extensions::ExtensionConfig;
 use ah::provider::fingerprint::{
     BundleDigest, ConfigFingerprintInput, ConfigRole, compute_config_hash,
-};
-use ah::provider::home_layout::{
-    HomeLayoutRole, HookPushContext, prepare_home_layout_with_extensions_for_slot,
 };
 use serde_json::Value;
 use std::collections::HashMap;
@@ -164,6 +164,7 @@ fn codex_hook_ctx(sandbox: &Path, slot_id: &str) -> HookPushContext {
     HookPushContext {
         agent_id: slot_id.to_string(),
         provider: "codex".to_string(),
+        lifecycle_id: format!("lifecycle-{slot_id}"),
         ahd_socket_path: sandbox.join("ahd.sock"),
         enabled: true,
     }

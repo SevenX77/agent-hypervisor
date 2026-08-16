@@ -31,11 +31,21 @@ pub struct RealSystemctlRunner;
 
 impl SystemctlRunner for RealSystemctlRunner {
     fn list_scope_units(&self) -> Result<Vec<ScopeUnit>, io::Error> {
-        Ok(Vec::new())
+        Err(io::Error::other(
+            "Windows: execution-scope listing is not implemented",
+        ))
     }
 
-    fn stop_unit(&self, _unit: &str) -> Result<(), io::Error> {
-        Ok(())
+    fn unit_is_active(&self, unit: &str) -> Result<bool, io::Error> {
+        Err(io::Error::other(format!(
+            "Windows: execution-scope observation for {unit} is not implemented"
+        )))
+    }
+
+    fn stop_unit(&self, unit: &str) -> Result<(), io::Error> {
+        Err(io::Error::other(format!(
+            "Windows: execution-scope stop for {unit} is not implemented"
+        )))
     }
 }
 

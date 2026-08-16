@@ -341,7 +341,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_agent_notify_worker_userpromptsubmit_is_unsupported_noop() {
+    async fn test_agent_notify_worker_userpromptsubmit_without_correlation_is_noop() {
         let ctx = test_ctx();
         seed_agent(&ctx, "ag_notify_busy", "BUSY");
 
@@ -365,7 +365,7 @@ mod tests {
 
         assert_eq!(obj["id"], 23);
         assert_eq!(obj["result"]["accepted"], true);
-        assert_eq!(obj["result"]["unsupported"], true);
+        assert_eq!(obj["result"]["ignored_uncorrelated"], true);
         assert_eq!(obj["result"]["transitioned"], false);
         assert_eq!(master_state(&ctx, "s_notify"), "IDLE");
         let state: String = ctx
@@ -378,6 +378,78 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state, "BUSY");
+    }
+
+    #[tokio::test]
+    async fn test_agent_notify_worker_userpromptsubmit_marks_exact_job_working() {
+        let ctx = test_ctx();
+        let agent_id = "ag_notify_userpromptsubmit";
+        let job_id = "job_notify_userpromptsubmit";
+        seed_agent(&ctx, agent_id, "WAITING_FOR_ACK");
+        seed_dispatched_job(&ctx, agent_id, job_id);
+        ctx.db
+            .conn()
+            .execute(
+                "UPDATE agents SET provider='claude' WHERE id=?1",
+                [agent_id],
+            )
+            .unwrap();
+        let lifecycle_id: String = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id=?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        let response = dispatch(
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "agent.notify",
+                "params": {
+                    "agent_id": agent_id,
+                    "event": "userpromptsubmit",
+                    "provider": "claude",
+                    "lifecycle_id": lifecycle_id,
+                    "event_id": "evt-ups-correlated",
+                    "prompt_fingerprint": crate::runtime_observation::prompt_fingerprint("echo PONG\n")
+                },
+                "id": 29
+            })
+            .to_string(),
+            &ctx,
+        )
+        .await;
+        let obj: Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(obj["result"]["accepted"], true);
+        assert_eq!(obj["result"]["transitioned"], true);
+        assert_eq!(obj["result"]["affected_job_id"], job_id);
+        let (state, sub_state): (String, String) = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT state, sub_state FROM agents WHERE id=?1",
+                [agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let source: String = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT json_extract(observation_json, '$.source') FROM provider_status_observations WHERE agent_id=?1 AND turn_id=?2 AND json_extract(observation_json, '$.kind.state')='working'",
+                rusqlite::params![agent_id, job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            (state.as_str(), sub_state.as_str()),
+            ("BUSY", "ProviderEvent")
+        );
+        assert_eq!(source, "official_hook");
     }
 
     #[tokio::test]
@@ -533,6 +605,15 @@ mod tests {
         let ctx = test_ctx();
         seed_agent(&ctx, "ag_notify_push_wins", "BUSY");
         seed_dispatched_job(&ctx, "ag_notify_push_wins", "job_notify_push_wins");
+        let lifecycle_id: String = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id = 'ag_notify_push_wins'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
         let (cancel_tx, _cancel_rx) = tokio::sync::oneshot::channel();
         crate::completion::registry::register(
             "ag_notify_push_wins".to_string(),
@@ -552,6 +633,7 @@ mod tests {
                     "agent_id": "ag_notify_push_wins",
                     "event": "stop",
                     "provider": "codex",
+                    "lifecycle_id": lifecycle_id,
                     "event_id": "evt-push-wins",
                     "reply": "HOOK PONG"
                 },
@@ -565,6 +647,17 @@ mod tests {
 
         assert_eq!(obj["result"]["transitioned"], true);
         assert_eq!(obj["result"]["affected_job_id"], "job_notify_push_wins");
+        assert_eq!(obj["result"]["ignored_stale"], false);
+        let observation_count: i64 = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id = 'ag_notify_push_wins'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observation_count, 2);
         assert!(
             !crate::completion::registry::contains("ag_notify_push_wins"),
             "push success must cancel the pull monitor registry entry"
@@ -582,6 +675,7 @@ mod tests {
             "codex",
             root.path(),
             crate::completion::reader::LogReadState::default(),
+            &lifecycle_id,
         )
         .await
         .unwrap();
@@ -592,6 +686,60 @@ mod tests {
         assert!(!late.completed);
         assert_eq!(job.status, "COMPLETED");
         assert_eq!(job.reply_text.as_deref(), Some("HOOK PONG"));
+    }
+
+    #[tokio::test]
+    async fn test_agent_notify_worker_stale_lifecycle_is_ignored_before_state_change() {
+        let ctx = test_ctx();
+        seed_agent(&ctx, "ag_notify_stale", "BUSY");
+        seed_dispatched_job(&ctx, "ag_notify_stale", "job_notify_stale");
+
+        let response = dispatch(
+            &json!({
+                "jsonrpc": "2.0",
+                "method": "agent.notify",
+                "params": {
+                    "agent_id": "ag_notify_stale",
+                    "event": "stop",
+                    "provider": "codex",
+                    "lifecycle_id": "previous-lifecycle",
+                    "event_id": "evt-stale-worker"
+                },
+                "id": 28
+            })
+            .to_string(),
+            &ctx,
+        )
+        .await;
+        let obj: Value = serde_json::from_str(&response).unwrap();
+
+        assert_eq!(obj["result"]["accepted"], true);
+        assert_eq!(obj["result"]["ignored_stale"], true);
+        assert_eq!(obj["result"]["transitioned"], false);
+        let state: String = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT state FROM agents WHERE id = 'ag_notify_stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "BUSY");
+        let job = query_job_sync(&ctx.db.conn(), "job_notify_stale")
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.status, "DISPATCHED");
+        let observation_count: i64 = ctx
+            .db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id = 'ag_notify_stale'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observation_count, 0);
     }
 
     #[tokio::test]

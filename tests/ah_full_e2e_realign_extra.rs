@@ -861,6 +861,7 @@ async fn case_08_busy_skip(h: &Harness, state: &MatrixState) -> BusyDriftState {
     ah::agent_io::send_text_to_pane(
         h.ctx.tmux_server.clone(),
         AGENT_A1,
+        "bash",
         pane,
         dispatched.job.prompt_text,
     )

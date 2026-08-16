@@ -271,6 +271,18 @@ pub(crate) fn mark_agent_prompt_pending_sync(
             params![agent_id, payload],
         )
         .map_err(|err| map_db_error("insert prompt pending state_change", err))?;
+        let turn_id = query_dispatched_job_for_agent_sync(&tx, agent_id)?.map(|job| job.id);
+        crate::runtime_observation::store::append_for_current_lifecycle_sync(
+            &tx,
+            &format!("prompt:{agent_id}:{state_version}:{reason}"),
+            agent_id,
+            turn_id.as_deref(),
+            crate::runtime_observation::EvidenceSource::TerminalPane,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::AwaitingUser,
+            ),
+            crate::runtime_observation::store::now_epoch_millis(),
+        )?;
     } else {
         tracing::warn!(
             agent_id,
@@ -350,6 +362,27 @@ fn mark_agent_idle_matched_outcome_sync_inner(
     let dispatched_job_reply = if let Some(job) =
         query_dispatched_job_for_agent_sync(&tx, agent_id)?
     {
+        let terminal_pane_is_authoritative =
+            crate::provider::adapter(&provider).is_some_and(|adapter| {
+                adapter
+                    .observation_spec()
+                    .uses_terminal_pane_for_turn_state()
+            });
+        if !terminal_pane_is_authoritative {
+            tracing::trace!(
+                agent_id,
+                provider,
+                job_id = %job.id,
+                "terminal marker swallowed: provider Adapter requires semantic turn evidence"
+            );
+            tx.commit()
+                .map_err(|err| map_db_error("commit semantic marker refusal", err))?;
+            return Ok(MarkerMatchedSyncOutcome {
+                changes: 0,
+                denial_message: None,
+                deferred_nudge: None,
+            });
+        }
         if crate::completion::registry::contains(agent_id) {
             tracing::trace!(
                 agent_id,
@@ -491,6 +524,9 @@ fn mark_agent_idle_matched_conn_inner(
     .map_err(|err| map_db_error("mark agent idle matched", err))?;
 
     if changes == 1 {
+        let completed_job_id = dispatched_job_reply
+            .as_ref()
+            .map(|(job_id, _, _)| job_id.clone());
         if let Some((job_id, reply_text, cancel_requested)) = dispatched_job_reply {
             if cancel_requested {
                 mark_job_cancelled_conn_sync(conn, &job_id, &reply_text)?;
@@ -511,10 +547,176 @@ fn mark_agent_idle_matched_conn_inner(
             params![agent_id, payload],
         )
         .map_err(|err| map_db_error("insert marker matched state_change", err))?;
+        let observed_at_ms = crate::runtime_observation::store::now_epoch_millis();
+        let observation_base = format!("marker:{agent_id}:{state_version}:{reason}");
+        if let Some(job_id) = completed_job_id.as_deref() {
+            crate::runtime_observation::store::append_for_current_lifecycle_sync(
+                conn,
+                &format!("{observation_base}:completed"),
+                agent_id,
+                Some(job_id),
+                crate::runtime_observation::EvidenceSource::TerminalPane,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Completed,
+                ),
+                observed_at_ms,
+            )?;
+        }
+        crate::runtime_observation::store::append_for_current_lifecycle_sync(
+            conn,
+            &format!("{observation_base}:ready"),
+            agent_id,
+            None,
+            crate::runtime_observation::EvidenceSource::TerminalPane,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::Ready,
+            ),
+            observed_at_ms,
+        )?;
     } else {
         tracing::trace!(agent_id, "marker match swallowed: state_version CAS failed");
     }
     Ok(changes)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderActivityOutcome {
+    pub state_changed: bool,
+    pub observation_inserted: bool,
+    pub affected_job: Option<String>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mark_agent_working_provider_event_sync(
+    db: &Db,
+    agent_id: &str,
+    provider: &str,
+    expected_lifecycle_id: &str,
+    source: crate::runtime_observation::EvidenceSource,
+    evidence_id: &str,
+    provider_turn_id: Option<&str>,
+    observed_prompt_fingerprint: Option<&str>,
+) -> Result<ProviderActivityOutcome, CcbdError> {
+    let mut conn = db.conn();
+    let tx = conn
+        .transaction()
+        .map_err(|err| map_db_error("begin provider working event", err))?;
+    let current = tx
+        .query_row(
+            "SELECT state, state_version, provider, lifecycle_id FROM agents WHERE id = ?1",
+            [agent_id],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|err| map_db_error("query agent for provider working event", err))?;
+    let Some((state, state_version, actual_provider, lifecycle_id)) = current else {
+        return Ok(ProviderActivityOutcome {
+            state_changed: false,
+            observation_inserted: false,
+            affected_job: None,
+        });
+    };
+    if crate::provider::manifest::canonicalize_provider_name(&actual_provider)
+        != crate::provider::manifest::canonicalize_provider_name(provider)
+        || lifecycle_id != expected_lifecycle_id
+        || !matches!(state.as_str(), STATE_WAITING_FOR_ACK | STATE_BUSY)
+    {
+        return Ok(ProviderActivityOutcome {
+            state_changed: false,
+            observation_inserted: false,
+            affected_job: None,
+        });
+    }
+    let Some(job) = query_dispatched_job_for_agent_sync(&tx, agent_id)? else {
+        return Ok(ProviderActivityOutcome {
+            state_changed: false,
+            observation_inserted: false,
+            affected_job: None,
+        });
+    };
+    if let Some(observed) = observed_prompt_fingerprint
+        && crate::runtime_observation::prompt_fingerprint(&job.prompt_text) != observed
+    {
+        tracing::warn!(
+            agent_id,
+            job_id = %job.id,
+            provider,
+            provider_turn_id,
+            "ignored provider activity whose prompt does not match the dispatched job"
+        );
+        return Ok(ProviderActivityOutcome {
+            state_changed: false,
+            observation_inserted: false,
+            affected_job: None,
+        });
+    }
+
+    let state_changed = if state == STATE_WAITING_FOR_ACK {
+        let changed = crate::db::perception::gate::transit_agent_perception_state_sync(
+            &tx,
+            agent_id,
+            &[STATE_WAITING_FOR_ACK],
+            STATE_BUSY,
+            "PROVIDER_WORKING_OBSERVED",
+            state_version,
+        )?;
+        if changed {
+            tx.execute(
+                "UPDATE agents SET sub_state = 'ProviderEvent', updated_at = unixepoch() WHERE id = ?1 AND state = 'BUSY' AND state_version = ?2",
+                params![agent_id, state_version + 1],
+            )
+            .map_err(|err| map_db_error("annotate provider working state", err))?;
+        }
+        changed
+    } else {
+        false
+    };
+    if state == STATE_WAITING_FOR_ACK && !state_changed {
+        tx.rollback()
+            .map_err(|err| map_db_error("rollback raced provider working event", err))?;
+        return Ok(ProviderActivityOutcome {
+            state_changed: false,
+            observation_inserted: false,
+            affected_job: None,
+        });
+    }
+
+    let observation_id = format!("{lifecycle_id}:{evidence_id}:working");
+    let already_observed = tx
+        .query_row(
+            "SELECT COUNT(*) FROM provider_status_observations WHERE observation_id=?1",
+            [&observation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| map_db_error("query duplicate provider working observation", err))?
+        > 0;
+    let observation_inserted = !already_observed
+        && crate::runtime_observation::store::append_for_agent_sync(
+            &tx,
+            &observation_id,
+            agent_id,
+            &lifecycle_id,
+            Some(&job.id),
+            source,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::Working,
+            ),
+            crate::runtime_observation::store::now_epoch_millis(),
+        )?;
+    tx.commit()
+        .map_err(|err| map_db_error("commit provider working event", err))?;
+    Ok(ProviderActivityOutcome {
+        state_changed,
+        observation_inserted,
+        affected_job: Some(job.id),
+    })
 }
 
 #[cfg(test)]
@@ -526,6 +728,8 @@ pub(crate) fn mark_agent_idle_log_event_sync(
     raw_path: &str,
     raw_offset: u64,
     provider_turn_id: Option<&str>,
+    expected_lifecycle_id: &str,
+    observed_prompt_fingerprint: Option<&str>,
 ) -> Result<usize, CcbdError> {
     mark_agent_idle_log_event_outcome_sync(
         db,
@@ -535,6 +739,8 @@ pub(crate) fn mark_agent_idle_log_event_sync(
         raw_path,
         raw_offset,
         provider_turn_id,
+        expected_lifecycle_id,
+        observed_prompt_fingerprint,
     )
     .map(|outcome| outcome.changes)
 }
@@ -548,7 +754,7 @@ pub(crate) fn mark_agent_idle_hook_event_sync(
     reply: Option<&str>,
 ) -> Result<usize, CcbdError> {
     mark_agent_idle_hook_event_outcome_sync(
-        db, agent_id, provider, hook_event, event_id, reply, None,
+        db, agent_id, provider, hook_event, event_id, reply, None, None,
     )
     .map(|outcome| outcome.changes)
 }
@@ -570,6 +776,7 @@ pub(crate) fn mark_agent_idle_hook_event_at_version_sync(
         hook_event,
         event_id,
         reply,
+        None,
         Some(expected_state_version),
     )
     .map(|outcome| outcome.changes)
@@ -582,6 +789,7 @@ fn mark_agent_idle_hook_event_outcome_sync(
     hook_event: &str,
     event_id: Option<&str>,
     reply: Option<&str>,
+    expected_lifecycle_id: Option<&str>,
     expected_state_version: Option<i64>,
 ) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
     let mut conn = db.conn();
@@ -590,26 +798,40 @@ fn mark_agent_idle_hook_event_outcome_sync(
         .map_err(|err| map_db_error("begin mark agent idle hook event", err))?;
     let current = tx
         .query_row(
-            "SELECT state, state_version, session_id FROM agents WHERE id = ?",
+            "SELECT state, state_version, session_id, lifecycle_id FROM agents WHERE id = ?",
             params![agent_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )
         .optional()
         .map_err(|err| map_db_error("query state for hook event matched", err))?;
 
-    let Some((previous_state, state_version, session_id)) = current else {
+    let Some((previous_state, state_version, session_id, lifecycle_id)) = current else {
         return Ok(MarkerMatchedSyncOutcome {
             changes: 0,
             denial_message: None,
             deferred_nudge: None,
         });
     };
+    if expected_lifecycle_id.is_some_and(|expected| expected != lifecycle_id) {
+        tracing::warn!(
+            agent_id,
+            expected_lifecycle_id,
+            current_lifecycle_id = %lifecycle_id,
+            "hook completion fenced by provider lifecycle"
+        );
+        return Ok(MarkerMatchedSyncOutcome {
+            changes: 0,
+            denial_message: None,
+            deferred_nudge: None,
+        });
+    }
     let late_health_completion_stuck_job = if previous_state == STATE_STUCK {
         if let Some(job) = query_dispatched_job_for_agent_sync(&tx, agent_id)? {
             late_health_completion_stuck_allows_terminal(&tx, agent_id, &job.id)?.then_some(job.id)
@@ -623,7 +845,32 @@ fn mark_agent_idle_hook_event_outcome_sync(
         && previous_state != STATE_BUSY
         && late_health_completion_stuck_job.is_none()
     {
-        tracing::trace!(agent_id, state = %previous_state, "hook completion swallowed: agent not busy or waiting for ack");
+        // A transcript can win the completion race and put the agent back in
+        // IDLE before the provider's Stop hook process reaches us. The late
+        // hook must not complete the job a second time, but it is still a
+        // lifecycle-fenced, official provider observation. Preserve that fact
+        // so hook delivery is observable instead of being coupled to whether
+        // this callback happened to own the state transition.
+        if let Some(expected_lifecycle_id) = expected_lifecycle_id {
+            let observation_base = event_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unkeyed-hook-{state_version}"));
+            crate::runtime_observation::store::append_for_agent_sync(
+                &tx,
+                &format!("{observation_base}:ready"),
+                agent_id,
+                expected_lifecycle_id,
+                None,
+                crate::runtime_observation::EvidenceSource::OfficialHook,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Ready,
+                ),
+                crate::runtime_observation::store::now_epoch_millis(),
+            )?;
+            tx.commit()
+                .map_err(|err| map_db_error("commit late hook observation", err))?;
+        }
+        tracing::trace!(agent_id, state = %previous_state, "late hook recorded without repeating completion transition");
         return Ok(MarkerMatchedSyncOutcome {
             changes: 0,
             denial_message: None,
@@ -712,6 +959,9 @@ fn mark_agent_idle_hook_event_outcome_sync(
         .map_err(|err| map_db_error("mark agent idle hook event", err))?;
 
     if changes == 1 {
+        let completed_job_id = dispatched_job_reply
+            .as_ref()
+            .map(|(job_id, _, _, _)| job_id.clone());
         if let Some((job_id, reply_text, _, cancel_requested)) = dispatched_job_reply {
             if cancel_requested {
                 mark_job_cancelled_conn_sync(&tx, &job_id, &reply_text)?;
@@ -737,6 +987,39 @@ fn mark_agent_idle_hook_event_outcome_sync(
             params![agent_id, payload],
         )
         .map_err(|err| map_db_error("insert hook event state_change", err))?;
+
+        if let Some(expected_lifecycle_id) = expected_lifecycle_id {
+            let observation_base = event_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unkeyed-hook-{state_version}"));
+            let observed_at_ms = crate::runtime_observation::store::now_epoch_millis();
+            if let Some(job_id) = completed_job_id.as_deref() {
+                crate::runtime_observation::store::append_for_agent_sync(
+                    &tx,
+                    &format!("{observation_base}:completed"),
+                    agent_id,
+                    expected_lifecycle_id,
+                    Some(job_id),
+                    crate::runtime_observation::EvidenceSource::OfficialHook,
+                    crate::runtime_observation::ProviderObservationKind::Turn(
+                        crate::runtime_observation::ProviderTurnState::Completed,
+                    ),
+                    observed_at_ms,
+                )?;
+            }
+            crate::runtime_observation::store::append_for_agent_sync(
+                &tx,
+                &format!("{observation_base}:ready"),
+                agent_id,
+                expected_lifecycle_id,
+                None,
+                crate::runtime_observation::EvidenceSource::OfficialHook,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Ready,
+                ),
+                observed_at_ms,
+            )?;
+        }
     } else {
         tracing::trace!(
             agent_id,
@@ -761,6 +1044,8 @@ fn mark_agent_idle_log_event_outcome_sync(
     raw_path: &str,
     raw_offset: u64,
     provider_turn_id: Option<&str>,
+    expected_lifecycle_id: &str,
+    observed_prompt_fingerprint: Option<&str>,
 ) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
     let mut conn = db.conn();
     let tx = conn
@@ -768,26 +1053,40 @@ fn mark_agent_idle_log_event_outcome_sync(
         .map_err(|err| map_db_error("begin mark agent idle log event", err))?;
     let current = tx
         .query_row(
-            "SELECT state, state_version, session_id FROM agents WHERE id = ?",
+            "SELECT state, state_version, session_id, lifecycle_id FROM agents WHERE id = ?",
             params![agent_id],
             |row| {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
                 ))
             },
         )
         .optional()
         .map_err(|err| map_db_error("query state for log event matched", err))?;
 
-    let Some((previous_state, state_version, session_id)) = current else {
+    let Some((previous_state, state_version, session_id, lifecycle_id)) = current else {
         return Ok(MarkerMatchedSyncOutcome {
             changes: 0,
             denial_message: None,
             deferred_nudge: None,
         });
     };
+    if lifecycle_id != expected_lifecycle_id {
+        tracing::warn!(
+            agent_id,
+            expected_lifecycle_id,
+            current_lifecycle_id = %lifecycle_id,
+            "ignored stale provider transcript from an earlier lifecycle"
+        );
+        return Ok(MarkerMatchedSyncOutcome {
+            changes: 0,
+            denial_message: None,
+            deferred_nudge: None,
+        });
+    }
     let late_health_completion_stuck_job = if previous_state == STATE_STUCK {
         if let Some(job) = query_dispatched_job_for_agent_sync(&tx, agent_id)? {
             late_health_completion_stuck_allows_terminal(&tx, agent_id, &job.id)?.then_some(job.id)
@@ -811,6 +1110,22 @@ fn mark_agent_idle_log_event_outcome_sync(
 
     let dispatched_job_reply =
         if let Some(job) = query_dispatched_job_for_agent_sync(&tx, agent_id)? {
+            if let Some(observed) = observed_prompt_fingerprint
+                && crate::runtime_observation::prompt_fingerprint(&job.prompt_text) != observed
+            {
+                tracing::warn!(
+                    agent_id,
+                    job_id = %job.id,
+                    provider,
+                    provider_turn_id,
+                    "ignored provider completion whose prompt does not match the dispatched job"
+                );
+                return Ok(MarkerMatchedSyncOutcome {
+                    changes: 0,
+                    denial_message: None,
+                    deferred_nudge: None,
+                });
+            }
             if let Some(denial_message) = evidence_denial_for_job(&tx, agent_id, &job)? {
                 insert_evidence_denied_event(&tx, agent_id, &job.id, &denial_message)?;
                 tx.commit()
@@ -887,6 +1202,9 @@ fn mark_agent_idle_log_event_outcome_sync(
         .map_err(|err| map_db_error("mark agent idle log event", err))?;
 
     if changes == 1 {
+        let completed_job_id = dispatched_job_reply
+            .as_ref()
+            .map(|(job_id, _, _, _)| job_id.clone());
         if let Some((job_id, reply_text, _, cancel_requested)) = dispatched_job_reply {
             if cancel_requested {
                 mark_job_cancelled_conn_sync(&tx, &job_id, &reply_text)?;
@@ -913,6 +1231,35 @@ fn mark_agent_idle_log_event_outcome_sync(
             params![agent_id, payload],
         )
         .map_err(|err| map_db_error("insert log event state_change", err))?;
+
+        let observation_base = format!("log:{raw_path}:{raw_offset}");
+        let observed_at_ms = crate::runtime_observation::store::now_epoch_millis();
+        if let Some(job_id) = completed_job_id.as_deref() {
+            crate::runtime_observation::store::append_for_agent_sync(
+                &tx,
+                &format!("{observation_base}:completed"),
+                agent_id,
+                &lifecycle_id,
+                Some(job_id),
+                crate::runtime_observation::EvidenceSource::Transcript,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Completed,
+                ),
+                observed_at_ms,
+            )?;
+        }
+        crate::runtime_observation::store::append_for_agent_sync(
+            &tx,
+            &format!("{observation_base}:ready"),
+            agent_id,
+            &lifecycle_id,
+            None,
+            crate::runtime_observation::EvidenceSource::Transcript,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::Ready,
+            ),
+            observed_at_ms,
+        )?;
     } else {
         tracing::trace!(
             agent_id,
@@ -1281,6 +1628,17 @@ fn mark_agent_stuck_outcome_sync(
         )
         .map_err(|err| map_db_error("insert stuck state_change", err))?;
         let event_seq_id = tx.last_insert_rowid();
+        crate::runtime_observation::store::append_for_current_lifecycle_sync(
+            &tx,
+            &format!("stuck:{agent_id}:{state_version}:{reason}"),
+            agent_id,
+            None,
+            crate::runtime_observation::EvidenceSource::ControlPlane,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::Stalled,
+            ),
+            crate::runtime_observation::store::now_epoch_millis(),
+        )?;
         tx.commit()
             .map_err(|err| map_db_error("commit mark agent stuck", err))?;
         return Ok(StuckOutcome {
@@ -1610,6 +1968,8 @@ pub async fn mark_agent_idle_log_event(
     raw_path: String,
     raw_offset: u64,
     provider_turn_id: Option<String>,
+    expected_lifecycle_id: String,
+    observed_prompt_fingerprint: Option<String>,
 ) -> Result<(usize, Option<String>), CcbdError> {
     let outcome = mark_agent_idle_log_event_outcome(
         db,
@@ -1619,6 +1979,8 @@ pub async fn mark_agent_idle_log_event(
         raw_path,
         raw_offset,
         provider_turn_id,
+        expected_lifecycle_id,
+        observed_prompt_fingerprint,
     )
     .await?;
     Ok((outcome.changes, outcome.affected_job))
@@ -1631,12 +1993,14 @@ pub async fn mark_agent_idle_hook_event(
     hook_event: String,
     event_id: Option<String>,
     reply: Option<String>,
+    expected_lifecycle_id: Option<String>,
 ) -> Result<(usize, Option<String>), CcbdError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
             .map(|job| job.id);
     let agent_id_for_denial = agent_id.clone();
+    let provider_for_nudge = provider.clone();
     spawn_db("state_machine::mark_agent_idle_hook_event", move || {
         mark_agent_idle_hook_event_outcome_sync(
             &db,
@@ -1645,6 +2009,7 @@ pub async fn mark_agent_idle_hook_event(
             &hook_event,
             event_id.as_deref(),
             reply.as_deref(),
+            expected_lifecycle_id.as_deref(),
             None,
         )
     })
@@ -1656,12 +2021,14 @@ pub async fn mark_agent_idle_hook_event(
         if let Some(message) = &outcome.denial_message {
             let message = message.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_evidence_denial_nudge(agent_id, message));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_evidence_denial_nudge(agent_id, provider, message));
         }
         if let Some(nudge) = &outcome.deferred_nudge {
             let nudge = nudge.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_deferred_nudge(agent_id, nudge));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_deferred_nudge(agent_id, provider, nudge));
         }
         let affected_job = if outcome.changes > 0 {
             affected_job
@@ -1675,16 +2042,20 @@ pub async fn mark_agent_idle_hook_event(
     })
 }
 
-async fn send_evidence_denial_nudge(agent_id: String, message: String) {
+async fn send_evidence_denial_nudge(agent_id: String, provider: String, message: String) {
     #[cfg(test)]
     record_test_denial_nudge(&agent_id, &message);
-    if let Err(err) = crate::agent_io::send_text_to_registered_pane(&agent_id, message).await {
+    if let Err(err) =
+        crate::agent_io::send_text_to_registered_pane(&agent_id, &provider, message).await
+    {
         tracing::warn!(agent_id = %agent_id, error = %err, "failed to inject evidence denial");
     }
 }
 
-async fn send_deferred_nudge(agent_id: String, message: String) {
-    if let Err(err) = crate::agent_io::send_text_to_registered_pane(&agent_id, message).await {
+async fn send_deferred_nudge(agent_id: String, provider: String, message: String) {
+    if let Err(err) =
+        crate::agent_io::send_text_to_registered_pane(&agent_id, &provider, message).await
+    {
         tracing::warn!(agent_id = %agent_id, error = %err, "failed to inject deferred nudge");
     }
 }
@@ -1714,6 +2085,10 @@ pub async fn mark_agent_idle_matched_outcome(
     db: Db,
     agent_id: String,
 ) -> Result<MarkerMatchedOutcome, CcbdError> {
+    let provider_for_nudge = crate::db::agents::query_agent(db.clone(), agent_id.clone())
+        .await?
+        .map(|agent| agent.provider)
+        .unwrap_or_else(|| "bash".to_string());
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -1730,12 +2105,14 @@ pub async fn mark_agent_idle_matched_outcome(
         if let Some(message) = &outcome.denial_message {
             let message = message.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_evidence_denial_nudge(agent_id, message));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_evidence_denial_nudge(agent_id, provider, message));
         }
         if let Some(nudge) = &outcome.deferred_nudge {
             let nudge = nudge.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_deferred_nudge(agent_id, nudge));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_deferred_nudge(agent_id, provider, nudge));
         }
         let affected_job = if outcome.changes > 0 {
             affected_job
@@ -1762,12 +2139,15 @@ pub async fn mark_agent_idle_log_event_outcome(
     raw_path: String,
     raw_offset: u64,
     provider_turn_id: Option<String>,
+    expected_lifecycle_id: String,
+    observed_prompt_fingerprint: Option<String>,
 ) -> Result<MarkerMatchedOutcome, CcbdError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
             .map(|job| job.id);
     let agent_id_for_denial = agent_id.clone();
+    let provider_for_nudge = provider.clone();
     spawn_db("state_machine::mark_agent_idle_log_event", move || {
         mark_agent_idle_log_event_outcome_sync(
             &db,
@@ -1777,6 +2157,8 @@ pub async fn mark_agent_idle_log_event_outcome(
             &raw_path,
             raw_offset,
             provider_turn_id.as_deref(),
+            &expected_lifecycle_id,
+            observed_prompt_fingerprint.as_deref(),
         )
     })
     .await
@@ -1787,12 +2169,14 @@ pub async fn mark_agent_idle_log_event_outcome(
         if let Some(message) = &outcome.denial_message {
             let message = message.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_evidence_denial_nudge(agent_id, message));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_evidence_denial_nudge(agent_id, provider, message));
         }
         if let Some(nudge) = &outcome.deferred_nudge {
             let nudge = nudge.clone();
             let agent_id = agent_id_for_denial.clone();
-            tokio::spawn(send_deferred_nudge(agent_id, nudge));
+            let provider = provider_for_nudge.clone();
+            tokio::spawn(send_deferred_nudge(agent_id, provider, nudge));
         }
         let affected_job = if outcome.changes > 0 {
             affected_job
@@ -1808,6 +2192,40 @@ pub async fn mark_agent_idle_log_event_outcome(
             denial_message: outcome.denial_message,
             deferred_nudge: outcome.deferred_nudge,
         })
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mark_agent_working_provider_event(
+    db: Db,
+    agent_id: String,
+    provider: String,
+    expected_lifecycle_id: String,
+    source: crate::runtime_observation::EvidenceSource,
+    evidence_id: String,
+    provider_turn_id: Option<String>,
+    observed_prompt_fingerprint: Option<String>,
+) -> Result<ProviderActivityOutcome, CcbdError> {
+    spawn_db(
+        "state_machine::mark_agent_working_provider_event",
+        move || {
+            mark_agent_working_provider_event_sync(
+                &db,
+                &agent_id,
+                &provider,
+                &expected_lifecycle_id,
+                source,
+                &evidence_id,
+                provider_turn_id.as_deref(),
+                observed_prompt_fingerprint.as_deref(),
+            )
+        },
+    )
+    .await
+    .inspect(|outcome| {
+        if outcome.state_changed || outcome.observation_inserted {
+            notify_runtime_agent_changed();
+        }
     })
 }
 
@@ -1883,6 +2301,16 @@ mod tests {
         )
         .unwrap();
         dispatch_seq
+    }
+
+    fn lifecycle_id(db: &Db, agent_id: &str) -> String {
+        db.conn()
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap()
     }
 
     fn job_transition_count(db: &Db, job_id: &str, old_status: &str, new_status: &str) -> i64 {
@@ -2208,6 +2636,8 @@ mod tests {
                 "/tmp/rollout.jsonl",
                 42,
                 Some("turn-1"),
+                &lifecycle_id(db, "a_log_busy"),
+                None,
             )
             .unwrap();
             let (state, sub_state, status, reply): (String, String, String, String) = db
@@ -2243,6 +2673,8 @@ mod tests {
                 "/tmp/rollout.jsonl",
                 44,
                 Some("turn-late"),
+                &lifecycle_id(db, "a_late_log_stuck"),
+                None,
             )
             .unwrap();
             let (state, sub_state, status, reply, payload): (
@@ -2370,6 +2802,43 @@ mod tests {
     }
 
     #[test]
+    fn semantic_provider_marker_never_completes_turn_without_a_log_monitor() {
+        with_test_db_handle(|db| {
+            seed_dispatched_agent_job(db, "a_semantic_marker", STATE_BUSY, "job_semantic_marker");
+            db.conn()
+                .execute(
+                    "UPDATE agents SET provider = 'codex' WHERE id = 'a_semantic_marker'",
+                    [],
+                )
+                .unwrap();
+            insert_event_sync(
+                &db.conn(),
+                "a_semantic_marker",
+                None,
+                "output_chunk",
+                r#"{"text":"PANE LOOKS IDLE"}"#,
+            )
+            .unwrap();
+
+            let changes = mark_agent_idle_matched_sync(db, "a_semantic_marker").unwrap();
+            let (state, status): (String, String) = db
+                .conn()
+                .query_row(
+                    "SELECT agents.state, jobs.status
+                     FROM agents JOIN jobs ON jobs.agent_id = agents.id
+                     WHERE agents.id = 'a_semantic_marker'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+
+            assert_eq!(changes, 0);
+            assert_eq!(state, STATE_BUSY);
+            assert_eq!(status, "DISPATCHED");
+        });
+    }
+
+    #[test]
     fn log_event_does_not_complete_spawning_agent() {
         with_test_db_handle(|db| {
             seed_dispatched_agent_job(db, "a_log_spawn", STATE_SPAWNING, "job_log_spawn");
@@ -2382,6 +2851,8 @@ mod tests {
                 "/tmp/rollout.jsonl",
                 42,
                 Some("turn-1"),
+                &lifecycle_id(db, "a_log_spawn"),
+                None,
             )
             .unwrap();
             let (state, job_status): (String, String) = db
@@ -2412,6 +2883,8 @@ mod tests {
                 "/tmp/rollout.jsonl",
                 42,
                 Some("turn-1"),
+                &lifecycle_id(db, "a_log_reason"),
+                None,
             )
             .unwrap();
             let payload: String = db
@@ -2454,6 +2927,8 @@ mod tests {
                 None,
                 "/tmp/rollout.jsonl",
                 43,
+                None,
+                &lifecycle_id(db, "a_log_screen"),
                 None,
             )
             .unwrap();
@@ -2603,6 +3078,49 @@ mod tests {
     }
 
     #[test]
+    fn late_hook_after_transcript_completion_preserves_official_observation() {
+        with_test_db_handle(|db| {
+            seed_dispatched_agent_job(db, "a_late_hook", STATE_IDLE, "job_late_hook");
+            let lifecycle_id = lifecycle_id(db, "a_late_hook");
+
+            let outcome = super::mark_agent_idle_hook_event_outcome_sync(
+                db,
+                "a_late_hook",
+                "codex",
+                "stop",
+                Some("evt-late-hook"),
+                None,
+                Some(&lifecycle_id),
+                None,
+            )
+            .unwrap();
+            let observation_json: String = db
+                .conn()
+                .query_row(
+                    "SELECT observation_json FROM provider_status_observations WHERE observation_id = 'evt-late-hook:ready'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let observation: crate::runtime_observation::ProviderObservation =
+                serde_json::from_str(&observation_json).unwrap();
+
+            assert_eq!(outcome.changes, 0);
+            assert_eq!(observation.turn_id, None);
+            assert_eq!(
+                observation.source,
+                crate::runtime_observation::EvidenceSource::OfficialHook
+            );
+            assert_eq!(
+                observation.kind,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Ready
+                )
+            );
+        });
+    }
+
+    #[test]
     fn hook_push_stale_state_version_loses_without_event() {
         with_test_db_handle(|db| {
             seed_dispatched_agent_job(db, "a_hook_stale", STATE_BUSY, "job_hook_stale");
@@ -2702,6 +3220,7 @@ mod tests {
             "stop".to_string(),
             Some("evt-hook-denial".to_string()),
             Some("HOOK PONG".to_string()),
+            None,
         )
         .await
         .unwrap();

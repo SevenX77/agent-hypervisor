@@ -34,7 +34,7 @@ use ah::tmux::compute_socket_name;
 use ah::tmux::{TmuxPaneId, TmuxServer, agent_session_name, master_session_name};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -94,6 +94,9 @@ enum Cmd {
         wait: bool,
         #[arg(long)]
         request_id: Option<String>,
+        /// JSON file carrying the exact Roadmap/Plan/Task/Attempt/Run/Module binding.
+        #[arg(long)]
+        binding: Option<PathBuf>,
     },
     /// Asynchronously deliver text to the master pane.
     Tell {
@@ -105,7 +108,12 @@ enum Cmd {
         request_id: Option<String>,
     },
     /// Wait for a submitted job to finish.
-    Pend { job_id: String },
+    Pend {
+        job_id: String,
+        /// Emit the complete machine-readable terminal Job record.
+        #[arg(long)]
+        json: bool,
+    },
     /// Cancel a queued or running job.
     Cancel { job_id: String },
     /// Kill an agent, or a whole session with --session.
@@ -169,6 +177,13 @@ enum Cmd {
     },
     /// Run local environment diagnostics.
     Doctor,
+    /// Authenticate one provider using its official local or headless flow.
+    Login {
+        provider: String,
+        /// Force the provider's device-code or authorization-code-paste route.
+        #[arg(long)]
+        headless: bool,
+    },
     /// Check or prepare ah runtime prerequisites.
     Setup {
         #[arg(long)]
@@ -262,6 +277,8 @@ enum AgentCmd {
         event: String,
         #[arg(long)]
         provider: Option<String>,
+        #[arg(long)]
+        lifecycle_id: Option<String>,
         #[arg(long)]
         event_id: Option<String>,
         #[arg(long)]
@@ -360,6 +377,9 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             };
             return cmd_doctor(&client, config.as_deref()).await;
         }
+        Some(Cmd::Login { provider, headless }) => {
+            return cmd_login(config.as_deref(), &provider, headless);
+        }
         // Hook notifications carry their socket explicitly (--socket or
         // CCB_SOCKET); a hook firing from a sandbox must not depend on the
         // sandbox's directory resolving to a project.
@@ -369,6 +389,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
                     agent_id,
                     event,
                     provider,
+                    lifecycle_id,
                     event_id,
                     hook_json,
                     hook_debug_log,
@@ -391,6 +412,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
                 agent_id,
                 event,
                 provider,
+                lifecycle_id,
                 event_id,
                 hook_json,
                 hook_debug_log,
@@ -430,14 +452,23 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             text,
             wait,
             request_id,
-        }) => cmd_ask(&client, agent_id, text, wait, request_id).await,
+            binding,
+        }) => {
+            if managed_team_mode() {
+                validate_managed_ask(wait, request_id.is_some(), binding.is_some())?;
+            }
+            cmd_ask(&client, agent_id, text, wait, request_id, binding).await
+        }
         Some(Cmd::Tell {
             target,
             text,
             session,
             request_id,
         }) => cmd_tell(&client, target, text, session, request_id).await,
-        Some(Cmd::Pend { job_id }) => cmd_pend(&client, job_id).await,
+        Some(Cmd::Pend { .. }) if managed_team_mode() => Err(CliError::Config(
+            "managed team Agents cannot operate machine-owned Job identities".into(),
+        )),
+        Some(Cmd::Pend { job_id, json }) => cmd_pend(&client, job_id, json).await,
         Some(Cmd::Cancel { job_id }) => cmd_cancel(&client, job_id).await,
         Some(Cmd::Kill {
             target_id,
@@ -489,6 +520,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             | Cmd::Bundle { .. }
             | Cmd::Events { .. }
             | Cmd::Doctor
+            | Cmd::Login { .. }
             | Cmd::Agent { .. },
         ) => unreachable!("handled before project resolution"),
     }
@@ -599,11 +631,25 @@ async fn cmd_agent_notify(
     agent_id: String,
     event: String,
     provider: Option<String>,
+    lifecycle_id: Option<String>,
     event_id: Option<String>,
     hook_json: bool,
     hook_debug_log: Option<PathBuf>,
     outbox_dir: Option<PathBuf>,
 ) -> Result<(), CliError> {
+    let hook_input = if hook_json {
+        let mut hook_input = String::new();
+        match std::io::stdin().read_to_string(&mut hook_input) {
+            Ok(_) => parse_provider_hook_input(provider.as_deref(), &event, &hook_input),
+            Err(err) => {
+                tracing::warn!(error = %err, event, "failed to read provider hook JSON");
+                ProviderHookInput::default()
+            }
+        }
+    } else {
+        ProviderHookInput::default()
+    };
+
     // R1-T1 / CP-R1.1 — journal-first: make the report durable in the outbox BEFORE any RPC.
     // Invariant: exit 0 ⇔ a durable outbox record exists. A journal failure is loud + non-zero;
     // an RPC failure (below) is exit-0-safe precisely because the durable file is the guarantee.
@@ -614,6 +660,7 @@ async fn cmd_agent_notify(
             kind: ah::outbox::OutboxKind::HookEvent,
             agent_id: agent_id.clone(),
             provider: provider.clone(),
+            lifecycle_id: lifecycle_id.clone(),
             event: Some(event.clone()),
             attempt_cookie: std::env::var("AH_JOB_ATTEMPT_COOKIE").ok(),
             job_id: std::env::var("AH_JOB_ID").ok(),
@@ -623,7 +670,7 @@ async fn cmd_agent_notify(
                 .duration_since(UNIX_EPOCH)
                 .ok()
                 .map(|d| d.as_secs() as i64),
-            payload: None,
+            payload: hook_input.reduced_payload(),
         };
         if let Err(err) = ah::outbox::journal_record(outbox_dir, &record) {
             // Nothing durable landed → loud, non-zero exit. NEVER a silent exit-0.
@@ -654,6 +701,33 @@ async fn cmd_agent_notify(
     });
     if let Some(provider) = provider.as_ref() {
         params["provider"] = Value::String(provider.clone());
+    }
+    if let Some(lifecycle_id) = lifecycle_id.as_ref() {
+        params["lifecycle_id"] = Value::String(lifecycle_id.clone());
+    }
+    if let Some(prompt_fingerprint) = hook_input.prompt_fingerprint.as_ref() {
+        params["prompt_fingerprint"] = Value::String(prompt_fingerprint.clone());
+    }
+    if let Some(provider_turn_id) = hook_input.provider_turn_id.as_ref() {
+        params["provider_turn_id"] = Value::String(provider_turn_id.clone());
+    }
+    if let Some(provider_session_id) = hook_input.provider_session_id.as_ref() {
+        params["provider_session_id"] = Value::String(provider_session_id.clone());
+    }
+    if let Some(provider_invocation_num) = hook_input.provider_invocation_num {
+        params["provider_invocation_num"] = Value::from(provider_invocation_num);
+    }
+    if let Some(reply) = hook_input.reply.as_ref() {
+        params["reply"] = Value::String(reply.clone());
+    }
+    if let Some(fully_idle) = hook_input.fully_idle {
+        params["provider_fully_idle"] = Value::Bool(fully_idle);
+    }
+    if let Some(termination_reason) = hook_input.termination_reason.as_ref() {
+        params["provider_termination_reason"] = Value::String(termination_reason.clone());
+    }
+    if let Some(provider_error) = hook_input.provider_error.as_ref() {
+        params["provider_error"] = Value::String(provider_error.clone());
     }
     match client.call("agent.notify", params).await {
         Ok(result) => {
@@ -705,6 +779,91 @@ async fn cmd_agent_notify(
             );
             Err(err)
         }
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+struct ProviderHookInput {
+    prompt_fingerprint: Option<String>,
+    provider_turn_id: Option<String>,
+    provider_session_id: Option<String>,
+    provider_invocation_num: Option<u64>,
+    reply: Option<String>,
+    fully_idle: Option<bool>,
+    termination_reason: Option<String>,
+    provider_error: Option<String>,
+}
+
+impl ProviderHookInput {
+    fn reduced_payload(&self) -> Option<Value> {
+        let value = json!({
+            "prompt_fingerprint": self.prompt_fingerprint,
+            "provider_turn_id": self.provider_turn_id,
+            "provider_session_id": self.provider_session_id,
+            "provider_invocation_num": self.provider_invocation_num,
+            "reply": self.reply,
+            "provider_fully_idle": self.fully_idle,
+            "provider_termination_reason": self.termination_reason,
+            "provider_error": self.provider_error,
+        });
+        value
+            .as_object()
+            .is_some_and(|object| object.values().any(|value| !value.is_null()))
+            .then_some(value)
+    }
+}
+
+fn parse_provider_hook_input(
+    provider: Option<&str>,
+    event: &str,
+    input: &str,
+) -> ProviderHookInput {
+    let Ok(value) = serde_json::from_str::<Value>(input) else {
+        return ProviderHookInput::default();
+    };
+    let prompt_fingerprint = event
+        .eq_ignore_ascii_case("userpromptsubmit")
+        .then(|| value.get("prompt").and_then(Value::as_str))
+        .flatten()
+        .map(ah::runtime_observation::prompt_fingerprint);
+    let provider_turn_id = value
+        .get("turn_id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let provider_session_id = match provider {
+        Some("antigravity" | "gemini") => value.get("conversationId"),
+        _ => value.get("session_id"),
+    }
+    .and_then(Value::as_str)
+    .map(str::to_string);
+    let provider_error = value
+        .get("error")
+        .filter(|error| !error.is_null())
+        .and_then(|error| match error.as_str() {
+            // Antigravity emits `error: ""` on a clean Stop event. Treating
+            // that successful sentinel as an error discards fullyIdle=true
+            // official-hook evidence and unnecessarily falls back to the
+            // transcript completion path.
+            Some(message) if message.trim().is_empty() => None,
+            Some(message) => Some(message.to_string()),
+            None => Some(error.to_string()),
+        });
+
+    ProviderHookInput {
+        prompt_fingerprint,
+        provider_turn_id,
+        provider_session_id,
+        provider_invocation_num: value.get("invocationNum").and_then(Value::as_u64),
+        reply: value
+            .get("last_assistant_message")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        fully_idle: value.get("fullyIdle").and_then(Value::as_bool),
+        termination_reason: value
+            .get("terminationReason")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        provider_error,
     }
 }
 
@@ -1070,7 +1229,7 @@ fn resolve_master_session<'a>(
 fn resolve_master_tell_target<'a>(
     sessions: &'a Value,
     session_id: Option<&str>,
-) -> Result<(&'a str, TmuxPaneId), CliError> {
+) -> Result<(&'a str, TmuxPaneId, &'a str), CliError> {
     let session = resolve_master_session(Some(sessions), session_id)?;
     let session_id = session
         .get("id")
@@ -1084,7 +1243,14 @@ fn resolve_master_tell_target<'a>(
         })?;
     let pane = TmuxPaneId::parse(pane_id)
         .map_err(|err| CliError::Config(format!("stored master_pane_id is invalid: {err}")))?;
-    Ok((session_id, pane))
+    let provider = session
+        .get("master_provider")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            CliError::InvalidResponse("session.list session missing master_provider".into())
+        })?;
+    Ok((session_id, pane, provider))
 }
 
 fn generated_tell_request_id() -> String {
@@ -1098,14 +1264,17 @@ fn generated_tell_request_id() -> String {
     )
 }
 
+#[cfg(test)]
 const PASTE_EXPAND_GUARDS: &[&str] = &["paste again to expand"];
 
+#[cfg(test)]
 fn bottom_composer_region(capture: &str) -> String {
     let mut lines = capture.lines().rev().take(8).collect::<Vec<_>>();
     lines.reverse();
     lines.join("\n").to_ascii_lowercase()
 }
 
+#[cfg(test)]
 fn contains_paste_expand_guard(capture: &str) -> bool {
     let bottom = bottom_composer_region(capture);
     PASTE_EXPAND_GUARDS
@@ -1113,6 +1282,7 @@ fn contains_paste_expand_guard(capture: &str) -> bool {
         .any(|phrase| bottom.contains(phrase))
 }
 
+#[cfg(test)]
 fn bottom_contains_tell_body(capture: &str, text: &str) -> bool {
     let needle = text.trim();
     !needle.is_empty() && bottom_composer_region(capture).contains(&needle.to_ascii_lowercase())
@@ -1153,7 +1323,7 @@ async fn cmd_tell(
         ));
     }
     let sessions = client.call("session.list", json!({})).await?;
-    let (session_id, pane) = resolve_master_tell_target(&sessions, session.as_deref())?;
+    let (session_id, pane, provider) = resolve_master_tell_target(&sessions, session.as_deref())?;
     let request_id = request_id.unwrap_or_else(generated_tell_request_id);
     client
         .call(
@@ -1171,132 +1341,41 @@ async fn cmd_tell(
         .parent()
         .ok_or_else(|| CliError::Config("daemon socket has no parent directory".into()))?;
     let tmux = TmuxServer::new(state_dir);
-    let buffer_name = format!("ah-tell-{}", request_id.replace([':', '/', '.'], "_"));
     let pane_id = pane.0.clone();
-
-    if let Err(err) = tmux.load_buffer(buffer_name.clone(), text.clone()).await {
-        report_master_tell_failed(
-            client,
-            session_id,
-            &request_id,
-            &pane_id,
-            "LOAD_BUFFER",
-            &err.to_string(),
-        )
-        .await;
-        return Err(CliError::Config(format!(
-            "DELIVERY_FAILED request_id={request_id} stage=LOAD_BUFFER reason={err}"
-        )));
-    }
-    let paste_result = tmux.paste_buffer(pane.clone(), buffer_name.clone()).await;
-    let _ = tmux.delete_buffer(buffer_name).await;
-    if let Err(err) = paste_result {
-        report_master_tell_failed(
-            client,
-            session_id,
-            &request_id,
-            &pane_id,
-            "PASTE",
-            &err.to_string(),
-        )
-        .await;
-        return Err(CliError::Config(format!(
-            "DELIVERY_FAILED request_id={request_id} stage=PASTE reason={err}"
-        )));
-    }
-    if let Err(err) = tmux
-        .send_keys_keysym(pane.clone(), "Enter".to_string())
-        .await
+    match ah::prompt_delivery::deliver_prompt(
+        std::sync::Arc::new(tmux),
+        &format!("master-{request_id}"),
+        provider,
+        pane,
+        text,
+        true,
+    )
+    .await
     {
-        report_master_tell_failed(
-            client,
-            session_id,
-            &request_id,
-            &pane_id,
-            "PASTE_ENTER",
-            &err.to_string(),
-        )
-        .await;
-        return Err(CliError::Config(format!(
-            "DELIVERY_FAILED request_id={request_id} stage=PASTE_ENTER reason={err}"
-        )));
-    }
-
-    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    match tmux.capture_pane(pane.clone()).await {
-        Ok(capture) if contains_paste_expand_guard(&capture) => {
-            if let Err(err) = tmux
-                .send_keys_keysym(pane.clone(), "Enter".to_string())
-                .await
-            {
-                report_master_tell_failed(
-                    client,
-                    session_id,
-                    &request_id,
-                    &pane_id,
-                    "SEND_ENTER_TO_EXPAND",
-                    &err.to_string(),
-                )
-                .await;
-                return Err(CliError::Config(format!(
-                    "DELIVERY_FAILED request_id={request_id} stage=SEND_ENTER_TO_EXPAND reason={err}"
-                )));
-            }
+        Ok(receipt) => {
+            println!(
+                "delivered request_id={request_id}; paste_observations={} submit_observations={} submit_attempts={}; master task start/completion remains hook-observed via ah ps/logs",
+                receipt.paste_observations,
+                receipt.submit_observations.unwrap_or_default(),
+                receipt.submit_attempts,
+            );
+            Ok(())
         }
-        Ok(_) => {}
         Err(err) => {
             report_master_tell_failed(
                 client,
                 session_id,
                 &request_id,
                 &pane_id,
-                "DETECT_EXPAND_PROMPT",
+                "GUARDED_DELIVERY",
                 &err.to_string(),
             )
             .await;
-            return Err(CliError::Config(format!(
-                "DELIVERY_FAILED request_id={request_id} stage=DETECT_EXPAND_PROMPT reason={err}"
-            )));
+            Err(CliError::Config(format!(
+                "DELIVERY_FAILED_UNCONFIRMED request_id={request_id} stage=GUARDED_DELIVERY reason={err}"
+            )))
         }
     }
-
-    let mut last_reason = "composer_not_cleared".to_string();
-    for _ in 0..8 {
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        match tmux.capture_pane(pane.clone()).await {
-            Ok(capture) => {
-                if contains_paste_expand_guard(&capture) {
-                    last_reason = "paste_expand_prompt_still_visible".to_string();
-                    continue;
-                }
-                if bottom_contains_tell_body(&capture, &text) {
-                    last_reason = "tell_body_still_visible_in_composer".to_string();
-                    continue;
-                }
-                println!(
-                    "delivered request_id={request_id}; waiting for master UserPromptSubmit/Stop hooks is observable via ah ps/logs"
-                );
-                return Ok(());
-            }
-            Err(err) => {
-                last_reason = err.to_string();
-                break;
-            }
-        }
-    }
-
-    report_master_tell_failed(
-        client,
-        session_id,
-        &request_id,
-        &pane_id,
-        "VERIFY_PANE_CLEARED",
-        &last_reason,
-    )
-    .await;
-    Err(CliError::Config(format!(
-        "DELIVERY_FAILED_UNCONFIRMED request_id={request_id} stage=VERIFY_PANE_CLEARED reason={last_reason}"
-    )))
 }
 
 async fn cmd_attach(
@@ -1317,20 +1396,16 @@ async fn cmd_attach(
     } else {
         None
     };
-    let session_name = match resolve_attach_session_name(
-        target,
-        subject,
-        session_id,
-        sessions.as_ref(),
-    ) {
-        Ok(name) => name,
-        // Nothing ACTIVE, no explicit session: the runtime may still be holding a
-        // remain-on-exit master pane for post-mortem. tmux is the authority on that.
-        Err(err) if target == "master" && session_id.is_none() => {
-            pick_forensic_master_session(&list_tmux_session_names(&socket)).map_err(|_| err)?
-        }
-        Err(err) => return Err(err),
-    };
+    let session_name =
+        match resolve_attach_session_name(target, subject, session_id, sessions.as_ref()) {
+            Ok(name) => name,
+            // Nothing ACTIVE, no explicit session: the runtime may still be holding a
+            // remain-on-exit master pane for post-mortem. tmux is the authority on that.
+            Err(err) if target == "master" && session_id.is_none() => {
+                pick_forensic_master_session(&list_tmux_session_names(&socket)).map_err(|_| err)?
+            }
+            Err(err) => return Err(err),
+        };
     exec_tmux_attach(socket, session_name)
 }
 
@@ -1359,7 +1434,7 @@ fn cmd_reclaim(
 ) -> Result<(), CliError> {
     use ah::cli::reclaim;
 
-    let sandbox_root = ah::provider::home_layout::sandbox_home_root()
+    let sandbox_root = ah::home_materialization::sandbox_home_root()
         .map_err(|err| CliError::Io(std::io::Error::other(err.to_string())))?;
     let state_root = ah::state_layout::default_state_root();
     let scope = reclaim::ReclaimScope {
@@ -1530,6 +1605,33 @@ async fn cmd_doctor(client: &UnixRpcClient, config_path: Option<&Path>) -> Resul
     }
 }
 
+fn cmd_login(config_path: Option<&Path>, provider: &str, headless: bool) -> Result<(), CliError> {
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::Config("HOME is not set".to_string()))?;
+    let project_config = match config_path {
+        Some(path) => Some(ah::cli::config::load_project_config(path)?),
+        None => {
+            let cwd = std::env::current_dir()?;
+            ah::cli::config::find_config(&cwd)
+                .ok()
+                .map(|path| ah::cli::config::load_project_config(&path))
+                .transpose()?
+        }
+    };
+    let claude_store_override = project_config
+        .as_ref()
+        .and_then(|config| config.providers.claude.shared_credentials_dir.as_deref());
+    ah::cli::login_gate::login_provider(
+        provider,
+        &home,
+        claude_store_override,
+        ah::cli::login_gate::stdin_and_stdout_are_terminal(),
+        headless,
+    )
+}
+
 fn cmd_config_migrate() -> Result<(), CliError> {
     let cwd = std::env::current_dir()?;
     migrate_stub(&cwd)
@@ -1590,7 +1692,9 @@ async fn cmd_ask(
     text: String,
     wait: bool,
     request_id: Option<String>,
+    binding: Option<PathBuf>,
 ) -> Result<(), CliError> {
+    let binding = binding.or_else(|| std::env::var_os("GAS_TEAM_BINDING_PATH").map(PathBuf::from));
     let mut params = json!({
         "agent_id": agent_id,
         "text": text,
@@ -1598,19 +1702,71 @@ async fn cmd_ask(
     if let Some(request_id) = request_id {
         params["request_id"] = Value::String(request_id);
     }
+    if let Some(path) = binding {
+        let content = std::fs::read_to_string(&path).map_err(|error| {
+            CliError::Config(format!(
+                "failed to read governance binding {}: {error}",
+                path.display()
+            ))
+        })?;
+        params["governance_binding"] = serde_json::from_str(&content).map_err(|error| {
+            CliError::Config(format!(
+                "failed to parse governance binding {}: {error}",
+                path.display()
+            ))
+        })?;
+    }
     let result = client.call("job.submit", params).await?;
     let job_id = string_field(&result, "job_id");
     let status = string_field(&result, "status");
-    println!("job_id={job_id} status={status}");
+    if !managed_team_mode() {
+        println!("job_id={job_id} status={status}");
+    }
     if wait {
         print_terminal_job(wait_for_job(client, &job_id).await?)?;
     }
     Ok(())
 }
 
-async fn cmd_pend(client: &UnixRpcClient, job_id: String) -> Result<(), CliError> {
-    print_terminal_job(wait_for_job(client, &job_id).await?)?;
-    Ok(())
+async fn cmd_pend(
+    client: &UnixRpcClient,
+    job_id: String,
+    json_output: bool,
+) -> Result<(), CliError> {
+    let result = wait_for_job(client, &job_id).await?;
+    if !json_output {
+        return print_terminal_job(result);
+    }
+    println!("{result}");
+    match result.get("status").and_then(Value::as_str) {
+        Some("COMPLETED") => Ok(()),
+        Some(status) => Err(CliError::InvalidResponse(format!(
+            "job {job_id} terminated with status {status}"
+        ))),
+        None => Err(CliError::InvalidResponse(
+            "job.wait missing status field".into(),
+        )),
+    }
+}
+
+fn validate_managed_ask(
+    wait: bool,
+    has_request_id: bool,
+    has_binding: bool,
+) -> Result<(), CliError> {
+    if wait && !has_request_id && !has_binding {
+        return Ok(());
+    }
+    Err(CliError::Config(
+        "managed team ask requires --wait and forbids model-supplied request IDs or bindings"
+            .into(),
+    ))
+}
+
+fn managed_team_mode() -> bool {
+    std::env::var("GAS_MANAGED_TEAM")
+        .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE"))
+        .unwrap_or(false)
 }
 
 async fn cmd_cancel(client: &UnixRpcClient, job_id: String) -> Result<(), CliError> {
@@ -1917,9 +2073,9 @@ mod tests {
     use super::{
         Cli, Cmd, MasterCmd, attach_session_name, bottom_contains_tell_body, cmd_agent_notify,
         contains_paste_expand_guard, detect_nesting, format_agent_notify_output,
-        pick_forensic_master_session, prepare_attach_command, resolve_attach_session_name,
-        resolve_start_config_path,
-        runtime_subscribe_params, status_snapshot_json,
+        parse_provider_hook_input, pick_forensic_master_session, prepare_attach_command,
+        resolve_attach_session_name, resolve_start_config_path, runtime_subscribe_params,
+        status_snapshot_json, validate_managed_ask,
     };
     use ah::cli::rpc_client::{RpcClient, RpcFuture, UnixRpcClient};
     use clap::Parser;
@@ -2046,6 +2202,31 @@ provider = "bash"
     }
 
     #[test]
+    fn managed_team_ask_requires_wait_and_machine_owned_identity() {
+        assert!(validate_managed_ask(true, false, false).is_ok());
+        for invalid in [
+            (false, false, false),
+            (true, true, false),
+            (true, false, true),
+        ] {
+            let error = validate_managed_ask(invalid.0, invalid.1, invalid.2).unwrap_err();
+            assert!(error.to_string().contains("managed team ask"));
+        }
+    }
+
+    #[test]
+    fn pend_json_is_an_explicit_machine_receipt_mode() {
+        let cli = Cli::parse_from(["ah", "pend", "job_1", "--json"]);
+        match cli.cmd {
+            Some(Cmd::Pend { job_id, json }) => {
+                assert_eq!(job_id, "job_1");
+                assert!(json);
+            }
+            _ => panic!("expected pend command"),
+        }
+    }
+
+    #[test]
     fn ah_cli_parses_ps_all() {
         let cli = Cli::parse_from(["ah", "ps", "--all"]);
 
@@ -2065,12 +2246,25 @@ provider = "bash"
         }
     }
 
+    #[test]
+    fn ah_cli_parses_headless_provider_login() {
+        let cli = Cli::parse_from(["ah", "login", "antigravity", "--headless"]);
+
+        match cli.cmd {
+            Some(Cmd::Login { provider, headless }) => {
+                assert_eq!(provider, "antigravity");
+                assert!(headless);
+            }
+            _ => panic!("expected login command"),
+        }
+    }
+
     #[tokio::test]
-    async fn status_json_uses_runtime_snapshot_rpc_and_emits_schema_v2_json() {
+    async fn status_json_uses_runtime_snapshot_rpc_and_emits_schema_v3_json() {
         let client = RecordingClient {
             calls: Mutex::new(Vec::new()),
             response: json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "event": "snapshot",
                 "sessions": []
             }),
@@ -2078,7 +2272,7 @@ provider = "bash"
 
         let rendered = status_snapshot_json(&client, true).await.unwrap();
         let parsed: Value = serde_json::from_str(&rendered).unwrap();
-        assert_eq!(parsed["schema_version"], 2);
+        assert_eq!(parsed["schema_version"], 3);
 
         let calls = client.calls.lock().unwrap();
         assert_eq!(
@@ -2112,6 +2306,7 @@ provider = "bash"
                         agent_id,
                         event,
                         provider,
+                        lifecycle_id,
                         event_id,
                         hook_json,
                         hook_debug_log,
@@ -2122,6 +2317,7 @@ provider = "bash"
                 assert_eq!(agent_id, "ag_notify");
                 assert_eq!(event, "stop");
                 assert_eq!(provider.as_deref(), Some("codex"));
+                assert!(lifecycle_id.is_none());
                 assert_eq!(event_id.as_deref(), Some("evt-cli"));
                 assert!(!hook_json);
                 assert!(hook_debug_log.is_none());
@@ -2226,6 +2422,51 @@ provider = "bash"
     }
 
     #[test]
+    fn codex_hook_json_is_reduced_to_status_fields() {
+        let input = r#"{"turn_id":"turn-7","prompt":"echo PONG\n"}"#;
+
+        let parsed = parse_provider_hook_input(Some("codex"), "UserPromptSubmit", input);
+
+        assert_eq!(parsed.provider_turn_id.as_deref(), Some("turn-7"));
+        assert_eq!(
+            parsed.prompt_fingerprint,
+            Some(ah::runtime_observation::prompt_fingerprint("echo PONG\n",))
+        );
+    }
+
+    #[test]
+    fn antigravity_hook_json_preserves_invocation_and_idle_proof() {
+        let invocation = parse_provider_hook_input(
+            Some("antigravity"),
+            "PreInvocation",
+            r#"{"conversationId":"conv-1","invocationNum":3,"initialNumSteps":9}"#,
+        );
+        assert_eq!(invocation.provider_session_id.as_deref(), Some("conv-1"));
+        assert_eq!(invocation.provider_invocation_num, Some(3));
+
+        let stop = parse_provider_hook_input(
+            Some("antigravity"),
+            "Stop",
+            r#"{"conversationId":"conv-1","fullyIdle":false,"terminationReason":"paused","error":null}"#,
+        );
+        assert_eq!(stop.fully_idle, Some(false));
+        assert_eq!(stop.termination_reason.as_deref(), Some("paused"));
+        assert!(stop.provider_error.is_none());
+
+        let clean_stop = parse_provider_hook_input(
+            Some("antigravity"),
+            "Stop",
+            r#"{"conversationId":"conv-1","fullyIdle":true,"terminationReason":"NO_TOOL_CALL","error":""}"#,
+        );
+        assert_eq!(clean_stop.fully_idle, Some(true));
+        assert_eq!(
+            clean_stop.termination_reason.as_deref(),
+            Some("NO_TOOL_CALL")
+        );
+        assert!(clean_stop.provider_error.is_none());
+    }
+
+    #[test]
     fn agent_notify_hook_json_formats_empty_object_only() {
         let result = json!({
             "agent_id": "ag_notify",
@@ -2257,6 +2498,7 @@ provider = "bash"
             "stop".to_string(),
             Some("claude".to_string()),
             None,
+            None,
             true,
             None,
             Some(outbox.clone()),
@@ -2265,7 +2507,7 @@ provider = "bash"
 
         assert!(
             res.is_ok(),
-            "a journaled record must exit 0 even when RPC is down"
+            "a journaled record must exit 0 even when RPC is down: {res:?}"
         );
         let jsons: Vec<_> = std::fs::read_dir(&outbox)
             .unwrap()
@@ -2297,6 +2539,7 @@ provider = "bash"
             &client,
             "a1".to_string(),
             "stop".to_string(),
+            None,
             None,
             None,
             true,
@@ -2337,6 +2580,28 @@ provider = "bash"
     }
 
     #[test]
+    fn tell_master_uses_the_provider_owned_by_the_selected_session() {
+        let sessions = json!({
+            "sessions": [
+                {
+                    "id": "s1",
+                    "project_id": "ccbd-rust",
+                    "status": "ACTIVE",
+                    "master_pane_id": "%42",
+                    "master_provider": "antigravity"
+                }
+            ]
+        });
+
+        let (session_id, pane, provider) =
+            crate::resolve_master_tell_target(&sessions, None).unwrap();
+
+        assert_eq!(session_id, "s1");
+        assert_eq!(pane.0, "%42");
+        assert_eq!(provider, "antigravity");
+    }
+
+    #[test]
     fn legacy_attach_agent_still_maps_to_agent_session_name() {
         let session_name = resolve_attach_session_name("a1", None, None, None).unwrap();
 
@@ -2367,7 +2632,10 @@ provider = "bash"
 
         let err = pick_forensic_master_session(&names).unwrap_err();
 
-        assert!(err.to_string().contains("--session"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("--session"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

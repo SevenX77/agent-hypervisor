@@ -74,15 +74,12 @@ pub fn run_state_maintenance(
 ) -> Result<MaintenanceReport, CcbdError> {
     let mut report = MaintenanceReport::default();
 
-    report.firehose_events_deleted = delete_events_beyond_cap(
-        conn,
-        FIREHOSE_EVENT_TYPES,
-        true,
-        policy.firehose_events,
-    )?;
+    report.firehose_events_deleted =
+        delete_events_beyond_cap(conn, FIREHOSE_EVENT_TYPES, true, policy.firehose_events)?;
     report.forensic_events_deleted =
         delete_events_beyond_cap(conn, FIREHOSE_EVENT_TYPES, false, policy.forensic_events)?;
-    report.job_transitions_deleted = delete_job_transitions_beyond_cap(conn, policy.job_transitions)?;
+    report.job_transitions_deleted =
+        delete_job_transitions_beyond_cap(conn, policy.job_transitions)?;
 
     if report.deleted_rows() > 0 {
         reclaim_space(conn, policy, &mut report)?;
@@ -183,7 +180,8 @@ mod tests {
     }
 
     fn seed_agent(conn: &Connection) {
-        crate::db::sessions::insert_session_sync(conn, "s1", "p1", "/tmp/p1").expect("seed session");
+        crate::db::sessions::insert_session_sync(conn, "s1", "p1", "/tmp/p1")
+            .expect("seed session");
         crate::db::agents::insert_agent_sync(conn, "a1", "s1", "bash", "IDLE", None)
             .expect("seed agent");
     }
@@ -199,7 +197,11 @@ mod tests {
             insert_event(&conn, "output_chunk", &format!("{{\"text\":\"{i}\"}}"));
         }
         for i in 0..40 {
-            insert_event(&conn, "state_change", &format!("{{\"to\":\"BUSY\",\"i\":{i}}}"));
+            insert_event(
+                &conn,
+                "state_change",
+                &format!("{{\"to\":\"BUSY\",\"i\":{i}}}"),
+            );
         }
 
         let policy = RetentionPolicy {
@@ -279,7 +281,10 @@ mod tests {
 
         assert_eq!(first.deleted_rows(), 0);
         assert_eq!(second.deleted_rows(), 0);
-        assert!(!first.vacuumed, "a small tidy database must not be rewritten");
+        assert!(
+            !first.vacuumed,
+            "a small tidy database must not be rewritten"
+        );
     }
 
     /// The property this exists for: churn must not ratchet the file upward.

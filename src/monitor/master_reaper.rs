@@ -2,11 +2,11 @@ use crate::completion::reader::{LogCursorMap, collect_provider_log_cursors};
 use crate::db::Db;
 use crate::db::sessions::query_session_by_id;
 use crate::error::CcbdError;
+use crate::home_materialization::sandbox_home_for_sandbox_dir;
 use crate::master_revival::{
     confirm_master_stable, master_runtime_generation_matches,
     remove_master_monitor_key_if_generation_matches,
 };
-use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
 use crate::rpc::Ctx;
 use crate::rpc::handlers::{RealignAgentParams, spawn_realign_agent};
 use crate::sandbox::{EnvState, SandboxOverrides, path, systemd};
@@ -70,7 +70,7 @@ pub(crate) async fn spawn_replacement_master_pane(
         let sandbox_dir = path::resolve_sandbox_dir(state_dir, session_id, "master", &master_cwd)?;
         let home_root = sandbox_home_for_sandbox_dir(&sandbox_dir)?;
         let provider = revive_master_provider(master_cmd);
-        master_env_vars.extend(crate::provider::home_layout::provider_home_env(
+        master_env_vars.extend(crate::home_materialization::provider_home_env(
             provider.as_deref().unwrap_or_default(),
             &home_root,
         ));
@@ -82,7 +82,7 @@ pub(crate) async fn spawn_replacement_master_pane(
                     }
                 })?;
             let shared_credentials_dir =
-                crate::provider::home_layout::validate_claude_shared_credentials_dir(
+                crate::home_materialization::validate_claude_shared_credentials_dir(
                     &shared_credentials_dir,
                 )?;
             master_env_vars.insert(
@@ -891,7 +891,7 @@ pub(crate) fn master_revival_redispatch_marker_path(
         .join(format!("redispatch-generation-{revived_generation}.json"))
 }
 
-pub(crate) async fn inject_master_continue_instruction_best_effort<F, Fut>(
+pub(crate) async fn inject_master_continue_instruction<F, Fut>(
     tmux_server: &TmuxServer,
     pane: &crate::tmux::TmuxPaneId,
     redispatch_marker_path: Option<&Path>,
@@ -906,25 +906,22 @@ where
         marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
         "injecting continue instruction into revived master pane"
     );
-    match writer(
+    if let Err(err) = writer(
         tmux_server,
         pane.clone(),
         MASTER_REVIVE_CONTINUE_INSTRUCTION.to_string(),
     )
     .await
     {
-        Ok(()) => {
-            tracing::info!(pane = %pane.0, "continue instruction injected into revived master pane");
-        }
-        Err(err) => {
-            tracing::warn!(
-                pane = %pane.0,
-                error = %err,
-                marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
-                "failed to inject continue instruction into revived master pane; revive continues"
-            );
-        }
+        tracing::warn!(
+            pane = %pane.0,
+            error = %err,
+            marker = ?redispatch_marker_path.map(|path| path.display().to_string()),
+            "revived master continue delivery was not causally confirmed; readiness is blocked"
+        );
+        return Err(err);
     }
+    tracing::info!(pane = %pane.0, "continue instruction delivery confirmed in revived master pane");
     Ok(())
 }
 

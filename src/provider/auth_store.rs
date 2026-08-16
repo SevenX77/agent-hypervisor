@@ -11,6 +11,7 @@
 //! provider's own login flow. ah never reads, writes or moves credential
 //! values itself.
 
+pub use crate::provider::AuthStoreSpec;
 use std::path::{Path, PathBuf};
 
 /// How a provider stores its login on a given operating system.
@@ -20,17 +21,6 @@ use std::path::{Path, PathBuf};
 /// tokens in the Keychain — there is no file to inspect, only a status command
 /// to run. Baking the Linux shape into shared logic is how a check ends up
 /// lying on other platforms.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthStoreSpec {
-    /// A regular file at this path below the environment's home.
-    File { relative_path: &'static str },
-    /// Backed by an OS credential service; only the provider's own status
-    /// command can inspect it.
-    OsCredentialService { probe_hint: &'static str },
-    /// ah does not manage this provider's login on this OS.
-    Unmanaged,
-}
-
 /// The provider's official way into a browser login, when it has one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LoginCommand {
@@ -39,79 +29,69 @@ pub struct LoginCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthStoreStatus {
-    Healthy { path: PathBuf },
+    Healthy {
+        path: PathBuf,
+    },
     /// No store at all: the environment has never logged in.
-    Missing { path: PathBuf },
+    Missing {
+        path: PathBuf,
+    },
     /// The provider wrote an explicit logged-out marker (claude writes an
     /// `expiresAt: 0` stub on logout).
-    LoggedOut { path: PathBuf },
+    LoggedOut {
+        path: PathBuf,
+    },
     /// The store exists but is not a parseable credential file.
-    Unreadable { path: PathBuf, details: String },
+    Unreadable {
+        path: PathBuf,
+        details: String,
+    },
     /// The store reaches into a different environment: a symlink whose target
     /// crosses the WSL/Windows interop boundary, or a file living on a
     /// Windows-mounted filesystem. Sharing a chain across that boundary is
     /// how logins die (decision 0006).
-    ForeignEnvironment { path: PathBuf, target: PathBuf },
+    ForeignEnvironment {
+        path: PathBuf,
+        target: PathBuf,
+    },
     /// Nothing to check on this OS (unmanaged, or inspectable only through
     /// the provider's own tooling).
-    NotCheckable { reason: &'static str },
+    NotCheckable {
+        reason: &'static str,
+    },
 }
 
 impl AuthStoreStatus {
-    /// Whether seats of this provider can be expected to authenticate.
+    /// Whether the persisted store itself proves that a seat can attempt
+    /// authentication. `NotCheckable` deliberately stays false: callers must
+    /// run the provider-owned status command instead of treating ignorance as
+    /// a healthy login.
     pub fn is_healthy(&self) -> bool {
-        matches!(self, Self::Healthy { .. } | Self::NotCheckable { .. })
+        matches!(self, Self::Healthy { .. })
     }
 }
 
 /// The storage spec for a provider on one OS (`std::env::consts::OS` values).
 pub fn auth_store_spec(provider: &str, os: &str) -> AuthStoreSpec {
-    let provider = crate::provider::manifest::canonicalize_provider_name(provider);
-    match (provider, os) {
-        ("codex", "linux" | "macos") => AuthStoreSpec::File {
-            relative_path: ".codex/auth.json",
-        },
-        ("claude", "linux") => AuthStoreSpec::File {
-            relative_path: ".claude/.credentials.json",
-        },
-        // On macOS Claude keeps OAuth tokens in the Keychain; there is no
-        // file whose absence would mean anything.
-        ("claude", "macos") => AuthStoreSpec::OsCredentialService {
-            probe_hint: "claude auth status",
-        },
-        ("antigravity", "linux" | "macos") => AuthStoreSpec::File {
-            relative_path: ".gemini/antigravity-cli/antigravity-oauth-token",
-        },
-        // Native Windows stores belong to the Windows environment; ah's
-        // runtime does not manage them (decision 0006).
-        _ => AuthStoreSpec::Unmanaged,
-    }
+    crate::provider::adapter(provider)
+        .map(|adapter| adapter.auth_spec().store_for_os(os))
+        .unwrap_or(AuthStoreSpec::Unmanaged)
 }
 
-/// The provider's login doorway. `None` means the provider has no dedicated
-/// login command (antigravity signs in on first interactive run), so the
-/// doorman can only print instructions, not open the door itself.
+/// The provider's login doorway. For a first-run TUI this is the provider
+/// executable itself; the provider-owned auth spec declares how AH safely
+/// reaches its login challenge.
 pub fn login_command(provider: &str) -> Option<LoginCommand> {
-    match crate::provider::manifest::canonicalize_provider_name(provider) {
-        "codex" => Some(LoginCommand {
-            argv: &["codex", "login"],
-        }),
-        "claude" => Some(LoginCommand {
-            argv: &["claude", "auth", "login"],
-        }),
-        _ => None,
-    }
+    crate::provider::adapter(provider)
+        .and_then(|adapter| adapter.auth_spec().login_argv(false))
+        .map(|argv| LoginCommand { argv })
 }
 
 /// The one-line remedy for an unhealthy store, ready to paste into a shell.
 pub fn login_remedy(provider: &str) -> String {
     match login_command(provider) {
         Some(command) => command.argv.join(" "),
-        None => format!(
-            "run `{}` once in an interactive terminal to sign in",
-            crate::provider::manifest::canonicalize_provider_name(provider)
-                .replace("antigravity", "agy")
-        ),
+        None => format!("no login flow is declared for provider `{provider}`"),
     }
 }
 
@@ -217,7 +197,42 @@ fn check_auth_store_for_os(
     match provider {
         "claude" => classify_claude_store(path),
         "codex" => classify_codex_store(path),
+        "antigravity" => classify_antigravity_store(path),
         _ => AuthStoreStatus::Healthy { path },
+    }
+}
+
+fn classify_antigravity_store(path: PathBuf) -> AuthStoreStatus {
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(err) => {
+            return AuthStoreStatus::Unreadable {
+                path,
+                details: err.to_string(),
+            };
+        }
+    };
+    if raw.trim().is_empty() {
+        return AuthStoreStatus::LoggedOut { path };
+    }
+    let parsed: serde_json::Value = match serde_json::from_str(&raw) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return AuthStoreStatus::Unreadable {
+                path,
+                details: err.to_string(),
+            };
+        }
+    };
+    let has_refresh_token = parsed
+        .get("token")
+        .and_then(|token| token.get("refresh_token"))
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|token| !token.is_empty());
+    if has_refresh_token {
+        AuthStoreStatus::Healthy { path }
+    } else {
+        AuthStoreStatus::LoggedOut { path }
     }
 }
 
@@ -266,7 +281,7 @@ fn read_json(path: &Path) -> Result<serde_json::Value, String> {
 
 /// Returns the interop mount a path lives on, if any (Linux/WSL only).
 fn windows_interop_target(path: &Path) -> Option<PathBuf> {
-    crate::provider::home_layout::windows_interop_mount_point(path).map(PathBuf::from)
+    crate::home_materialization::windows_interop_mount_point(path).map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -294,18 +309,32 @@ mod tests {
             auth_store_spec("claude", "macos"),
             AuthStoreSpec::OsCredentialService { .. }
         ),);
-        assert_eq!(auth_store_spec("claude", "windows"), AuthStoreSpec::Unmanaged);
-        assert_eq!(auth_store_spec("codex", "windows"), AuthStoreSpec::Unmanaged);
+        assert_eq!(
+            auth_store_spec("claude", "windows"),
+            AuthStoreSpec::Unmanaged
+        );
+        assert_eq!(
+            auth_store_spec("codex", "windows"),
+            AuthStoreSpec::Unmanaged
+        );
     }
 
     #[test]
     fn a_missing_store_asks_for_a_first_login() {
         let home = tempfile::TempDir::new().unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::Missing { .. }));
+        assert!(!status.is_healthy());
+    }
+
+    #[test]
+    fn an_opaque_store_is_not_healthy_without_a_provider_status_probe() {
+        let status = AuthStoreStatus::NotCheckable {
+            reason: "stored in the OS credential service",
+        };
+
         assert!(!status.is_healthy());
     }
 
@@ -319,8 +348,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(status.is_healthy(), "got {status:?}");
     }
@@ -335,8 +363,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::LoggedOut { .. }));
     }
@@ -353,8 +380,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
 
         assert!(status.is_healthy(), "got {status:?}");
     }
@@ -372,8 +398,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &mnt_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &mnt_boundary);
 
         assert!(
             matches!(status, AuthStoreStatus::ForeignEnvironment { .. }),
@@ -414,8 +439,7 @@ mod tests {
         fs::create_dir_all(home.path().join(".codex")).unwrap();
         fs::write(home.path().join(".codex/auth.json"), "not json").unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::Unreadable { .. }));
     }
@@ -425,7 +449,37 @@ mod tests {
         assert_eq!(login_remedy("codex"), "codex login");
         assert_eq!(login_remedy("claude"), "claude auth login");
         let agy = login_remedy("antigravity");
-        assert!(agy.contains("agy"), "got {agy}");
-        assert!(login_command("antigravity").is_none());
+        assert_eq!(agy, "agy");
+        assert_eq!(login_command("antigravity").unwrap().argv, &["agy"]);
+    }
+
+    #[test]
+    fn an_empty_antigravity_token_file_is_logged_out() {
+        let home = tempfile::TempDir::new().unwrap();
+        let dir = home.path().join(".gemini/antigravity-cli");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("antigravity-oauth-token"), "").unwrap();
+
+        let status =
+            check_auth_store_for_os("antigravity", home.path(), None, "linux", &no_boundary);
+
+        assert!(matches!(status, AuthStoreStatus::LoggedOut { .. }));
+    }
+
+    #[test]
+    fn antigravity_requires_a_refreshable_token_shape() {
+        let home = tempfile::TempDir::new().unwrap();
+        let dir = home.path().join(".gemini/antigravity-cli");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("antigravity-oauth-token"),
+            r#"{"auth_method":"oauth-personal","token":{"access_token":"a","refresh_token":"r","expiry":"2026-08-10T00:00:00Z","token_type":"Bearer"}}"#,
+        )
+        .unwrap();
+
+        let status =
+            check_auth_store_for_os("antigravity", home.path(), None, "linux", &no_boundary);
+
+        assert!(matches!(status, AuthStoreStatus::Healthy { .. }));
     }
 }

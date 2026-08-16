@@ -1,5 +1,5 @@
 use crate::db::master_recovery::{AnchorCascadeDecision, decide_anchor_cascade_sync};
-use crate::db::{self, Db};
+use crate::db::{self as db, Db};
 use rusqlite::OptionalExtension;
 #[cfg(unix)]
 use std::fs::File;
@@ -222,7 +222,7 @@ mod tests {
         begin_master_recovery_window_sync, complete_master_recovery_window_sync,
     };
     use crate::db::sessions::insert_session_sync;
-    use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
+    use crate::home_materialization::sandbox_home_for_sandbox_dir;
     use crate::tmux::TmuxPaneId;
     use std::path::Path;
     use std::sync::Arc;

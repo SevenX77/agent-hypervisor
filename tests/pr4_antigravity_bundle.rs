@@ -1,10 +1,10 @@
 #![cfg(unix)]
 
-use ah::provider::bundles::{BundleRole, resolve_bundles_for_provider};
-use ah::provider::extensions::ExtensionConfig;
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     HomeLayoutRole, HookPushContext, prepare_home_layout_with_extensions_for_slot,
 };
+use ah::provider::bundles::{BundleRole, resolve_bundles_for_provider};
+use ah::provider::extensions::ExtensionConfig;
 use serde_json::{Value, json};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -34,12 +34,9 @@ impl HostFixture {
             &serde_json::to_string_pretty(&json!({
                 "user-hooks": {
                     "Stop": [{
-                        "matcher": "",
-                        "hooks": [{
-                            "type": "command",
-                            "command": "/host/user-stop",
-                            "timeout": 9
-                        }]
+                        "type": "command",
+                        "command": "/host/user-stop",
+                        "timeout": 9
                     }]
                 }
             }))
@@ -171,6 +168,7 @@ fn antigravity_hook_ctx(sandbox: &Path, slot_id: &str) -> HookPushContext {
     HookPushContext {
         agent_id: slot_id.to_string(),
         provider: "antigravity".to_string(),
+        lifecycle_id: format!("lifecycle-{slot_id}"),
         ahd_socket_path: sandbox.join("ahd.sock"),
         enabled: true,
     }
@@ -211,12 +209,11 @@ fn read_json(path: &Path) -> Value {
 }
 
 fn count_ah_notify_hooks(hooks: &Value) -> usize {
-    let Some(groups) = hooks["ah-completion-push"]["Stop"].as_array() else {
+    let Some(items) = hooks["ah-completion-push"]["Stop"].as_array() else {
         return 0;
     };
-    groups
+    items
         .iter()
-        .flat_map(|group| group["hooks"].as_array().into_iter().flatten())
         .filter(|item| {
             item["command"]
                 .as_str()
@@ -280,7 +277,7 @@ fn antigravity_bundle_hooks_translate_to_named_hooks_and_enable_gate() {
 
     let hooks = read_json(&home.join(".gemini/config/hooks.json"));
     assert_eq!(
-        hooks["user-hooks"]["Stop"][0]["hooks"][0]["command"],
+        hooks["user-hooks"]["Stop"][0]["command"],
         "/host/user-stop",
         "host antigravity hooks must be preserved from {}",
         fixture.host_home().display()

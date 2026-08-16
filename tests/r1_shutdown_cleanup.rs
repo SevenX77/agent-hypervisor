@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use ah::db::{self, agents, sessions};
+use ah::db::{self as db, agents, sessions};
 use ah::tmux::scope::ScopePolicy;
 use ah::tmux::{TmuxServer, agent_session_name, master_session_name};
 use std::path::PathBuf;

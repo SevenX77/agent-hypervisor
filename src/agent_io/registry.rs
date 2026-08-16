@@ -311,7 +311,7 @@ mod tests {
         std::fs::create_dir_all(&pipes).unwrap();
         std::fs::create_dir_all(&sandbox).unwrap();
         let home_root =
-            crate::provider::home_layout::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
+            crate::home_materialization::sandbox_home_for_sandbox_dir(&sandbox).unwrap();
         std::fs::create_dir_all(home_root.join(".codex")).unwrap();
         std::fs::write(home_root.join(".codex/auth.json"), b"token").unwrap();
         let fifo_path = pipes.join("ag_cleanup.fifo");

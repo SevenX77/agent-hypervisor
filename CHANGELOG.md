@@ -6,6 +6,37 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.15.0] - 2026-08-16
+
+### Added
+- Adopt Zeroth's governed Work Execution runtime while retaining the public
+  `ah`/`ahd` binaries, `ah.toml` v1, CLI, JSON-RPC transport, provider names,
+  and project/state directory layout.
+- Add provider-neutral runtime observations with independent process and turn
+  dimensions, source precedence, freshness handling, lifecycle/turn fencing,
+  idempotent observation IDs, and explicit unknown/conflicted outcomes.
+- Add exact coordinator-owned execution bindings to `ah ask --binding`; the
+  canonical 22-field binding is persisted with the Job and returned by
+  `ah pend --json` and runtime snapshots.
+- Add typed provider contracts, lifecycle control, guarded action/observation
+  loops, prompt delivery, home materialization, OAuth flows, and resource
+  metering extracted from Zeroth Work Execution.
+
+### Changed
+- Runtime snapshot schema is version 3. Legacy `state`/`sub_state` remain as
+  diagnostics; `provider_status` is the authoritative provider projection.
+- Job terminal receipts now include agent, provider, request identity, error,
+  reply, and governance binding. Completion remains distinct from upstream
+  acceptance or Effect proof.
+
+### Fixed
+- Delayed hooks and transcript callbacks are fenced to the lifecycle and turn
+  they observed, preventing stale completion from mutating a replacement run.
+- Cancellation and prompt input use causal action-observation confirmation;
+  timeouts remain unsettled instead of being reported as successful effects.
+- Upgrading a 1.14 database now adds and backfills lifecycle identity plus the
+  new provider-observation and execution-binding schema idempotently.
+
 ## [1.14.3] - 2026-08-07
 
 ### Fixed
@@ -567,6 +598,7 @@ workspaces. The daemon owns state, sessions, workers, recovery, and event
 streams; the CLI drives it over JSON-RPC on a Unix socket.
 
 [1.3.1]: https://github.com/SevenX77/ah/releases/tag/v1.3.1
+[1.15.0]: https://github.com/SevenX77/ah/releases/tag/v1.15.0
 [1.3.0]: https://github.com/SevenX77/ah/releases/tag/v1.3.0
 [1.2.0]: https://github.com/SevenX77/ah/releases/tag/v1.2.0
 [1.1.0]: https://github.com/SevenX77/ah/releases/tag/v1.1.0

@@ -50,7 +50,7 @@ impl Drop for SandboxDirGuard {
         let Some(path) = self.path.take() else {
             return;
         };
-        match crate::provider::home_layout::sandbox_home_for_sandbox_dir(&path) {
+        match crate::home_materialization::sandbox_home_for_sandbox_dir(&path) {
             Ok(home_root) => {
                 // A failed spawn usually leaves an empty home, but a spawn that
                 // failed while recovering onto a preserved home would take that
@@ -143,7 +143,7 @@ fn validate_id_charset(field: &str, value: &str) -> Result<(), CcbdError> {
 mod tests {
     use super::{SandboxDirGuard, resolve_sandbox_dir};
     use crate::error::CcbdError;
-    use crate::provider::home_layout::sandbox_home_for_sandbox_dir;
+    use crate::home_materialization::sandbox_home_for_sandbox_dir;
 
     #[test]
     fn test_resolve_sandbox_dir_creates_directory() {
@@ -190,7 +190,8 @@ mod tests {
     fn test_resolve_sandbox_dir_rejects_invalid_session_id() {
         let tmp = tempfile::TempDir::new().unwrap();
         let empty = resolve_sandbox_dir(tmp.path(), "", "ag_1", tmp.path()).unwrap_err();
-        let traversal = resolve_sandbox_dir(tmp.path(), "../escape", "ag_1", tmp.path()).unwrap_err();
+        let traversal =
+            resolve_sandbox_dir(tmp.path(), "../escape", "ag_1", tmp.path()).unwrap_err();
 
         assert!(matches!(empty, CcbdError::IpcInvalidRequest(_)));
         assert!(matches!(traversal, CcbdError::IpcInvalidRequest(_)));

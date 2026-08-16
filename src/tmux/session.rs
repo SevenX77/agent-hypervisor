@@ -15,6 +15,12 @@ pub enum TmuxWindowSize {
     Follow,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TmuxPaneRuntime {
+    pub pid: i32,
+    pub dead: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct TmuxServer {
     socket_name: String,
@@ -51,6 +57,22 @@ impl TmuxServer {
 
     pub fn socket_name(&self) -> &str {
         &self.socket_name
+    }
+
+    pub(crate) fn socket_path_sync(&self) -> Result<PathBuf, CcbdError> {
+        let args = [
+            "-L",
+            &self.socket_name,
+            "display-message",
+            "-p",
+            "#{socket_path}",
+        ];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        let path = ensure_output_success("tmux", &args, &[], output)?;
+        Ok(PathBuf::from(path.trim()))
     }
 
     pub(crate) fn ensure_session_sync(
@@ -317,6 +339,53 @@ impl TmuxServer {
             .map_err(|_| CcbdError::from(TmuxError::ParsePid(stdout.trim().to_string())))
     }
 
+    pub(crate) fn get_pane_runtime_sync(
+        &self,
+        pane: &TmuxPaneId,
+    ) -> Result<TmuxPaneRuntime, CcbdError> {
+        let args = [
+            "-L",
+            &self.socket_name,
+            "display-message",
+            "-p",
+            "-t",
+            &pane.0,
+            "#{pane_pid}\t#{pane_dead}",
+        ];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        let stdout = ensure_output_success("tmux", &args, &[], output)?;
+        parse_pane_runtime(stdout.trim())
+    }
+
+    pub(crate) fn resize_window_sync(
+        &self,
+        pane: &TmuxPaneId,
+        width: u16,
+        height: u16,
+    ) -> Result<(), CcbdError> {
+        let width = width.to_string();
+        let height = height.to_string();
+        let args = [
+            "-L",
+            &self.socket_name,
+            "resize-window",
+            "-t",
+            &pane.0,
+            "-x",
+            &width,
+            "-y",
+            &height,
+        ];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        ensure_success("tmux", &args, output)
+    }
+
     pub(crate) fn set_remain_on_exit_sync(&self, pane: &TmuxPaneId) -> Result<(), CcbdError> {
         let args = [
             "-L",
@@ -461,6 +530,18 @@ impl TmuxServer {
         ensure_success("tmux", &args, output)
     }
 
+    /// Terminate an entire tmux server. Callers may use this only for a
+    /// socket they own exclusively; normal AH runtime sockets are shared by
+    /// many sessions and must be cleaned through their narrower owners.
+    pub(crate) fn kill_server_sync(&self) -> Result<(), CcbdError> {
+        let args = ["-L", &self.socket_name, "kill-server"];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        ensure_success("tmux", &args, output)
+    }
+
     pub(crate) fn kill_session_if_owned_sync(&self, session_name: &str, expected_pid: i64) -> bool {
         let Some(_pane) = self.find_pane_in_session_by_pid_sync(session_name, expected_pid) else {
             return false;
@@ -517,6 +598,50 @@ impl TmuxServer {
             &self.socket_name,
             "capture-pane",
             "-p",
+            "-t",
+            &pane.0,
+            "-S",
+            "-200",
+        ];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        ensure_output_success("tmux", &args, &[], output)
+    }
+
+    /// Capture pane text while joining soft-wrapped terminal rows. This is
+    /// intended for control surfaces whose payloads (notably OAuth URLs) are
+    /// longer than the fixed tmux width. It is not provider turn-state proof.
+    pub(crate) fn capture_pane_joined_sync(&self, pane: &TmuxPaneId) -> Result<String, CcbdError> {
+        let args = [
+            "-L",
+            &self.socket_name,
+            "capture-pane",
+            "-p",
+            "-J",
+            "-t",
+            &pane.0,
+            "-S",
+            "-200",
+        ];
+        let output = Command::new("tmux")
+            .args(args)
+            .output()
+            .map_err(map_command_io_error)?;
+        ensure_output_success("tmux", &args, &[], output)
+    }
+
+    /// Capture terminal escape sequences as well as text. This is reserved for
+    /// control-effect confirmation (for example a highlighted menu selection)
+    /// and must not be used as provider turn-state evidence.
+    pub(crate) fn capture_pane_control_sync(&self, pane: &TmuxPaneId) -> Result<String, CcbdError> {
+        let args = [
+            "-L",
+            &self.socket_name,
+            "capture-pane",
+            "-p",
+            "-e",
             "-t",
             &pane.0,
             "-S",
@@ -759,6 +884,29 @@ impl TmuxServer {
         .await
     }
 
+    pub async fn get_pane_runtime(&self, pane: TmuxPaneId) -> Result<TmuxPaneRuntime, CcbdError> {
+        let server = self.clone();
+        crate::db::common::spawn_db("tmux::get_pane_runtime", move || {
+            server.get_pane_runtime_sync(&pane)
+        })
+        .await
+    }
+
+    pub async fn find_pane_in_session_by_pid(
+        &self,
+        session_name: String,
+        expected_pid: i64,
+    ) -> Option<TmuxPaneId> {
+        let server = self.clone();
+        crate::db::common::spawn_db("tmux::find_pane_in_session_by_pid", move || {
+            Ok::<Option<TmuxPaneId>, CcbdError>(
+                server.find_pane_in_session_by_pid_sync(&session_name, expected_pid),
+            )
+        })
+        .await
+        .unwrap_or(None)
+    }
+
     pub async fn pipe_pane_to_fifo(
         &self,
         pane: TmuxPaneId,
@@ -849,6 +997,14 @@ impl TmuxServer {
         let server = self.clone();
         crate::db::common::spawn_db("tmux::capture_pane", move || {
             server.capture_pane_sync(&pane)
+        })
+        .await
+    }
+
+    pub async fn capture_pane_control(&self, pane: TmuxPaneId) -> Result<String, CcbdError> {
+        let server = self.clone();
+        crate::db::common::spawn_db("tmux::capture_pane_control", move || {
+            server.capture_pane_control_sync(&pane)
         })
         .await
     }
@@ -1017,12 +1173,43 @@ fn shell_quote_path(path: &Path) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+fn parse_pane_runtime(value: &str) -> Result<TmuxPaneRuntime, CcbdError> {
+    let value = value.trim();
+    let Some((pid, dead)) = value.split_once('\t') else {
+        return Err(CcbdError::from(TmuxError::CommandFailed {
+            cmd: "tmux display-message #{pane_pid} #{pane_dead}".into(),
+            stderr: format!("invalid pane runtime: {value}"),
+            exit: -1,
+        }));
+    };
+    let pid = pid
+        .parse::<i32>()
+        .map_err(|_| CcbdError::from(TmuxError::ParsePid(pid.to_string())))?;
+    let dead = match dead {
+        "0" => false,
+        "1" => true,
+        _ => {
+            return Err(CcbdError::from(TmuxError::CommandFailed {
+                cmd: "tmux display-message #{pane_pid} #{pane_dead}".into(),
+                stderr: format!("invalid pane_dead value: {dead}"),
+                exit: -1,
+            }));
+        }
+    };
+    Ok(TmuxPaneRuntime { pid, dead })
+}
+
 #[cfg(test)]
 pub(crate) fn parse_pane_pid_for_test(value: &str) -> Result<i32, CcbdError> {
     value
         .trim()
         .parse::<i32>()
         .map_err(|_| CcbdError::from(TmuxError::ParsePid(value.trim().to_string())))
+}
+
+#[cfg(test)]
+pub(crate) fn parse_pane_runtime_for_test(value: &str) -> Result<TmuxPaneRuntime, CcbdError> {
+    parse_pane_runtime(value)
 }
 
 #[cfg(test)]
@@ -1076,6 +1263,26 @@ mod tests {
                 "/tmp/project"
             ]
         );
+    }
+
+    #[test]
+    fn pane_runtime_parser_distinguishes_live_and_retained_dead_panes() {
+        assert_eq!(
+            super::parse_pane_runtime_for_test("123\t0").unwrap(),
+            super::TmuxPaneRuntime {
+                pid: 123,
+                dead: false,
+            }
+        );
+        assert_eq!(
+            super::parse_pane_runtime_for_test("456\t1\n").unwrap(),
+            super::TmuxPaneRuntime {
+                pid: 456,
+                dead: true,
+            }
+        );
+        assert!(super::parse_pane_runtime_for_test("123\tmaybe").is_err());
+        assert!(super::parse_pane_runtime_for_test("missing-dead-flag").is_err());
     }
 
     #[test]

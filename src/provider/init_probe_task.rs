@@ -4,7 +4,7 @@ use crate::db::events::UNKNOWN_PATTERN_STABLE;
 use crate::db::learned_rules::{
     CursorAnchor, LearnedRule, LearnedRuleCategory, RuleFingerprint, lookup_learned_rules_sync,
 };
-use crate::db::{self, Db};
+use crate::db::{self as db, Db};
 use crate::error::CcbdError;
 use crate::marker::MarkerMatcher;
 use crate::prompt_handler::integration::is_prompt_handling_provider;
@@ -13,6 +13,7 @@ use crate::prompt_handler::llm_client::RealHaikuClassifier;
 use crate::prompt_handler::runner::{
     PromptRunOutcome, RunnerContext, TmuxPromptIo, handle_prompt_chain,
 };
+use crate::provider::auth_flow::{StartupAuthDisposition, advance_startup_auth};
 use crate::provider::manifest::InitProbeKind;
 use crate::tmux::{TmuxPaneId, TmuxServer};
 use serde_json::json;
@@ -29,6 +30,9 @@ const POLL_SWITCH: Duration = Duration::from_secs(5);
 pub const STABLE_UNKNOWN_STARTUP_GRACE: Duration = Duration::from_secs(10);
 const STEADY_COUNT: u32 = 2;
 const UNKNOWN_PATTERN_SELF_HEALED: &str = "UNKNOWN_PATTERN_SELF_HEALED";
+const PROVIDER_AUTH_REQUIRED: &str = "PROVIDER_AUTH_REQUIRED";
+const PROVIDER_AUTH_COMPLETED: &str = "PROVIDER_AUTH_COMPLETED";
+const AUTH_INTERVENTION_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 pub fn spawn_init_probe_task(
     agent_id: String,
@@ -116,14 +120,19 @@ async fn run_init_probe_task(
     idle_scan_enabled: Arc<AtomicBool>,
 ) -> Result<(), CcbdError> {
     let probe = probe_kind.build();
+    let mut cli_lifecycle =
+        crate::lifecycle::CliLifecycleProgress::new(crate::lifecycle::CliLifecyclePhase::Starting);
+    cli_lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::WaitingForStandby)?;
     let start = tokio::time::Instant::now();
-    let deadline_at = start + deadline;
+    let mut deadline_at = start + deadline;
     let mut consecutive = 0_u32;
     let mut last_capture = String::new();
     let mut stable_unknown = StableUnknownDetector::default();
+    let mut auth_intervention_emitted = false;
 
     loop {
         if tokio::time::Instant::now() >= deadline_at {
+            cli_lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::Failed)?;
             mark_unknown_after_timeout(db, agent_id, last_capture).await?;
             return Ok(());
         }
@@ -138,6 +147,39 @@ async fn run_init_probe_task(
                     );
                     sleep_init_probe_poll(start).await;
                     continue;
+                }
+
+                match advance_startup_auth(&provider, tmux.clone(), pane.clone(), &capture).await {
+                    Ok(StartupAuthDisposition::NotAuth) => {}
+                    Ok(StartupAuthDisposition::Challenge { authorization_url }) => {
+                        consecutive = 0;
+                        last_capture = capture;
+                        if !auth_intervention_emitted {
+                            mark_provider_auth_intervention(
+                                db.clone(),
+                                agent_id.clone(),
+                                provider.clone(),
+                                Some(authorization_url),
+                                None,
+                            )
+                            .await?;
+                            auth_intervention_emitted = true;
+                            deadline_at = tokio::time::Instant::now() + AUTH_INTERVENTION_TIMEOUT;
+                        }
+                        sleep_init_probe_poll(start).await;
+                        continue;
+                    }
+                    Err(err) => {
+                        mark_provider_auth_intervention(
+                            db.clone(),
+                            agent_id.clone(),
+                            provider.clone(),
+                            None,
+                            Some(err.to_string()),
+                        )
+                        .await?;
+                        return Ok(());
+                    }
                 }
 
                 let learned_detected =
@@ -160,8 +202,14 @@ async fn run_init_probe_task(
                         {
                             Ok(StartupPromptScan::ReadyConfirmed) => {
                                 if record_readiness_match(&mut consecutive) {
-                                    mark_idle_after_seed_probe(db, agent_id, idle_scan_enabled)
-                                        .await?;
+                                    confirm_cli_standby(&mut cli_lifecycle)?;
+                                    mark_idle_after_seed_probe(
+                                        db,
+                                        agent_id,
+                                        idle_scan_enabled,
+                                        auth_intervention_emitted,
+                                    )
+                                    .await?;
                                     return Ok(());
                                 }
                             }
@@ -171,8 +219,14 @@ async fn run_init_probe_task(
                             Ok(StartupPromptScan::Deferred) => {
                                 if provider_seed_probe_can_count_as_ready(probe_kind) {
                                     if record_readiness_match(&mut consecutive) {
-                                        mark_idle_after_seed_probe(db, agent_id, idle_scan_enabled)
-                                            .await?;
+                                        confirm_cli_standby(&mut cli_lifecycle)?;
+                                        mark_idle_after_seed_probe(
+                                            db,
+                                            agent_id,
+                                            idle_scan_enabled,
+                                            auth_intervention_emitted,
+                                        )
+                                        .await?;
                                         return Ok(());
                                     }
                                 } else {
@@ -182,8 +236,14 @@ async fn run_init_probe_task(
                             Ok(StartupPromptScan::Pending) => {
                                 if provider_seed_probe_can_count_as_ready(probe_kind) {
                                     if record_readiness_match(&mut consecutive) {
-                                        mark_idle_after_seed_probe(db, agent_id, idle_scan_enabled)
-                                            .await?;
+                                        confirm_cli_standby(&mut cli_lifecycle)?;
+                                        mark_idle_after_seed_probe(
+                                            db,
+                                            agent_id,
+                                            idle_scan_enabled,
+                                            auth_intervention_emitted,
+                                        )
+                                        .await?;
                                         return Ok(());
                                     }
                                 } else {
@@ -201,6 +261,7 @@ async fn run_init_probe_task(
                         }
                     } else {
                         if record_readiness_match(&mut consecutive) {
+                            confirm_cli_standby(&mut cli_lifecycle)?;
                             if learned_detected {
                                 mark_idle_after_learned_startup_readiness(
                                     db,
@@ -209,7 +270,13 @@ async fn run_init_probe_task(
                                 )
                                 .await?;
                             } else {
-                                mark_idle_after_seed_probe(db, agent_id, idle_scan_enabled).await?;
+                                mark_idle_after_seed_probe(
+                                    db,
+                                    agent_id,
+                                    idle_scan_enabled,
+                                    auth_intervention_emitted,
+                                )
+                                .await?;
                             }
                             return Ok(());
                         }
@@ -229,7 +296,14 @@ async fn run_init_probe_task(
                     match startup_scan {
                         Ok(StartupPromptScan::ReadyConfirmed) => {
                             if record_readiness_match(&mut consecutive) {
-                                mark_idle_after_seed_probe(db, agent_id, idle_scan_enabled).await?;
+                                confirm_cli_standby(&mut cli_lifecycle)?;
+                                mark_idle_after_seed_probe(
+                                    db,
+                                    agent_id,
+                                    idle_scan_enabled,
+                                    auth_intervention_emitted,
+                                )
+                                .await?;
                                 return Ok(());
                             }
                         }
@@ -286,6 +360,15 @@ async fn run_init_probe_task(
 
         sleep_init_probe_poll(start).await;
     }
+}
+
+fn confirm_cli_standby(
+    lifecycle: &mut crate::lifecycle::CliLifecycleProgress,
+) -> Result<(), CcbdError> {
+    if lifecycle.phase() == crate::lifecycle::CliLifecyclePhase::WaitingForStandby {
+        lifecycle.confirm(crate::lifecycle::CliLifecyclePhase::Standby)?;
+    }
+    Ok(())
 }
 
 async fn sleep_init_probe_poll(start: tokio::time::Instant) {
@@ -541,6 +624,7 @@ async fn mark_idle_after_seed_probe(
     db: Arc<Db>,
     agent_id: String,
     idle_scan_enabled: Arc<AtomicBool>,
+    auth_intervention: bool,
 ) -> Result<(), CcbdError> {
     let previous_state =
         crate::db::agents::query_agent_state(db.as_ref().clone(), agent_id.clone()).await?;
@@ -558,7 +642,12 @@ async fn mark_idle_after_seed_probe(
         .await
         {
             Ok(()) => {
-                emit_unknown_pattern_self_healed(db.clone(), agent_id.clone()).await?;
+                if auth_intervention {
+                    emit_provider_auth_completed(db.clone(), agent_id.clone()).await?;
+                } else {
+                    emit_unknown_pattern_self_healed(db.clone(), agent_id.clone()).await?;
+                }
+                record_startup_ready_observation(db.as_ref(), &agent_id)?;
                 finish_startup_readiness(&agent_id, &idle_scan_enabled);
             }
             Err(CcbdError::AgentWrongState { .. }) => {}
@@ -572,11 +661,80 @@ async fn mark_idle_after_seed_probe(
             if let Some(job_id) = affected_job {
                 crate::orchestrator::pubsub::notify_job_update(&job_id);
             }
+            record_startup_ready_observation(db.as_ref(), &agent_id)?;
             finish_startup_readiness(&agent_id, &idle_scan_enabled);
         }
         Ok(_) => {}
         Err(err) => return Err(err),
     }
+    Ok(())
+}
+
+async fn mark_provider_auth_intervention(
+    db: Arc<Db>,
+    agent_id: String,
+    provider: String,
+    authorization_url: Option<String>,
+    driver_error: Option<String>,
+) -> Result<(), CcbdError> {
+    let state = crate::db::agents::query_agent_state(db.as_ref().clone(), agent_id.clone()).await?;
+    match state.as_ref().map(|(state, _)| state.as_str()) {
+        Some(db::state_machine::STATE_SPAWNING) => {
+            db::state_machine::transit_agent_state(
+                db.as_ref().clone(),
+                agent_id.clone(),
+                vec![db::state_machine::STATE_SPAWNING.to_string()],
+                db::state_machine::STATE_SPAWNING_INTERVENTION.to_string(),
+                Some(PROVIDER_AUTH_REQUIRED.to_string()),
+            )
+            .await?;
+        }
+        Some(db::state_machine::STATE_SPAWNING_INTERVENTION) => {}
+        Some(current) => {
+            return Err(CcbdError::AgentWrongState {
+                current_state: current.to_string(),
+            });
+        }
+        None => return Err(CcbdError::AgentNotFound(agent_id)),
+    }
+
+    let documentation_url = crate::provider::adapter(&provider)
+        .and_then(|adapter| adapter.auth_spec().documentation_url);
+    let payload = json!({
+        "provider": provider,
+        "authorization_url": authorization_url,
+        "driver_error": driver_error,
+        "documentation_url": documentation_url,
+        "completion": "paste the browser authorization code into the official provider pane",
+        "attach_command": format!("ah attach agent {agent_id}"),
+    });
+    crate::db::events::insert_event_and_notify(
+        db.as_ref().clone(),
+        agent_id,
+        None,
+        PROVIDER_AUTH_REQUIRED.to_string(),
+        payload.to_string(),
+    )
+    .await?;
+    crate::orchestrator::wake_up();
+    Ok(())
+}
+
+async fn emit_provider_auth_completed(db: Arc<Db>, agent_id: String) -> Result<(), CcbdError> {
+    let payload = json!({
+        "supersedes": PROVIDER_AUTH_REQUIRED,
+        "from": db::state_machine::STATE_SPAWNING_INTERVENTION,
+        "to": db::state_machine::STATE_IDLE,
+        "reason": "PROVIDER_READY_AFTER_AUTH",
+    });
+    crate::db::events::insert_event_and_notify(
+        db.as_ref().clone(),
+        agent_id,
+        None,
+        PROVIDER_AUTH_COMPLETED.to_string(),
+        payload.to_string(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -586,6 +744,22 @@ fn finish_startup_readiness(agent_id: &str, idle_scan_enabled: &AtomicBool) {
     if let Some(handle) = crate::marker::registry::take(agent_id) {
         let _ = handle.cancel_tx.send(());
     }
+}
+
+fn record_startup_ready_observation(db: &Db, agent_id: &str) -> Result<(), CcbdError> {
+    let conn = db.conn();
+    crate::runtime_observation::store::append_for_current_lifecycle_sync(
+        &conn,
+        &format!("startup-ready:{}", crate::outbox::new_event_id()),
+        agent_id,
+        None,
+        crate::runtime_observation::EvidenceSource::TerminalPane,
+        crate::runtime_observation::ProviderObservationKind::Turn(
+            crate::runtime_observation::ProviderTurnState::Ready,
+        ),
+        crate::runtime_observation::store::now_epoch_millis(),
+    )?;
+    Ok(())
 }
 
 async fn emit_unknown_pattern_self_healed(db: Arc<Db>, agent_id: String) -> Result<(), CcbdError> {
@@ -625,6 +799,7 @@ async fn mark_idle_after_learned_startup_readiness(
     .await
     {
         Ok(()) => {
+            record_startup_ready_observation(db.as_ref(), &agent_id)?;
             crate::orchestrator::wake_up();
             idle_scan_enabled.store(true, Ordering::SeqCst);
             if let Some(handle) = crate::marker::registry::take(&agent_id) {
@@ -717,8 +892,9 @@ async fn mark_unknown_after_timeout(
 #[cfg(test)]
 mod tests {
     use super::{
-        STABLE_UNKNOWN_STARTUP_GRACE, StableUnknownDetector, UNKNOWN_PATTERN_SELF_HEALED,
-        cursor_anchor_matches, learned_rule_matches_capture, mark_idle_after_seed_probe,
+        PROVIDER_AUTH_COMPLETED, PROVIDER_AUTH_REQUIRED, STABLE_UNKNOWN_STARTUP_GRACE,
+        StableUnknownDetector, UNKNOWN_PATTERN_SELF_HEALED, cursor_anchor_matches,
+        learned_rule_matches_capture, mark_idle_after_seed_probe, mark_provider_auth_intervention,
         mark_unknown_after_timeout, record_readiness_match,
     };
     use crate::db::agents::{insert_agent_sync, query_agent_state_sync};
@@ -995,6 +1171,7 @@ mod tests {
             Arc::new(db.clone()),
             "a_seed_si".to_string(),
             idle_scan_enabled.clone(),
+            false,
         )
         .await
         .unwrap();
@@ -1024,6 +1201,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn readiness_after_auth_emits_auth_completion_instead_of_unknown_self_heal() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = init(file.path()).unwrap();
+        seed_spawning_agent(&db, "a_auth_si", state_machine::STATE_SPAWNING_INTERVENTION);
+        let idle_scan_enabled = Arc::new(AtomicBool::new(false));
+
+        mark_idle_after_seed_probe(
+            Arc::new(db.clone()),
+            "a_auth_si".to_string(),
+            idle_scan_enabled.clone(),
+            true,
+        )
+        .await
+        .unwrap();
+
+        let (state, _) = query_agent_state_sync(&db, "a_auth_si").unwrap().unwrap();
+        assert_eq!(state, state_machine::STATE_IDLE);
+        assert!(idle_scan_enabled.load(Ordering::SeqCst));
+        let event_count: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE agent_id = ? AND event_type = ?",
+                ("a_auth_si", PROVIDER_AUTH_COMPLETED),
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 1);
+    }
+
+    #[tokio::test]
+    async fn auth_challenge_moves_spawning_to_intervention_and_exposes_attach_route() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = init(file.path()).unwrap();
+        seed_spawning_agent(&db, "a_auth_required", state_machine::STATE_SPAWNING);
+
+        mark_provider_auth_intervention(
+            Arc::new(db.clone()),
+            "a_auth_required".to_string(),
+            "antigravity".to_string(),
+            Some("https://accounts.example.test/device?state=s1".to_string()),
+            None,
+        )
+        .await
+        .unwrap();
+
+        let (state, _) = query_agent_state_sync(&db, "a_auth_required")
+            .unwrap()
+            .unwrap();
+        assert_eq!(state, state_machine::STATE_SPAWNING_INTERVENTION);
+        let payload: String = db
+            .conn()
+            .query_row(
+                "SELECT payload FROM events WHERE agent_id = ? AND event_type = ?",
+                ("a_auth_required", PROVIDER_AUTH_REQUIRED),
+                |row| row.get(0),
+            )
+            .unwrap();
+        let payload: Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(
+            payload.get("attach_command").and_then(Value::as_str),
+            Some("ah attach agent a_auth_required")
+        );
+        assert!(
+            payload
+                .get("documentation_url")
+                .and_then(Value::as_str)
+                .is_some_and(|url| url.starts_with("https://antigravity.google/"))
+        );
+    }
+
+    #[tokio::test]
     async fn seed_readiness_still_marks_spawning_idle() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = init(file.path()).unwrap();
@@ -1034,6 +1282,7 @@ mod tests {
             Arc::new(db.clone()),
             "a_seed_spawning".to_string(),
             idle_scan_enabled,
+            false,
         )
         .await
         .unwrap();

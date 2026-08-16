@@ -5,12 +5,18 @@ use crate::completion::parser::LogParseResult;
 use crate::completion::reader::{LogCursorMap, LogReadState, read_provider_log_tail_with_state};
 use crate::db;
 use crate::error::CcbdError;
+use crate::runtime_observation::EvidenceSource;
+use crate::runtime_observation::intake::{
+    TranscriptCompletionObservation, WorkingObservation, observe_transcript_completion,
+    observe_working,
+};
 
 pub const LOG_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub const MAX_LOG_MONITOR_WAIT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogMonitorTickOutcome {
+    pub activity_observed: bool,
     pub completed: bool,
     pub woke_orchestrator: bool,
     pub cursors: LogCursorMap,
@@ -23,26 +29,58 @@ pub async fn run_log_monitor_tick(
     provider: &str,
     log_root: &Path,
     state: LogReadState,
+    expected_lifecycle_id: &str,
 ) -> Result<LogMonitorTickOutcome, CcbdError> {
     let read = read_provider_log_tail_with_state(provider, log_root, &state)
         .map_err(|err| CcbdError::PtyIoError(format!("read provider log tail: {err}")))?;
     let updated_cursors = read.cursors.clone();
     let updated_state = read.state.clone();
+    let completion_prompt_fingerprints = read.completion_prompt_fingerprints.clone();
+    let mut activity_observed = false;
+
+    for activity in read.activities {
+        let (provider_turn_id, prompt_fingerprint) = match activity.parsed {
+            LogParseResult::TurnStarted { turn_id } => (turn_id, None),
+            LogParseResult::UserMessage {
+                turn_id,
+                prompt_fingerprint,
+            } => (turn_id, prompt_fingerprint),
+            _ => continue,
+        };
+        let raw_path = activity.raw_path.to_string_lossy().to_string();
+        let outcome = observe_working(WorkingObservation {
+            db: db.clone(),
+            agent_id: agent_id.to_string(),
+            provider: provider.to_string(),
+            expected_lifecycle_id: expected_lifecycle_id.to_string(),
+            source: EvidenceSource::Transcript,
+            evidence_id: format!("log:{raw_path}:{}", activity.raw_offset),
+            provider_turn_id,
+            prompt_fingerprint,
+        })
+        .await?;
+        activity_observed |= outcome.observation_inserted;
+    }
 
     for completion in read.completions {
         let LogParseResult::TurnComplete { turn_id, reply } = completion.parsed else {
             continue;
         };
         let raw_path = completion.raw_path.to_string_lossy().to_string();
-        match db::state_machine::mark_agent_idle_log_event(
-            db.clone(),
-            agent_id.to_string(),
-            provider.to_string(),
+        let prompt_fingerprint = completion_prompt_fingerprints
+            .get(&(completion.raw_path.clone(), completion.raw_offset))
+            .cloned();
+        match observe_transcript_completion(TranscriptCompletionObservation {
+            db: db.clone(),
+            agent_id: agent_id.to_string(),
+            provider: provider.to_string(),
             reply,
             raw_path,
-            completion.raw_offset,
-            turn_id,
-        )
+            raw_offset: completion.raw_offset,
+            provider_turn_id: turn_id,
+            expected_lifecycle_id: expected_lifecycle_id.to_string(),
+            prompt_fingerprint,
+        })
         .await
         {
             Ok((changes, affected_job)) if changes > 0 => {
@@ -51,6 +89,7 @@ pub async fn run_log_monitor_tick(
                 }
                 crate::orchestrator::wake_up();
                 return Ok(LogMonitorTickOutcome {
+                    activity_observed,
                     completed: true,
                     woke_orchestrator: true,
                     cursors: updated_cursors,
@@ -65,6 +104,7 @@ pub async fn run_log_monitor_tick(
     }
 
     Ok(LogMonitorTickOutcome {
+        activity_observed,
         completed: false,
         woke_orchestrator: false,
         cursors: updated_cursors,
@@ -85,6 +125,7 @@ pub fn spawn_log_monitor_task(
     provider: String,
     log_root: std::path::PathBuf,
     initial_state: LogReadState,
+    expected_lifecycle_id: String,
     mut cancel_rx: tokio::sync::oneshot::Receiver<()>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -133,8 +174,15 @@ pub fn spawn_log_monitor_task(
                 }
             }
 
-            match run_log_monitor_tick(db.clone(), &agent_id, &provider, &log_root, state.clone())
-                .await
+            match run_log_monitor_tick(
+                db.clone(),
+                &agent_id,
+                &provider,
+                &log_root,
+                state.clone(),
+                &expected_lifecycle_id,
+            )
+            .await
             {
                 Ok(outcome) => {
                     let observed_progress = log_monitor_observed_progress(&state, &outcome.state);
@@ -166,7 +214,7 @@ mod tests {
     use crate::db::events::insert_event_sync;
     use crate::db::jobs::{insert_job_sync, query_job_sync, update_dispatched_seq_id_sync};
     use crate::db::sessions::insert_session_sync;
-    use crate::db::{self, Db};
+    use crate::db::{self as db, Db};
 
     use super::{
         LOG_MONITOR_POLL_INTERVAL, MAX_LOG_MONITOR_WAIT, log_monitor_observed_progress,
@@ -179,10 +227,28 @@ mod tests {
         )
     }
 
+    fn lifecycle_id(db: &Db, agent_id: &str) -> String {
+        db.conn()
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
     fn seed_busy_dispatched_job(db: &Db, agent_id: &str, job_id: &str) {
+        seed_dispatched_job(db, agent_id, job_id, "BUSY");
+    }
+
+    fn seed_waiting_dispatched_job(db: &Db, agent_id: &str, job_id: &str) {
+        seed_dispatched_job(db, agent_id, job_id, "WAITING_FOR_ACK");
+    }
+
+    fn seed_dispatched_job(db: &Db, agent_id: &str, job_id: &str, state: &str) {
         let conn = db.conn();
         insert_session_sync(&conn, "s_log", "p_log", "/tmp/log").unwrap();
-        insert_agent_sync(&conn, agent_id, "s_log", "codex", "BUSY", Some(123)).unwrap();
+        insert_agent_sync(&conn, agent_id, "s_log", "codex", state, Some(123)).unwrap();
         insert_job_sync(&conn, job_id, agent_id, None, "echo PONG\n").unwrap();
         conn.execute(
             "UPDATE jobs SET status='DISPATCHED', dispatched_at=unixepoch() WHERE id=?",
@@ -206,6 +272,25 @@ mod tests {
         job_id: &str,
         provider: &str,
     ) {
+        seed_dispatched_job_with_provider(db, agent_id, job_id, provider, "BUSY");
+    }
+
+    fn seed_waiting_dispatched_job_with_provider(
+        db: &Db,
+        agent_id: &str,
+        job_id: &str,
+        provider: &str,
+    ) {
+        seed_dispatched_job_with_provider(db, agent_id, job_id, provider, "WAITING_FOR_ACK");
+    }
+
+    fn seed_dispatched_job_with_provider(
+        db: &Db,
+        agent_id: &str,
+        job_id: &str,
+        provider: &str,
+        state: &str,
+    ) {
         let conn = db.conn();
         insert_session_sync(
             &conn,
@@ -219,7 +304,7 @@ mod tests {
             agent_id,
             "s_log_provider",
             provider,
-            "BUSY",
+            state,
             Some(123),
         )
         .unwrap();
@@ -265,6 +350,7 @@ mod tests {
             "codex",
             root.path(),
             LogReadState::default(),
+            &lifecycle_id(&db, agent_id),
         )
         .await
         .unwrap();
@@ -290,14 +376,118 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn codex_task_started_is_the_working_transition_not_pane_motion() {
+        let agent_id = "codex_provider_started";
+        let job_id = "job_codex_provider_started";
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = db::init(file.path()).unwrap();
+        seed_waiting_dispatched_job(&db, agent_id, job_id);
+        let root = tempfile::TempDir::new().unwrap();
+        let log = root.path().join("rollout-session.jsonl");
+        fs::write(
+            &log,
+            r#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-started"}}
+"#,
+        )
+        .unwrap();
+
+        let outcome = run_log_monitor_tick(
+            db.clone(),
+            agent_id,
+            "codex",
+            root.path(),
+            LogReadState::default(),
+            &lifecycle_id(&db, agent_id),
+        )
+        .await
+        .unwrap();
+
+        let (state, sub_state): (String, String) = db
+            .conn()
+            .query_row(
+                "SELECT state, sub_state FROM agents WHERE id=?1",
+                [agent_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let source: String = db
+            .conn()
+            .query_row(
+                "SELECT json_extract(observation_json, '$.source') FROM provider_status_observations WHERE agent_id=?1 AND turn_id=?2 AND json_extract(observation_json, '$.kind.state')='working' ORDER BY observed_at_ms DESC LIMIT 1",
+                rusqlite::params![agent_id, job_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(outcome.activity_observed);
+        assert!(!outcome.completed);
+        assert_eq!(state, "BUSY");
+        assert_eq!(sub_state, "ProviderEvent");
+        assert_eq!(source, "transcript");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mismatched_claude_user_message_cannot_claim_the_dispatched_job() {
+        let agent_id = "claude_prompt_mismatch";
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let db = db::init(file.path()).unwrap();
+        seed_waiting_dispatched_job_with_provider(
+            &db,
+            agent_id,
+            "job_claude_prompt_mismatch",
+            "claude",
+        );
+        let root = tempfile::TempDir::new().unwrap();
+        let log = root.path().join("project/session.jsonl");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        fs::write(
+            &log,
+            r#"{"type":"user","message":{"role":"user","content":"different prompt"}}
+{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"wrong completion"}],"stop_reason":"end_turn"}}
+"#,
+        )
+        .unwrap();
+
+        let outcome = run_log_monitor_tick(
+            db.clone(),
+            agent_id,
+            "claude",
+            root.path(),
+            LogReadState::default(),
+            &lifecycle_id(&db, agent_id),
+        )
+        .await
+        .unwrap();
+        let state: String = db
+            .conn()
+            .query_row("SELECT state FROM agents WHERE id=?1", [agent_id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+
+        assert!(!outcome.activity_observed);
+        assert!(!outcome.completed);
+        assert_eq!(state, "WAITING_FOR_ACK");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn monitor_marks_antigravity_idle_from_transcript_done_marker() {
         let file = tempfile::NamedTempFile::new().unwrap();
         let db = db::init(file.path()).unwrap();
         seed_busy_dispatched_job_with_provider(&db, "a_ag_log", "job_ag_log", "antigravity");
+        db.conn()
+            .execute(
+                "UPDATE jobs SET prompt_text='Summarize the current state' WHERE id='job_ag_log'",
+                [],
+            )
+            .unwrap();
         let root = tempfile::TempDir::new().unwrap();
         write_antigravity_transcript(
             root.path(),
-            include_str!("../../tests/fixtures/antigravity_log/final_reply.jsonl"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/antigravity_log/final_reply.jsonl"
+            )),
         );
 
         let outcome = run_log_monitor_tick(
@@ -306,6 +496,7 @@ mod tests {
             "antigravity",
             root.path(),
             LogReadState::default(),
+            &lifecycle_id(&db, "a_ag_log"),
         )
         .await
         .unwrap();
@@ -352,6 +543,7 @@ mod tests {
             "codex",
             root.path(),
             LogReadState::default(),
+            &lifecycle_id(&db, "a_hook_failed_pull_fallback"),
         )
         .await
         .unwrap();
@@ -394,6 +586,7 @@ mod tests {
             "claude",
             root.path(),
             LogReadState::default(),
+            &lifecycle_id(&db, "a_schema"),
         )
         .await
         .unwrap();

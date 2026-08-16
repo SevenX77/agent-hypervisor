@@ -349,6 +349,18 @@ pub(crate) fn requeue_job_state_conn_sync(
 
     // 3. Delegate to transit_job_state for transition check, status write, and audit row insertion
     transit_job_state(conn, job_id, expected_from, JobStatus::Queued, reason)?;
+    let transition_id = conn.last_insert_rowid();
+    crate::runtime_observation::store::append_for_current_lifecycle_sync(
+        conn,
+        &format!("requeue:{job_id}:{transition_id}"),
+        &job.agent_id,
+        Some(job_id),
+        crate::runtime_observation::EvidenceSource::ControlPlane,
+        crate::runtime_observation::ProviderObservationKind::Turn(
+            crate::runtime_observation::ProviderTurnState::Queued,
+        ),
+        crate::runtime_observation::store::now_epoch_millis(),
+    )?;
 
     Ok(())
 }
@@ -982,6 +994,14 @@ mod additional_requeue_tests {
                 |r| r.get(0),
             ).unwrap();
             assert_eq!(count, 1);
+            let requeue_observations: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id='a1' AND turn_id='job1' AND observation_id LIKE 'requeue:%' AND json_extract(observation_json, '$.kind.state')='queued'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(requeue_observations, 1);
         });
     }
 

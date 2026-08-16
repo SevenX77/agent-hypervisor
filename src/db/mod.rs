@@ -63,14 +63,17 @@ pub fn init(db_path: &Path) -> Result<Db, CcbdError> {
     migrate_sessions_master_pane_id(&conn)?;
     migrate_sessions_config_hash(&conn)?;
     migrate_sessions_master_cmd(&conn)?;
+    migrate_sessions_master_provider(&conn)?;
     migrate_sessions_master_revive_columns(&conn)?;
     migrate_sessions_failed_idle_to_closed(&conn)?;
     migrate_sessions_master_state(&conn)?;
     migrate_sessions_master_pending_tell_request(&conn)?;
     migrate_evidence_record_columns(&conn)?;
+    migrate_agents_lifecycle_id(&conn)?;
     migrate_agents_config_hash(&conn)?;
     migrate_agent_spawn_specs(&conn)?;
     migrate_jobs_evidence_requirements(&conn)?;
+    migrate_jobs_governance_binding(&conn)?;
     migrate_master_cutovers(&conn)?;
     migrate_master_recovery_windows(&conn)?;
 
@@ -78,6 +81,34 @@ pub fn init(db_path: &Path) -> Result<Db, CcbdError> {
         conn: Arc::new(Mutex::new(conn)),
         path: Arc::new(db_path.to_path_buf()),
     })
+}
+
+fn migrate_jobs_governance_binding(conn: &Connection) -> Result<(), CcbdError> {
+    add_column_if_missing(
+        conn,
+        "jobs",
+        "governance_binding_json",
+        "ALTER TABLE jobs ADD COLUMN governance_binding_json TEXT",
+    )
+}
+
+fn migrate_agents_lifecycle_id(conn: &Connection) -> Result<(), CcbdError> {
+    add_column_if_missing(
+        conn,
+        "agents",
+        "lifecycle_id",
+        "ALTER TABLE agents ADD COLUMN lifecycle_id TEXT NOT NULL DEFAULT ''",
+    )?;
+    conn.execute(
+        "UPDATE agents
+         SET lifecycle_id = 'lifecycle_' || lower(hex(randomblob(16)))
+         WHERE trim(lifecycle_id) = ''",
+        [],
+    )
+    .map_err(|err| {
+        CcbdError::DbConstraintViolation(format!("backfill agents.lifecycle_id: {err}"))
+    })?;
+    Ok(())
 }
 
 fn migrate_master_recovery_windows(conn: &Connection) -> Result<(), CcbdError> {
@@ -234,6 +265,15 @@ fn migrate_sessions_master_cmd(conn: &Connection) -> Result<(), CcbdError> {
         "sessions",
         "master_cmd",
         "ALTER TABLE sessions ADD COLUMN master_cmd TEXT",
+    )
+}
+
+fn migrate_sessions_master_provider(conn: &Connection) -> Result<(), CcbdError> {
+    add_column_if_missing(
+        conn,
+        "sessions",
+        "master_provider",
+        "ALTER TABLE sessions ADD COLUMN master_provider TEXT",
     )
 }
 
@@ -530,7 +570,7 @@ fn migrate_sub_state(conn: &Connection) -> Result<(), CcbdError> {
 
 #[cfg(test)]
 mod tests {
-    use super::init;
+    use super::{init, schema};
     use rusqlite::Connection;
 
     #[test]
@@ -635,6 +675,110 @@ mod tests {
 
         assert_eq!(table_count, 1);
         assert_eq!(index_count, 3);
+    }
+
+    #[test]
+    fn test_init_migrates_pre_work_execution_schema_idempotently() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let mut old_schema = schema::SCHEMA_DDL.to_string();
+        for addition in [
+            ",\n    master_provider TEXT",
+            ",\n    lifecycle_id TEXT NOT NULL DEFAULT ''",
+            ",\n    governance_binding_json TEXT",
+        ] {
+            let previous = old_schema.clone();
+            old_schema = old_schema.replace(addition, "");
+            assert_ne!(
+                old_schema, previous,
+                "old schema fixture did not remove {addition}"
+            );
+        }
+        let observation_ddl = r#"CREATE TABLE IF NOT EXISTS provider_status_observations (
+    seq_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_id TEXT NOT NULL UNIQUE,
+    agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    lifecycle_id TEXT NOT NULL,
+    turn_id TEXT,
+    observation_json TEXT NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_provider_status_observations_scope
+ON provider_status_observations(agent_id, lifecycle_id, turn_id, observed_at_ms);
+
+"#;
+        let previous = old_schema.clone();
+        old_schema = old_schema.replace(observation_ddl, "");
+        assert_ne!(
+            old_schema, previous,
+            "old schema fixture retained observation DDL"
+        );
+
+        let conn = Connection::open(file.path()).unwrap();
+        conn.execute_batch(&old_schema).unwrap();
+        conn.execute(
+            "INSERT INTO projects (id, absolute_path) VALUES ('p1', '/tmp/p1')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, project_id, master_pid) VALUES ('s1', 'p1', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO agents (id, session_id, provider, state) VALUES ('a1', 's1', 'codex', 'IDLE')",
+            [],
+        )
+        .unwrap();
+        drop(conn);
+
+        drop(init(file.path()).unwrap());
+        let db = init(file.path()).unwrap();
+        let conn = db.conn();
+        let job_columns = conn
+            .prepare("PRAGMA table_info(jobs)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        assert_eq!(
+            job_columns
+                .iter()
+                .filter(|name| name.as_str() == "governance_binding_json")
+                .count(),
+            1
+        );
+        let agent_lifecycle_id: String = conn
+            .query_row(
+                "SELECT lifecycle_id FROM agents WHERE id = 'a1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(agent_lifecycle_id.starts_with("lifecycle_"));
+        assert_eq!(agent_lifecycle_id.len(), "lifecycle_".len() + 32);
+
+        let master_provider_columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'master_provider'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(master_provider_columns, 1);
+
+        let observation_tables: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'provider_status_observations'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(observation_tables, 1);
     }
 
     #[test]

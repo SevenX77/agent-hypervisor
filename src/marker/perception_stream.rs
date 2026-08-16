@@ -1,4 +1,4 @@
-use crate::db::{self, Db};
+use crate::db::{self as db, Db};
 use crate::marker::{MarkerMatcher, MatchResult, parser_registry, registry};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

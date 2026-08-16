@@ -10,11 +10,11 @@ use ah::cli::start::{
     start_project,
 };
 use ah::db;
-use ah::monitor::agent_watch::spawn_agent_pidfd_watch_task;
-use ah::monitor::pidfd_open;
-use ah::provider::home_layout::{
+use ah::home_materialization::{
     AuthMaterializationErrorCode, materialize_auth_file_with_ladder, sandbox_home_for_sandbox_dir,
 };
+use ah::monitor::agent_watch::spawn_agent_pidfd_watch_task;
+use ah::monitor::pidfd_open;
 use ah::provider::manifest::{compute_recovery_args, get_manifest};
 use ah::sandbox::EnvState;
 use ah::sandbox::systemd::{RecoverySpawn, wrap_command, wrap_command_with_recovery};

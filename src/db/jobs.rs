@@ -53,6 +53,7 @@ fn row_to_job(row: &Row<'_>) -> rusqlite::Result<Job> {
         cancel_requested: row.get::<_, i64>(11)? != 0,
         requires_physical_evidence: row.get::<_, i64>(12)? != 0,
         requires_test_evidence: row.get::<_, i64>(13)? != 0,
+        governance_binding_json: row.get(14)?,
     })
 }
 
@@ -121,9 +122,20 @@ pub(crate) fn insert_job_sync(
     request_id: Option<&str>,
     prompt_text: &str,
 ) -> Result<String, CcbdError> {
+    insert_job_with_binding_sync(conn, id, agent_id, request_id, prompt_text, None)
+}
+
+pub(crate) fn insert_job_with_binding_sync(
+    conn: &Connection,
+    id: &str,
+    agent_id: &str,
+    request_id: Option<&str>,
+    prompt_text: &str,
+    governance_binding_json: Option<&str>,
+) -> Result<String, CcbdError> {
     let result = conn.execute(
-        "INSERT INTO jobs (id, agent_id, request_id, prompt_text, status) VALUES (?, ?, ?, ?, 'QUEUED')",
-        params![id, agent_id, request_id, prompt_text],
+        "INSERT INTO jobs (id, agent_id, request_id, prompt_text, status, governance_binding_json) VALUES (?, ?, ?, ?, 'QUEUED', ?)",
+        params![id, agent_id, request_id, prompt_text, governance_binding_json],
     );
 
     match result {
@@ -137,11 +149,28 @@ pub(crate) fn insert_job_sync(
                 &["status", "created_at"],
                 "submit",
             )?;
+            crate::runtime_observation::store::append_for_current_lifecycle_sync(
+                conn,
+                &format!("queue:{id}"),
+                agent_id,
+                Some(id),
+                crate::runtime_observation::EvidenceSource::ControlPlane,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Queued,
+                ),
+                crate::runtime_observation::store::now_epoch_millis(),
+            )?;
             Ok(id.to_string())
         }
         Err(err) if is_unique_constraint_error(&err) && request_id.is_some() => {
             let existing = query_job_by_request_id_sync(conn, agent_id, request_id.unwrap())?
                 .ok_or_else(|| map_db_error("query duplicate job by request_id", err))?;
+            if existing.governance_binding_json.as_deref() != governance_binding_json {
+                return Err(CcbdError::DbConstraintViolation(format!(
+                    "request_id {} is already bound to different governance identity or scope",
+                    request_id.unwrap()
+                )));
+            }
             Ok(existing.id)
         }
         Err(err) => Err(map_db_error("insert job", err)),
@@ -188,6 +217,17 @@ pub(crate) fn insert_recovered_queued_job_sync(
                 &["status", "created_at", "error_reason"],
                 "recovery_recovered_create",
             )?;
+            crate::runtime_observation::store::append_for_current_lifecycle_sync(
+                conn,
+                &format!("recovered-queue:{id}"),
+                agent_id,
+                Some(id),
+                crate::runtime_observation::EvidenceSource::ControlPlane,
+                crate::runtime_observation::ProviderObservationKind::Turn(
+                    crate::runtime_observation::ProviderTurnState::Queued,
+                ),
+                crate::runtime_observation::store::now_epoch_millis(),
+            )?;
             Ok(id.to_string())
         }
         Err(err) if is_unique_constraint_error(&err) && request_id.is_some() => {
@@ -201,7 +241,7 @@ pub(crate) fn insert_recovered_queued_job_sync(
 
 pub(crate) fn query_job_sync(conn: &Connection, job_id: &str) -> Result<Option<Job>, CcbdError> {
     conn.query_row(
-        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE id = ?",
+        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE id = ?",
         params![job_id],
         row_to_job,
     )
@@ -215,7 +255,7 @@ pub(crate) fn query_job_by_request_id_sync(
     request_id: &str,
 ) -> Result<Option<Job>, CcbdError> {
     conn.query_row(
-        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE agent_id = ? AND request_id = ? LIMIT 1",
+        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE agent_id = ? AND request_id = ? LIMIT 1",
         params![agent_id, request_id],
         row_to_job,
     )
@@ -361,7 +401,7 @@ pub(crate) fn claim_next_job_sync(db: &Db, agent_id: &str) -> Result<Option<Job>
 
     let job = Some(
         tx.query_row(
-            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE id = ?",
+            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE id = ?",
             params![job_id],
             row_to_job,
         )
@@ -440,7 +480,7 @@ pub fn dispatch_job_to_agent_sync(
 
     let job = tx
         .query_row(
-            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE id = ?",
+            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE id = ?",
             params![job_id],
             row_to_job,
         )
@@ -461,11 +501,23 @@ pub fn dispatch_job_to_agent_sync(
 
     let job = tx
         .query_row(
-            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE id = ?",
+            "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE id = ?",
             params![job.id],
             row_to_job,
         )
         .map_err(|err| map_db_error("query dispatched job with seq_id", err))?;
+
+    crate::runtime_observation::store::append_for_current_lifecycle_sync(
+        &tx,
+        &format!("dispatch:{}:{seq_id}", job.id),
+        agent_id,
+        Some(&job.id),
+        crate::runtime_observation::EvidenceSource::ControlPlane,
+        crate::runtime_observation::ProviderObservationKind::Turn(
+            crate::runtime_observation::ProviderTurnState::Delivering,
+        ),
+        crate::runtime_observation::store::now_epoch_millis(),
+    )?;
 
     tx.commit()
         .map_err(|err| map_db_error("commit dispatch job to agent", err))?;
@@ -474,6 +526,71 @@ pub fn dispatch_job_to_agent_sync(
         seq_id,
         job_payload,
     }))
+}
+
+pub(crate) fn mark_dispatched_job_delivered_sync(
+    conn: &mut Connection,
+    agent_id: &str,
+    job_id: &str,
+    dispatch_seq_id: i64,
+) -> Result<bool, CcbdError> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|err| map_db_error("begin mark dispatched job delivered", err))?;
+    let is_current = tx
+        .query_row(
+            "SELECT COUNT(*) FROM jobs WHERE id = ?1 AND agent_id = ?2 AND status = 'DISPATCHED' AND dispatched_at_seq_id = ?3",
+            params![job_id, agent_id, dispatch_seq_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| map_db_error("query dispatched job before delivery observation", err))?
+        == 1;
+    if !is_current {
+        tx.commit()
+            .map_err(|err| map_db_error("commit skipped job delivery observation", err))?;
+        return Ok(false);
+    }
+
+    let observation_id = format!("delivered:{job_id}:{dispatch_seq_id}");
+    let already_observed = tx
+        .query_row(
+            "SELECT COUNT(*) FROM provider_status_observations WHERE observation_id=?1",
+            [&observation_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|err| map_db_error("query existing job delivery observation", err))?
+        > 0;
+    let inserted = !already_observed
+        && crate::runtime_observation::store::append_for_current_lifecycle_sync(
+            &tx,
+            &observation_id,
+            agent_id,
+            Some(job_id),
+            crate::runtime_observation::EvidenceSource::ControlPlane,
+            crate::runtime_observation::ProviderObservationKind::Turn(
+                crate::runtime_observation::ProviderTurnState::Delivered,
+            ),
+            crate::runtime_observation::store::now_epoch_millis(),
+        )?;
+    if inserted {
+        tx.execute(
+            "INSERT INTO events (agent_id, request_id, event_type, payload) VALUES (?1, NULL, 'dispatch_delivery', ?2)",
+            params![
+                agent_id,
+                serde_json::json!({
+                    "job_id": job_id,
+                    "dispatch_seq_id": dispatch_seq_id,
+                    "transport": "tmux",
+                    "status": "DELIVERED",
+                })
+                .to_string()
+            ],
+        )
+        .map_err(|err| map_db_error("insert dispatch delivery event", err))?;
+    }
+    tx.commit()
+        .map_err(|err| map_db_error("commit dispatched job delivery", err))?;
+    Ok(inserted)
 }
 
 fn dispatch_event_payload(base: &Value, job: &Job) -> Value {
@@ -968,7 +1085,7 @@ pub(crate) fn query_dispatched_job_for_agent_sync(
     agent_id: &str,
 ) -> Result<Option<Job>, CcbdError> {
     conn.query_row(
-        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE agent_id = ? AND status = 'DISPATCHED' ORDER BY dispatched_at ASC, id ASC LIMIT 1",
+        "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence, governance_binding_json FROM jobs WHERE agent_id = ? AND status = 'DISPATCHED' ORDER BY dispatched_at ASC, id ASC LIMIT 1",
         params![agent_id],
         row_to_job,
     )
@@ -986,7 +1103,7 @@ pub(crate) fn query_starved_queued_jobs_sync(
         .as_secs() as i64;
     let cutoff = now - starvation_threshold_secs;
     let mut stmt = conn.prepare(
-        "SELECT j.id, j.agent_id, j.request_id, j.prompt_text, j.reply_text, j.status, j.error_reason, j.created_at, j.dispatched_at, j.dispatched_at_seq_id, j.completed_at, j.cancel_requested, j.requires_physical_evidence, j.requires_test_evidence \
+        "SELECT j.id, j.agent_id, j.request_id, j.prompt_text, j.reply_text, j.status, j.error_reason, j.created_at, j.dispatched_at, j.dispatched_at_seq_id, j.completed_at, j.cancel_requested, j.requires_physical_evidence, j.requires_test_evidence, j.governance_binding_json \
          FROM jobs j \
          JOIN agents a ON j.agent_id = a.id \
          WHERE j.status = 'QUEUED' AND a.state != 'IDLE' AND j.created_at < ? \
@@ -1278,12 +1395,30 @@ pub async fn insert_job(
     request_id: Option<String>,
     prompt_text: String,
 ) -> Result<String, CcbdError> {
+    insert_job_with_binding(db, id, agent_id, request_id, prompt_text, None).await
+}
+
+pub async fn insert_job_with_binding(
+    db: Db,
+    id: String,
+    agent_id: String,
+    request_id: Option<String>,
+    prompt_text: String,
+    governance_binding_json: Option<String>,
+) -> Result<String, CcbdError> {
     spawn_db("jobs::insert_job", move || {
         let mut conn = db.conn();
         let tx = conn
             .transaction()
             .map_err(|err| map_db_error("begin insert job", err))?;
-        let inserted = insert_job_sync(&tx, &id, &agent_id, request_id.as_deref(), &prompt_text)?;
+        let inserted = insert_job_with_binding_sync(
+            &tx,
+            &id,
+            &agent_id,
+            request_id.as_deref(),
+            &prompt_text,
+            governance_binding_json.as_deref(),
+        )?;
         tx.commit()
             .map_err(|err| map_db_error("commit insert job", err))?;
         Ok(inserted)
@@ -1377,6 +1512,20 @@ pub async fn dispatch_job_to_agent(
             notify_job_changed(&dispatched.job.id);
         }
     })
+}
+
+pub(crate) async fn mark_dispatched_job_delivered(
+    db: Db,
+    agent_id: String,
+    job_id: String,
+    dispatch_seq_id: i64,
+) -> Result<bool, CcbdError> {
+    spawn_db("jobs::mark_dispatched_job_delivered", move || {
+        let mut conn = db.conn();
+        mark_dispatched_job_delivered_sync(&mut conn, &agent_id, &job_id, dispatch_seq_id)
+    })
+    .await
+    .inspect(|_| notify_runtime_job_changed())
 }
 
 pub async fn mark_job_completed(
@@ -1614,7 +1763,8 @@ pub async fn set_job_evidence_requirements(
 mod tests {
     use super::{
         claim_next_job_sync, collect_reply_for_dispatched_job_sync, dispatch_job_to_agent_sync,
-        distill_reply, insert_job_sync, mark_dispatched_job_cancelled_if_agent_idle_sync,
+        distill_reply, insert_job_sync, insert_job_with_binding_sync,
+        mark_dispatched_job_cancelled_if_agent_idle_sync, mark_dispatched_job_delivered_sync,
         mark_dispatched_jobs_failed_for_agent_sync, mark_job_completed_sync, mark_job_failed_sync,
         mark_queued_job_cancelled_sync, query_dispatched_job_for_agent_sync,
         query_job_by_request_id_sync, query_job_sync, request_dispatched_job_cancel_sync,
@@ -1708,6 +1858,36 @@ mod tests {
     }
 
     #[test]
+    fn governance_binding_is_persisted_and_idempotency_refuses_rebinding() {
+        with_test_db(|db| {
+            let conn = db.conn();
+            let binding = r#"{"run_id":"RUN-1"}"#;
+            insert_job_with_binding_sync(
+                &conn,
+                "job-1",
+                "a1",
+                Some("RUN-1"),
+                "prompt",
+                Some(binding),
+            )
+            .unwrap();
+            let stored = query_job_sync(&conn, "job-1").unwrap().unwrap();
+            assert_eq!(stored.governance_binding_json.as_deref(), Some(binding));
+
+            let error = insert_job_with_binding_sync(
+                &conn,
+                "job-2",
+                "a1",
+                Some("RUN-1"),
+                "prompt",
+                Some(r#"{"run_id":"RUN-2"}"#),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("different governance identity"));
+        });
+    }
+
+    #[test]
     fn test_distill_reply_removes_prompt_echo() {
         let raw = "echo prompt\nactual reply";
 
@@ -1767,8 +1947,10 @@ mod tests {
     #[test]
     fn test_distill_reply_anchors_soft_wrapped_antigravity_prompt() {
         let prompt = "Please reply with exactly one single word and nothing else, no punctuation no explanation no commentary whatsoever, and the one word you must reply with is: delta";
-        let raw =
-            include_str!("../../tests/fixtures/pane_idle/REAL-a3-idle-longprompt-wrapped.txt");
+        let raw = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/pane_idle/REAL-a3-idle-longprompt-wrapped.txt"
+        ));
 
         assert_eq!(distill_reply(raw, prompt), "delta");
     }
@@ -1989,20 +2171,31 @@ mod tests {
             assert_eq!(dispatched.job.dispatched_at_seq_id, Some(dispatched.seq_id));
             assert_eq!(dispatched.job_payload["cmd"], "ask");
             assert_eq!(dispatched.job_payload["job_id"], "job_dispatch");
-            let (agent_state, job_status, seq_id, command_events, state_events): (
+            let (agent_state, job_status, seq_id, command_events, state_events, observations): (
                 String,
                 String,
                 Option<i64>,
+                i64,
                 i64,
                 i64,
             ) = conn
                 .query_row(
                     "SELECT agents.state, jobs.status, jobs.dispatched_at_seq_id, \
                             (SELECT COUNT(*) FROM events WHERE agent_id = 'a1' AND event_type = 'command_received'), \
-                            (SELECT COUNT(*) FROM events WHERE agent_id = 'a1' AND event_type = 'state_change') \
+                            (SELECT COUNT(*) FROM events WHERE agent_id = 'a1' AND event_type = 'state_change'), \
+                            (SELECT COUNT(*) FROM provider_status_observations WHERE agent_id = 'a1' AND turn_id = 'job_dispatch') \
                      FROM agents JOIN jobs ON jobs.agent_id = agents.id WHERE jobs.id = 'job_dispatch'",
                     [],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
                 )
                 .unwrap();
 
@@ -2011,6 +2204,45 @@ mod tests {
             assert_eq!(seq_id, Some(dispatched.seq_id));
             assert_eq!(command_events, 1);
             assert_eq!(state_events, 1);
+            assert_eq!(observations, 2);
+            let turn_states = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT json_extract(observation_json, '$.kind.state') FROM provider_status_observations WHERE agent_id='a1' AND turn_id='job_dispatch' ORDER BY rowid",
+                    )
+                    .unwrap();
+                stmt.query_map([], |row| row.get::<_, String>(0))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap()
+            };
+            assert_eq!(turn_states, ["queued", "delivering"]);
+            assert!(
+                mark_dispatched_job_delivered_sync(
+                    &mut conn,
+                    "a1",
+                    "job_dispatch",
+                    dispatched.seq_id,
+                )
+                .unwrap()
+            );
+            assert!(
+                !mark_dispatched_job_delivered_sync(
+                    &mut conn,
+                    "a1",
+                    "job_dispatch",
+                    dispatched.seq_id,
+                )
+                .unwrap()
+            );
+            let delivered: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM provider_status_observations WHERE agent_id='a1' AND turn_id='job_dispatch' AND json_extract(observation_json, '$.kind.state')='delivered'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(delivered, 1);
             drop(conn);
             assert_eq!(
                 transition_rows(db, "job_dispatch")[1],
