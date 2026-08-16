@@ -195,7 +195,7 @@ mod tests {
     use crate::db::prompt_experience::{
         NewPromptExperience, PromptExperience, PromptExperienceLookup,
     };
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::marker::MarkerMatcher;
     use crate::prompt_handler::gating::hash_sanitized_text;
     use crate::prompt_handler::matcher::{PromptScanPurpose, sanitize_pane_text};
@@ -228,7 +228,7 @@ mod tests {
             _provider: &str,
             sanitized_text: &str,
             _sanitized_hash_hex: &str,
-        ) -> Result<Option<PromptExperience>, CcbdError> {
+        ) -> Result<Option<PromptExperience>, AhError> {
             self.seen_texts
                 .lock()
                 .unwrap()
@@ -256,7 +256,7 @@ mod tests {
         fn record_prompt_experience(
             &self,
             _experience: &NewPromptExperience,
-        ) -> Result<(), CcbdError> {
+        ) -> Result<(), AhError> {
             Ok(())
         }
     }
@@ -411,7 +411,7 @@ mod tests {
             prompt_experience: None,
             scan_purpose: PromptScanPurpose::Direct,
         };
-        let capture = "Running scope as unit: run-rb.scope\n  ✨ Update available! 0.135.0 -> 0.139.0\n  Run npm install -g @openai/codex to update.\n  See full release notes: https://github.com/openai/codex/releases/latest\n  Tip: [tui.keymap] in ~/.codex/config.toml lets you rebind supported shortcuts.\n› Improve documentation in @filename\n  gpt-5.5 default · /home/sevenx/coding/ccbd-rust";
+        let capture = "Running scope as unit: run-rb.scope\n  ✨ Update available! 0.135.0 -> 0.139.0\n  Run npm install -g @openai/codex to update.\n  See full release notes: https://github.com/openai/codex/releases/latest\n  Tip: [tui.keymap] in ~/.codex/config.toml lets you rebind supported shortcuts.\n› Improve documentation in @filename\n  gpt-5.5 default · /home/sevenx/coding/agent-hypervisor";
 
         let decision = classify_capture(ctx, None, capture);
 

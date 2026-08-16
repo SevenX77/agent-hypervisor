@@ -175,8 +175,9 @@ pub fn browser_bridge_check(opener: Option<std::path::PathBuf>) -> DoctorCheck {
         None => DoctorCheck {
             name: "wsl:browser-bridge".to_string(),
             status: DoctorStatus::Warn,
-            detail: "no xdg-open/wslview in WSL; provider sign-in flows cannot pop the Windows browser"
-                .to_string(),
+            detail:
+                "no xdg-open/wslview in WSL; provider sign-in flows cannot pop the Windows browser"
+                    .to_string(),
             suggestion: Some(
                 "run ah setup --fix (installs a WSL-to-Windows opener at /usr/local/bin/xdg-open)"
                     .to_string(),
@@ -375,9 +376,8 @@ fn container_hint() -> bool {
 mod tests {
     #[test]
     fn browser_bridge_check_passes_with_an_opener_and_warns_without() {
-        let with = super::browser_bridge_check(Some(std::path::PathBuf::from(
-            "/usr/local/bin/xdg-open",
-        )));
+        let with =
+            super::browser_bridge_check(Some(std::path::PathBuf::from("/usr/local/bin/xdg-open")));
         assert!(matches!(with.status, DoctorStatus::Pass));
 
         let without = super::browser_bridge_check(None);

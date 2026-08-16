@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::db::common::{is_constraint_error, map_db_error, spawn_db};
 use crate::db::schema::Agent;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub(crate) fn insert_agent_sync(
@@ -11,9 +11,9 @@ pub(crate) fn insert_agent_sync(
     provider: &str,
     state: &str,
     pid: Option<i64>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     if agent_id.starts_with("master:") {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "agent_id prefix 'master:' is reserved for master hook sentinels".to_string(),
         ));
     }
@@ -32,7 +32,7 @@ pub(crate) fn insert_agent_sync(
                 .optional()
                 .map_err(|err| map_db_error("query existing agent for insert recycle", err))?;
             if existing_state.as_deref() != Some("KILLED") {
-                return Err(CcbdError::AgentAlreadyExists(agent_id.to_string()));
+                return Err(AhError::AgentAlreadyExists(agent_id.to_string()));
             }
             conn.execute("DELETE FROM agents WHERE id = ?", params![agent_id])
                 .map_err(|err| map_db_error("delete killed agent before insert", err))?;
@@ -42,7 +42,7 @@ pub(crate) fn insert_agent_sync(
             )
             .map_err(|err| {
                 if is_constraint_error(&err) {
-                    CcbdError::AgentAlreadyExists(agent_id.to_string())
+                    AhError::AgentAlreadyExists(agent_id.to_string())
                 } else {
                     map_db_error("insert recycled agent", err)
                 }
@@ -59,7 +59,7 @@ pub(crate) fn update_agent_state_sync(
     conn: &Connection,
     agent_id: &str,
     new_state: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let changes = conn
         .execute(
         "UPDATE agents SET state = ?, state_version = state_version + 1, updated_at = unixepoch() WHERE id = ? AND state != 'CRASHED'",
@@ -77,7 +77,7 @@ pub(crate) fn update_agent_config_hash_sync(
     conn: &Connection,
     agent_id: &str,
     config_hash: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE agents SET config_hash = ?, updated_at = unixepoch() WHERE id = ?",
         params![config_hash, agent_id],
@@ -89,7 +89,7 @@ pub(crate) fn update_agent_config_hash_sync(
 pub(crate) fn query_agent_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Option<Agent>, CcbdError> {
+) -> Result<Option<Agent>, AhError> {
     conn.query_row(
         "SELECT id, session_id, provider, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE id = ?",
         params![agent_id],
@@ -117,7 +117,7 @@ pub(crate) fn query_agent_sync(
 pub(crate) fn query_agents_by_state_sync(
     conn: &Connection,
     state: &str,
-) -> Result<Vec<Agent>, CcbdError> {
+) -> Result<Vec<Agent>, AhError> {
     let mut stmt = conn
         .prepare("SELECT id, session_id, provider, state, state_version, pid, exit_code, error_code, sub_state, config_hash, created_at, updated_at FROM agents WHERE state = ? ORDER BY updated_at ASC, id ASC")
         .map_err(|err| map_db_error("prepare query agents by state", err))?;
@@ -144,7 +144,7 @@ pub(crate) fn query_agents_by_state_sync(
         .map_err(|err| map_db_error("collect agents by state", err))
 }
 
-pub(crate) fn agent_exists_sync(conn: &Connection, agent_id: &str) -> Result<bool, CcbdError> {
+pub(crate) fn agent_exists_sync(conn: &Connection, agent_id: &str) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT 1 FROM agents WHERE id = ? LIMIT 1",
         params![agent_id],
@@ -158,7 +158,7 @@ pub(crate) fn agent_exists_sync(conn: &Connection, agent_id: &str) -> Result<boo
 pub(crate) fn query_agent_state_sync(
     db: &Db,
     agent_id: &str,
-) -> Result<Option<(String, i64)>, CcbdError> {
+) -> Result<Option<(String, i64)>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT state, state_version FROM agents WHERE id = ?",
@@ -169,7 +169,7 @@ pub(crate) fn query_agent_state_sync(
     .map_err(|err| map_db_error("query agent state", err))
 }
 
-pub(crate) fn delete_agent_sync(db: &Db, agent_id: &str) -> Result<(), CcbdError> {
+pub(crate) fn delete_agent_sync(db: &Db, agent_id: &str) -> Result<(), AhError> {
     let conn = db.conn();
     let changes = conn
         .execute("DELETE FROM agents WHERE id = ?", params![agent_id])
@@ -193,7 +193,7 @@ pub async fn insert_agent(
     provider: String,
     state: String,
     pid: Option<i64>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("agents::insert_agent", move || {
         let conn = db.conn();
         insert_agent_sync(&conn, &agent_id, &session_id, &provider, &state, pid)
@@ -205,7 +205,7 @@ pub async fn update_agent_state(
     db: Db,
     agent_id: String,
     new_state: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("agents::update_agent_state", move || {
         let conn = db.conn();
         update_agent_state_sync(&conn, &agent_id, &new_state)
@@ -217,7 +217,7 @@ pub async fn update_agent_config_hash(
     db: Db,
     agent_id: String,
     config_hash: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("agents::update_agent_config_hash", move || {
         let conn = db.conn();
         update_agent_config_hash_sync(&conn, &agent_id, &config_hash)
@@ -225,7 +225,7 @@ pub async fn update_agent_config_hash(
     .await
 }
 
-pub async fn query_agent(db: Db, agent_id: String) -> Result<Option<Agent>, CcbdError> {
+pub async fn query_agent(db: Db, agent_id: String) -> Result<Option<Agent>, AhError> {
     spawn_db("agents::query_agent", move || {
         let conn = db.conn();
         query_agent_sync(&conn, &agent_id)
@@ -233,7 +233,7 @@ pub async fn query_agent(db: Db, agent_id: String) -> Result<Option<Agent>, Ccbd
     .await
 }
 
-pub async fn query_agents_by_state(db: Db, state: String) -> Result<Vec<Agent>, CcbdError> {
+pub async fn query_agents_by_state(db: Db, state: String) -> Result<Vec<Agent>, AhError> {
     spawn_db("agents::query_agents_by_state", move || {
         let conn = db.conn();
         query_agents_by_state_sync(&conn, &state)
@@ -241,7 +241,7 @@ pub async fn query_agents_by_state(db: Db, state: String) -> Result<Vec<Agent>, 
     .await
 }
 
-pub async fn agent_exists(db: Db, agent_id: String) -> Result<bool, CcbdError> {
+pub async fn agent_exists(db: Db, agent_id: String) -> Result<bool, AhError> {
     spawn_db("agents::agent_exists", move || {
         let conn = db.conn();
         agent_exists_sync(&conn, &agent_id)
@@ -249,17 +249,14 @@ pub async fn agent_exists(db: Db, agent_id: String) -> Result<bool, CcbdError> {
     .await
 }
 
-pub async fn query_agent_state(
-    db: Db,
-    agent_id: String,
-) -> Result<Option<(String, i64)>, CcbdError> {
+pub async fn query_agent_state(db: Db, agent_id: String) -> Result<Option<(String, i64)>, AhError> {
     spawn_db("agents::query_agent_state", move || {
         query_agent_state_sync(&db, &agent_id)
     })
     .await
 }
 
-pub async fn delete_agent(db: Db, agent_id: String) -> Result<(), CcbdError> {
+pub async fn delete_agent(db: Db, agent_id: String) -> Result<(), AhError> {
     spawn_db("agents::delete_agent", move || {
         delete_agent_sync(&db, &agent_id)
     })
@@ -274,7 +271,7 @@ mod tests {
     };
     use crate::db::sessions::insert_session_sync;
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
 
     fn with_test_db<T>(test: impl FnOnce(&mut rusqlite::Connection) -> T) -> T {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -324,7 +321,7 @@ mod tests {
         with_test_db(|conn| {
             seed_agent(conn);
             let err = insert_agent_sync(conn, "a1", "s1", "bash", "IDLE", Some(456)).unwrap_err();
-            assert!(matches!(err, CcbdError::AgentAlreadyExists(agent_id) if agent_id == "a1"));
+            assert!(matches!(err, AhError::AgentAlreadyExists(agent_id) if agent_id == "a1"));
         });
     }
 
@@ -336,7 +333,7 @@ mod tests {
                 .unwrap_err();
 
             assert!(
-                matches!(err, CcbdError::IpcInvalidRequest(message) if message.contains("reserved"))
+                matches!(err, AhError::IpcInvalidRequest(message) if message.contains("reserved"))
             );
         });
     }

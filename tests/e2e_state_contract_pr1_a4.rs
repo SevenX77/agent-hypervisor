@@ -9,7 +9,7 @@
 //!   2. `rpc::handlers::stream_runtime_subscribe` — the streaming NDJSON path whose exact
 //!      bytes `ah events --format json` prints to Studio.
 //!
-//! ISOLATION: each `Stack` owns a file-backed temp DB (`CCBD_STATE_DIR`-independent),
+//! ISOLATION: each `Stack` owns a file-backed temp DB (`AH_STATE_DIR`-independent),
 //! a tempdir state dir, and a unique `tmux -L <socket>` via `TmuxServerGuard` (Drop kills
 //! that socket + removes the socket file). No tmux/pid/DB resource ever touches the live
 //! operator stack. Tests that create no tmux resources still get a fresh isolated socket.

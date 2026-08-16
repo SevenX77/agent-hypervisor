@@ -34,9 +34,9 @@ def fail_open(tool_name, reason):
 
 
 def rpc(method, params):
-    path = os.environ.get("CCB_SOCKET")
+    path = os.environ.get("AH_SOCKET")
     if not path:
-        raise RuntimeError("CCB_SOCKET is not set")
+        raise RuntimeError("AH_SOCKET is not set")
     request = {
         "jsonrpc": "2.0",
         "id": 1,
@@ -105,7 +105,7 @@ except Exception as err:
 
 tool_name = data.get("tool_name") or data.get("name") or ""
 path = tool_path(data)
-job_id = os.environ.get("CCB_JOB_ID")
+job_id = os.environ.get("AH_JOB_ID")
 
 claude_read = {"Read"}
 claude_write = {"Edit", "Write", "MultiEdit"}
@@ -121,7 +121,7 @@ if tool_name in claude_read or tool_name in gemini_read:
         rpc(
             "evidence.insert",
             {
-                "agent_id": os.environ.get("CCB_AGENT_ID", "a1"),
+                "agent_id": os.environ.get("AH_AGENT_ID", "a1"),
                 "job_id": job_id,
                 "evidence_type": "read",
                 "subject_path": path,

@@ -105,13 +105,19 @@ fn describe(status: &AuthStoreStatus) -> String {
     match status {
         AuthStoreStatus::Healthy { .. } | AuthStoreStatus::NotCheckable { .. } => "ok".to_string(),
         AuthStoreStatus::Missing { path } => {
-            format!("no login in this environment ({} is missing)", path.display())
+            format!(
+                "no login in this environment ({} is missing)",
+                path.display()
+            )
         }
         AuthStoreStatus::LoggedOut { path } => {
             format!("logged out ({} holds a logout stub)", path.display())
         }
         AuthStoreStatus::Unreadable { path, details } => {
-            format!("unreadable credential store ({}: {details})", path.display())
+            format!(
+                "unreadable credential store ({}: {details})",
+                path.display()
+            )
         }
         AuthStoreStatus::ForeignEnvironment { path, target } => format!(
             "credential store reaches into another environment ({} -> {})",
@@ -145,9 +151,7 @@ fn run_login_in_terminal(argv: &[&str]) -> Result<(), CliError> {
     }
     let status = command
         .status()
-        .map_err(|err| {
-            CliError::Config(format!("could not launch `{}`: {err}", argv.join(" ")))
-        })?;
+        .map_err(|err| CliError::Config(format!("could not launch `{}`: {err}", argv.join(" "))))?;
     if !status.success() {
         return Err(CliError::Config(format!(
             "`{}` exited with {status}; sign in and retry",
@@ -160,7 +164,6 @@ fn run_login_in_terminal(argv: &[&str]) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
 
     fn config(raw: &str) -> ProjectConfig {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -176,9 +179,7 @@ mod tests {
 
         assert!(providers_in_config(&config).is_empty());
         let home = tempfile::TempDir::new().unwrap();
-        assert!(
-            ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok()
-        );
+        assert!(ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok());
     }
 
     #[test]
@@ -208,7 +209,10 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("codex login"), "got: {message}");
-        assert!(message.contains("no login in this environment"), "got: {message}");
+        assert!(
+            message.contains("no login in this environment"),
+            "got: {message}"
+        );
     }
 
     #[test]
@@ -224,9 +228,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(
-            ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok()
-        );
+        assert!(ensure_provider_logins_for_os(&config, home.path(), None, false, "linux").is_ok());
     }
 
     /// The foreign-link case must not be "fixed" by launching a login over it:

@@ -26,7 +26,7 @@ pub fn run_config_validate(config_path: &Path) -> Result<(), CliError> {
 }
 
 pub fn migrate_stub(cwd: &Path) -> Result<(), CliError> {
-    let old = cwd.join(".ccb").join("ccb.config");
+    let old = cwd.join(".ah").join("ah.config");
     let new = cwd.join("ah.toml");
     if old.exists() && !new.exists() {
         println!(
@@ -37,7 +37,7 @@ pub fn migrate_stub(cwd: &Path) -> Result<(), CliError> {
         Ok(())
     } else {
         Err(CliError::Config(
-            "no legacy .ccb/ccb.config migration candidate found".into(),
+            "no legacy .ah/ah.config migration candidate found".into(),
         ))
     }
 }

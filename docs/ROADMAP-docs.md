@@ -86,9 +86,10 @@ Today `examples/ah.toml` configures three bash agents, and `examples/scenarios/d
 
 ahd / tmux workspaces / sandbox homes / the state machine, in one page. Define **master** vs **worker** — the README uses both terms throughout without defining either.
 
-### 8. Naming residue: ccbd → ah
+### 8. Naming consistency
 
-`CCBD_STATE_DIR`, `$XDG_STATE_HOME/ccbd`, and `CcbdError` still carry the old project name. Either finish the rename (with a deprecation window for the env vars) or add one README line on the lineage, so new readers don't conclude these are two different projects.
+Repository, runtime, environment, state, service, and error identifiers use
+`Agent Hypervisor` / `agent-hypervisor` / `ah` naming family consistently.
 
 ---
 

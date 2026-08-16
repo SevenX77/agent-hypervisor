@@ -517,9 +517,10 @@ mod tests {
         assert_eq!(report.removed, 1);
         assert!(!orphan.exists());
         assert_eq!(
-            fs::read_to_string(destination.join(
-                ".ah/sessions/orphans/deadbeef0000/codex/.codex/sessions/rollout.jsonl"
-            ))
+            fs::read_to_string(
+                destination
+                    .join(".ah/sessions/orphans/deadbeef0000/codex/.codex/sessions/rollout.jsonl")
+            )
             .unwrap(),
             "real work"
         );

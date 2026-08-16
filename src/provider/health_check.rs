@@ -1,5 +1,5 @@
 use crate::db::state_machine::{STATE_BUSY, STATE_SPAWNING, STATE_WAITING_FOR_ACK};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::manifest::{CompletionSignalKind, get_manifest};
 use crate::rpc::Ctx;
 use serde_json::{Value, json};
@@ -79,7 +79,7 @@ pub async fn escalate_health_stuck(
     ctx: &Ctx,
     observation: &HealthCheckObservation,
     stuck_threshold_secs: i64,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let result = health_check_observe(observation, stuck_threshold_secs);
     if result.alive || !is_active_state(&observation.state) {
         return Ok(0);
@@ -202,7 +202,7 @@ pub async fn health_check_watcher_loop(ctx: Ctx, interval: Duration, stuck_thres
     }
 }
 
-async fn health_check_watcher_tick(ctx: &Ctx, stuck_threshold: Duration) -> Result<(), CcbdError> {
+async fn health_check_watcher_tick(ctx: &Ctx, stuck_threshold: Duration) -> Result<(), AhError> {
     for state in [STATE_SPAWNING, STATE_WAITING_FOR_ACK, STATE_BUSY] {
         let agents =
             crate::db::agents::query_agents_by_state(ctx.db.clone(), state.to_string()).await?;
@@ -302,7 +302,7 @@ async fn health_check_watcher_tick(ctx: &Ctx, stuck_threshold: Duration) -> Resu
 async fn query_last_progress(
     db: crate::db::Db,
     agent_id: String,
-) -> Result<(Option<i64>, Option<i64>), CcbdError> {
+) -> Result<(Option<i64>, Option<i64>), AhError> {
     let last_output = crate::db::events::query_last_event_of_type(
         db.clone(),
         agent_id.clone(),

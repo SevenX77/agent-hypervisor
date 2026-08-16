@@ -61,7 +61,7 @@ mod tests {
     use crate::db::jobs::{insert_job_sync, query_job_sync};
     use crate::db::sessions::insert_session_sync;
     use crate::db::state_machine::mark_agent_unknown_sync;
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::marker::MarkerMatcher;
     use crate::provider::manifest::{
         CompletionSignalKind, IdleDetectionMode, InitProbeKind, ProviderManifest,
@@ -871,7 +871,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(matches!(missing, CcbdError::AgentNotFound(agent) if agent == "missing"));
+        assert!(matches!(missing, AhError::AgentNotFound(agent) if agent == "missing"));
 
         {
             let conn = ctx.db.conn();
@@ -888,7 +888,7 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            matches!(terminal, CcbdError::AgentWrongState { current_state } if current_state == "CRASHED")
+            matches!(terminal, AhError::AgentWrongState { current_state } if current_state == "CRASHED")
         );
     }
 
@@ -935,7 +935,7 @@ mod tests {
         .unwrap_err();
 
         assert!(
-            matches!(err, CcbdError::IpcInvalidRequest(message) if message.contains("job_id not found"))
+            matches!(err, AhError::IpcInvalidRequest(message) if message.contains("job_id not found"))
         );
     }
 
@@ -980,7 +980,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, CcbdError::PtyIoError(message) if message.contains("Timeout")));
+        assert!(matches!(err, AhError::PtyIoError(message) if message.contains("Timeout")));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1214,7 +1214,7 @@ mod tests {
         assert_eq!(repeat["state"], "KILLED");
         assert!(matches!(
             missing,
-            crate::error::CcbdError::AgentNotFound(agent) if agent == "missing_kill"
+            crate::error::AhError::AgentNotFound(agent) if agent == "missing_kill"
         ));
         assert_eq!(state, "KILLED");
         assert_eq!(payload["to"], "KILLED");
@@ -1358,7 +1358,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, CcbdError::DbEvidenceNotFound { .. }));
+        assert!(matches!(err, AhError::DbEvidenceNotFound { .. }));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1426,7 +1426,7 @@ mod tests {
 
         assert!(matches!(
             err,
-            CcbdError::AgentWrongState { current_state } if current_state == "UNKNOWN"
+            AhError::AgentWrongState { current_state } if current_state == "UNKNOWN"
         ));
         assert_eq!(command_count(&ctx, &agent_id), 0);
         let _ = handle_agent_kill(json!({ "agent_id": agent_id }), &ctx).await;

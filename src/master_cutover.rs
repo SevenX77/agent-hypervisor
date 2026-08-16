@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::{fs, io};
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HandoffBundleInput<'a> {
@@ -43,7 +43,7 @@ pub fn claude_project_conversation_dir(home: &Path, cwd: &Path) -> PathBuf {
 pub fn write_handoff_bundle(
     state_dir: &Path,
     input: &HandoffBundleInput<'_>,
-) -> Result<PathBuf, CcbdError> {
+) -> Result<PathBuf, AhError> {
     let handoff_dir = state_dir.join("cutovers").join(input.cutover_id);
     fs::create_dir_all(&handoff_dir)
         .map_err(|err| file_err("create handoff dir", &handoff_dir, err))?;
@@ -62,7 +62,7 @@ attach_command: ah attach master --session {session_id}
 constraints:
 - Read AH_MASTER_HANDOFF, confirm you have accepted this PM handoff, then immediately run: ah master ack-ready --cutover-id \"$AH_CUTOVER_ID\"
 - Use ah ask/ps/logs/pend/cancel/kill for dispatch and inspection.
-- Do not use ccb after accepting this cutover unless rollback is explicitly requested.
+- Do not use ah after accepting this cutover unless rollback is explicitly requested.
 - If master death reaped workers, inspect ah ps/logs and re-dispatch missing work.
 
 re-dispatch policy:
@@ -91,7 +91,7 @@ pub fn seed_claude_project_conversation(
     master_home: &Path,
     cwd: &Path,
     handoff_path: &Path,
-) -> Result<ConversationSeedResult, CcbdError> {
+) -> Result<ConversationSeedResult, AhError> {
     let source_dir = claude_project_conversation_dir(old_home, cwd);
     if !source_dir.is_dir() {
         let reason = format!(
@@ -155,8 +155,8 @@ fn fallback_result(handoff_path: &Path, reason: String) -> ConversationSeedResul
     }
 }
 
-fn file_err(action: &str, path: &Path, err: io::Error) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn file_err(action: &str, path: &Path, err: io::Error) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: format!("{action} {}: {err}", path.display()),
     }
 }
@@ -172,7 +172,7 @@ mod tests {
     fn cutover_writes_handoff_bundle_to_state_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let state_dir = tmp.path().join("state");
-        let socket_path = tmp.path().join("ccbd.sock");
+        let socket_path = tmp.path().join("ah.sock");
         let handoff_path = write_handoff_bundle(
             &state_dir,
             &HandoffBundleInput {
@@ -204,7 +204,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let old_home = tmp.path().join("old-home");
         let master_home = tmp.path().join("master-home");
-        let cwd = std::path::Path::new("/home/sevenx/coding/ccbd-rust");
+        let cwd = std::path::Path::new("/home/sevenx/coding/agent-hypervisor");
         let source_dir = claude_project_conversation_dir(&old_home, cwd);
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::write(
@@ -221,7 +221,7 @@ mod tests {
         let expected_dir = master_home
             .join(".claude")
             .join("projects")
-            .join("-home-sevenx-coding-ccbd-rust");
+            .join("-home-sevenx-coding-agent-hypervisor");
         assert_eq!(
             result,
             ConversationSeedResult::Seeded {
@@ -235,7 +235,7 @@ mod tests {
         );
         assert!(
             !master_home
-                .join(".claude/projects/home/sevenx/coding/ccbd-rust")
+                .join(".claude/projects/home/sevenx/coding/agent-hypervisor")
                 .exists()
         );
     }
@@ -262,8 +262,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let old_home = tmp.path().join("old-home");
         let master_home = tmp.path().join("master-home");
-        let cwd = std::path::Path::new("/home/sevenx/coding/ccbd-rust");
-        let raw_wrong_dir = old_home.join(".claude/projects/home/sevenx/coding/ccbd-rust");
+        let cwd = std::path::Path::new("/home/sevenx/coding/agent-hypervisor");
+        let raw_wrong_dir = old_home.join(".claude/projects/home/sevenx/coding/agent-hypervisor");
         std::fs::create_dir_all(&raw_wrong_dir).unwrap();
         std::fs::write(raw_wrong_dir.join("conversation.jsonl"), b"wrong").unwrap();
         let handoff_path = tmp.path().join("handoff.md");
@@ -289,7 +289,7 @@ mod tests {
         }
         assert!(
             !master_home
-                .join(".claude/projects/-home-sevenx-coding-ccbd-rust")
+                .join(".claude/projects/-home-sevenx-coding-agent-hypervisor")
                 .exists()
         );
     }

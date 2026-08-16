@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use crate::runtime_events::{
     RuntimeSnapshotReason, RuntimeSnapshotRequest, build_runtime_snapshot,
@@ -7,7 +7,7 @@ use crate::runtime_events::{
 use serde_json::Value;
 use std::time::Duration;
 
-pub async fn handle_runtime_snapshot(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_runtime_snapshot(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let snapshot = build_runtime_snapshot(
         ctx,
         RuntimeSnapshotRequest {
@@ -19,14 +19,14 @@ pub async fn handle_runtime_snapshot(params: Value, ctx: &Ctx) -> Result<Value, 
     )
     .await?;
     serde_json::to_value(snapshot)
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}")))
+        .map_err(|err| AhError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}")))
 }
 
 pub async fn stream_runtime_subscribe<W>(
     params: Value,
     ctx: &Ctx,
     writer: &mut W,
-) -> Result<(), CcbdError>
+) -> Result<(), AhError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -59,7 +59,7 @@ where
                 Ok(reason) => reason,
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => RuntimeSnapshotReason::InventoryChanged,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(CcbdError::IpcInvalidRequest("runtime subscription closed".into()));
+                    return Err(AhError::IpcInvalidRequest("runtime subscription closed".into()));
                 }
             },
             _ = interval.tick() => RuntimeSnapshotReason::TmuxChanged,
@@ -87,22 +87,21 @@ where
 async fn write_runtime_snapshot<W>(
     writer: &mut W,
     snapshot: &crate::runtime_events::RuntimeSnapshot,
-) -> Result<(), CcbdError>
+) -> Result<(), AhError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
     use tokio::io::AsyncWriteExt;
-    let line = serde_json::to_string(snapshot).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}"))
-    })?;
+    let line = serde_json::to_string(snapshot)
+        .map_err(|err| AhError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}")))?;
     writer
         .write_all(line.as_bytes())
         .await
-        .map_err(|err| CcbdError::PtyIoError(format!("write runtime snapshot: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("write runtime snapshot: {err}")))?;
     writer
         .write_all(b"\n")
         .await
-        .map_err(|err| CcbdError::PtyIoError(format!("write runtime snapshot newline: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("write runtime snapshot newline: {err}")))?;
     Ok(())
 }
 

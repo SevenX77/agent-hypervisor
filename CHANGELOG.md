@@ -10,6 +10,10 @@ All notable changes to `ah` are documented here. The format is based on
 - Rename the canonical public repository to `SevenX77/agent-hypervisor` and
   update source, release, installer, and WSL guidance URLs while preserving the
   compatible `ah`/`ahd` command and package names.
+- Converge source identifiers, environment variables, runtime paths, service
+  units, fixtures, and documentation on the `Agent Hypervisor` /
+  `agent-hypervisor` / `ah` naming family without changing the public CLI,
+  configuration schema, JSON-RPC contract, or default user state directory.
 
 ## [1.14.3] - 2026-08-07
 
@@ -118,8 +122,8 @@ All notable changes to `ah` are documented here. The format is based on
   now fail with an error naming the directory and the fix, the way git reports
   "not a git repository"; `ah reclaim`, `ah version`, `ah setup`,
   `ah config validate` and `ah bundle` still run anywhere. Environment
-  overrides (`AH_STATE_DIR`, `XDG_STATE_HOME`, `CCB_SOCKET`) keep their
-  priority, and `CCB_CONFIG_PATH` is honoured everywhere, not only by
+  overrides (`AH_STATE_DIR`, `XDG_STATE_HOME`, `AH_SOCKET`) keep their
+  priority, and `AH_CONFIG_PATH` is honoured everywhere, not only by
   `ah events` (#43, #46, #15).
 
   **Migration:** stacks that lived in `~/.local/state/ah/default` or
@@ -210,7 +214,7 @@ All notable changes to `ah` are documented here. The format is based on
 ### Fixed
 - The published installer downloads from this repository. `Cargo.toml` still
   named the pre-rename repository, so the generated `ah-installer.sh` requested
-  `SevenX77/ccbd-rust` and every one-line install failed with a 404 — the entry
+  `SevenX77/agent-hypervisor` and every one-line install failed with a 404 — the entry
   point in the README has been broken since the rename, in 1.7.0 as well. The
   release archive itself was always correct; only the installer's URL was wrong.
 
@@ -436,7 +440,7 @@ surfaces were end-to-end verified in isolation before release.
   daemon unit is verified active, fixing agent spawn on non-systemd/bare
   starts (#117).
 - State-directory resolution follows the documented priority contract
-  (`AH_STATE_DIR` > `CCBD_STATE_DIR` > `XDG_STATE_HOME` > explicit config >
+  (`AH_STATE_DIR` > `XDG_STATE_HOME` > explicit config >
   dev mode > project discovery) (#117).
 - `ahd --version`/`--help` answer without starting a daemon; RPC EOF errors
   are diagnosable (#106).

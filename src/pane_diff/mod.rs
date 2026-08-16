@@ -267,7 +267,7 @@ async fn pane_diff_watcher_tick(
     ctx: &crate::rpc::Ctx,
     state_map: &mut HashMap<String, AgentDiffState>,
     stuck_threshold: Duration,
-) -> Result<(), crate::error::CcbdError> {
+) -> Result<(), crate::error::AhError> {
     let busy_agents = query_ui_completion_recapture_agents(ctx.db.clone()).await?;
     tracing::info!(busy_agents = busy_agents.len(), "pane_diff watcher tick");
     let mut observations = Vec::new();
@@ -327,7 +327,7 @@ async fn pane_diff_watcher_tick(
 pub async fn escalate_pane_diff_stuck(
     db: crate::db::Db,
     signal: &StuckSignal,
-) -> Result<(), crate::error::CcbdError> {
+) -> Result<(), crate::error::AhError> {
     let agent_id = signal.agent_id.clone();
     let agent_state = match crate::db::agents::query_agent_state(db.clone(), agent_id.clone()).await
     {
@@ -384,7 +384,7 @@ pub async fn escalate_pane_diff_ui_recapture(
     db: crate::db::Db,
     agent_id: String,
     pane_text: String,
-) -> Result<(), crate::error::CcbdError> {
+) -> Result<(), crate::error::AhError> {
     let agent_state = match crate::db::agents::query_agent_state(db.clone(), agent_id.clone()).await
     {
         Ok(Some((state, _))) => state,
@@ -429,7 +429,7 @@ pub async fn escalate_pane_diff_ui_recapture(
 
 async fn query_ui_completion_recapture_agents(
     db: crate::db::Db,
-) -> Result<Vec<crate::db::schema::Agent>, crate::error::CcbdError> {
+) -> Result<Vec<crate::db::schema::Agent>, crate::error::AhError> {
     let mut agents =
         crate::db::agents::query_agents_by_state(db.clone(), "BUSY".to_string()).await?;
     let stuck_agents = crate::db::agents::query_agents_by_state(db, "STUCK".to_string()).await?;
@@ -452,7 +452,7 @@ fn provider_uses_ui_completion_recapture(
 async fn query_dispatched_job_id(
     db: crate::db::Db,
     agent_id: String,
-) -> Result<Option<String>, crate::error::CcbdError> {
+) -> Result<Option<String>, crate::error::AhError> {
     Ok(
         crate::db::jobs::query_dispatched_job_for_agent(db, agent_id)
             .await?

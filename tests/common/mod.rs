@@ -6,12 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Arc;
 
-const DAEMON_IDENTITY_ENV: &[&str] = &[
-    "CCB_SOCKET",
-    "AH_STATE_DIR",
-    "CCBD_STATE_DIR",
-    "XDG_STATE_HOME",
-];
+const DAEMON_IDENTITY_ENV: &[&str] = &["AH_SOCKET", "AH_STATE_DIR", "XDG_STATE_HOME"];
 
 #[allow(dead_code)]
 pub fn scrub_daemon_identity_env(command: &mut Command) -> &mut Command {
@@ -64,7 +59,7 @@ impl Drop for DaemonIdentityEnvGuard {
 pub fn hard_gate(binary: &str) {
     assert!(
         which::which(binary).is_ok(),
-        "missing {binary} binary, set CCB_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
+        "missing {binary} binary, set AH_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
     );
     let has_auth = match binary {
         "codex" => Path::new(&format!(
@@ -77,11 +72,11 @@ pub fn hard_gate(binary: &str) {
     };
     assert!(
         has_auth,
-        "{binary} has no OAuth credentials configured, set CCB_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
+        "{binary} has no OAuth credentials configured, set AH_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
     );
     assert!(
         which::which("tmux").is_ok() && can_use_systemd_run(),
-        "real provider tests require tmux and user systemd; set CCB_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
+        "real provider tests require tmux and user systemd; set AH_TEST_SKIP_REAL_PROVIDER=1 to opt-out"
     );
 }
 
@@ -98,7 +93,7 @@ pub fn scope_policy_for_test(socket_name: &str) -> ScopePolicy {
     scope_policy_for_test_with(
         socket_name,
         can_use_systemd_run(),
-        std::env::var("CCBD_TEST_WRAPPER_SCOPE").ok(),
+        std::env::var("AH_TEST_WRAPPER_SCOPE").ok(),
     )
 }
 
@@ -198,10 +193,10 @@ pub struct ReapOnDropDaemon {
 impl ReapOnDropDaemon {
     pub fn spawn(state_dir: &Path) -> Self {
         let child = Command::new(env!("CARGO_BIN_EXE_ahd"))
-            .env("CCB_ENV", "dev")
-            .env_remove("CCB_SOCKET")
+            .env("AH_ENV", "dev")
+            .env_remove("AH_SOCKET")
             .env("AH_STATE_DIR", state_dir)
-            .env("CCBD_UNSAFE_NO_SANDBOX", "1")
+            .env("AH_UNSAFE_NO_SANDBOX", "1")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()
@@ -298,9 +293,8 @@ mod tests {
     fn test_scrub_daemon_identity_env_preserves_explicit_test_isolation() {
         let mut command = Command::new("ahd-test");
         command
-            .env("CCB_SOCKET", "/isolated/ahd.sock")
+            .env("AH_SOCKET", "/isolated/ahd.sock")
             .env("AH_STATE_DIR", "/isolated/state")
-            .env("CCBD_STATE_DIR", "/legacy/isolated/state")
             .env("XDG_STATE_HOME", "/isolated/xdg-state")
             .env("OTHER_ENV", "preserved");
 

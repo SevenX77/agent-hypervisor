@@ -1,6 +1,6 @@
 //! macOS service supervisor compile skeleton.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::manifest::ENV_PASSTHROUGH;
 use sha2::{Digest, Sha256};
 use std::env;
@@ -146,8 +146,8 @@ pub fn atomic_write_unit(path: &Path, content: &str) -> io::Result<()> {
     }
 }
 
-pub fn unsupported_service_error(action: &str) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+pub fn unsupported_service_error(action: &str) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: format!("macOS: service supervisor action '{action}' is unsupported until PR-5"),
     }
 }

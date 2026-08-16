@@ -5,7 +5,7 @@ use crate::db::learned_rules::{
     CursorAnchor, LearnedRule, LearnedRuleCategory, RuleFingerprint, lookup_learned_rules_sync,
 };
 use crate::db::{self, Db};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::MarkerMatcher;
 use crate::prompt_handler::integration::is_prompt_handling_provider;
 use crate::prompt_handler::kb::load_or_bootstrap_kb;
@@ -69,7 +69,7 @@ pub async fn respawn_init_probe_for_agent(
     tmux: Arc<TmuxServer>,
     db: Arc<Db>,
     state_dir: PathBuf,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let Some(agent) = crate::db::agents::query_agent(db.as_ref().clone(), agent_id.clone()).await?
     else {
         tracing::debug!(agent_id, "agent not found; skipping init probe respawn");
@@ -114,7 +114,7 @@ async fn run_init_probe_task(
     deadline: Duration,
     startup_grace: Duration,
     idle_scan_enabled: Arc<AtomicBool>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let probe = probe_kind.build();
     let start = tokio::time::Instant::now();
     let deadline_at = start + deadline;
@@ -370,7 +370,7 @@ fn learned_startup_readiness_detected(
     db: &Db,
     provider: &str,
     capture: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let rules = lookup_learned_rules_sync(db, provider, LearnedRuleCategory::StartupReadiness)?;
     for rule in rules {
         if learned_rule_matches_capture(&rule, capture)? {
@@ -380,7 +380,7 @@ fn learned_startup_readiness_detected(
     Ok(false)
 }
 
-fn learned_rule_matches_capture(rule: &LearnedRule, capture: &str) -> Result<bool, CcbdError> {
+fn learned_rule_matches_capture(rule: &LearnedRule, capture: &str) -> Result<bool, AhError> {
     match &rule.fingerprint {
         RuleFingerprint::Regex { pattern } => {
             let regex = compile_learned_regex(rule, pattern)?;
@@ -396,7 +396,7 @@ fn learned_rule_matches_capture(rule: &LearnedRule, capture: &str) -> Result<boo
     }
 }
 
-fn compile_learned_regex(rule: &LearnedRule, pattern: &str) -> Result<regex::Regex, CcbdError> {
+fn compile_learned_regex(rule: &LearnedRule, pattern: &str) -> Result<regex::Regex, AhError> {
     let mut builder = regex::RegexBuilder::new(pattern);
     for flag in &rule.regex_flags {
         match flag.as_str() {
@@ -416,7 +416,7 @@ fn compile_learned_regex(rule: &LearnedRule, pattern: &str) -> Result<regex::Reg
         }
     }
     builder.build().map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!(
+        AhError::IpcInvalidRequest(format!(
             "invalid persisted learned rule regex {}: {err}",
             rule.id
         ))
@@ -475,14 +475,14 @@ async fn scan_startup_prompt(
     tmux: Arc<TmuxServer>,
     state_dir: PathBuf,
     marker_matcher: Arc<MarkerMatcher>,
-) -> Result<StartupPromptScan, CcbdError> {
+) -> Result<StartupPromptScan, AhError> {
     if !is_prompt_handling_provider(&provider) {
         return Ok(StartupPromptScan::HandledOrClear);
     }
 
     tokio::task::spawn_blocking(move || {
         let kb_path = state_dir.join("prompt-cases.json");
-        let kb = load_or_bootstrap_kb(&kb_path).map_err(CcbdError::from)?;
+        let kb = load_or_bootstrap_kb(&kb_path).map_err(AhError::from)?;
         let io = TmuxPromptIo::new((*tmux).clone());
         let db_handle = db.as_ref().clone();
         let ctx = RunnerContext::new(&agent_id, &pane, &provider, &io, &kb)
@@ -504,12 +504,12 @@ async fn scan_startup_prompt(
         }
     })
     .await
-    .map_err(|err| CcbdError::DatabaseRuntimePanic {
+    .map_err(|err| AhError::DatabaseRuntimePanic {
         details: format!("startup prompt scan worker join failed: {err}"),
     })?
 }
 
-async fn capture_visible(tmux: Arc<TmuxServer>, pane: TmuxPaneId) -> Result<String, CcbdError> {
+async fn capture_visible(tmux: Arc<TmuxServer>, pane: TmuxPaneId) -> Result<String, AhError> {
     crate::db::common::spawn_db("tmux::capture_visible_pane", move || {
         let args = [
             "-L",
@@ -520,14 +520,14 @@ async fn capture_visible(tmux: Arc<TmuxServer>, pane: TmuxPaneId) -> Result<Stri
             &pane.0,
         ];
         let output = Command::new("tmux").args(args).output().map_err(|err| {
-            CcbdError::EnvironmentNotSupported {
+            AhError::EnvironmentNotSupported {
                 details: format!("run tmux capture-pane: {err}"),
             }
         })?;
         if output.status.success() {
             Ok(String::from_utf8_lossy(&output.stdout).to_string())
         } else {
-            Err(CcbdError::TmuxCommandFailed {
+            Err(AhError::TmuxCommandFailed {
                 cmd: format!("tmux {}", args.join(" ")),
                 stderr: String::from_utf8_lossy(&output.stderr).to_string(),
                 exit: output.status.code().unwrap_or(-1),
@@ -541,7 +541,7 @@ async fn mark_idle_after_seed_probe(
     db: Arc<Db>,
     agent_id: String,
     idle_scan_enabled: Arc<AtomicBool>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let previous_state =
         crate::db::agents::query_agent_state(db.as_ref().clone(), agent_id.clone()).await?;
     if previous_state
@@ -561,7 +561,7 @@ async fn mark_idle_after_seed_probe(
                 emit_unknown_pattern_self_healed(db.clone(), agent_id.clone()).await?;
                 finish_startup_readiness(&agent_id, &idle_scan_enabled);
             }
-            Err(CcbdError::AgentWrongState { .. }) => {}
+            Err(AhError::AgentWrongState { .. }) => {}
             Err(err) => return Err(err),
         }
         return Ok(());
@@ -588,7 +588,7 @@ fn finish_startup_readiness(agent_id: &str, idle_scan_enabled: &AtomicBool) {
     }
 }
 
-async fn emit_unknown_pattern_self_healed(db: Arc<Db>, agent_id: String) -> Result<(), CcbdError> {
+async fn emit_unknown_pattern_self_healed(db: Arc<Db>, agent_id: String) -> Result<(), AhError> {
     let payload = json!({
         "category_hint": "StartupReadiness",
         "supersedes": UNKNOWN_PATTERN_STABLE,
@@ -611,7 +611,7 @@ async fn mark_idle_after_learned_startup_readiness(
     db: Arc<Db>,
     agent_id: String,
     idle_scan_enabled: Arc<AtomicBool>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     match db::state_machine::transit_agent_state(
         db.as_ref().clone(),
         agent_id.clone(),
@@ -631,7 +631,7 @@ async fn mark_idle_after_learned_startup_readiness(
                 let _ = handle.cancel_tx.send(());
             }
         }
-        Err(CcbdError::AgentWrongState { .. }) => {}
+        Err(AhError::AgentWrongState { .. }) => {}
         Err(err) => return Err(err),
     }
     Ok(())
@@ -642,7 +642,7 @@ async fn mark_spawning_intervention_and_emit_unknown_pattern(
     agent_id: String,
     provider: String,
     stable_unknown: StableUnknownPayload,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     match db::state_machine::transit_agent_state(
         db.as_ref().clone(),
         agent_id.clone(),
@@ -670,7 +670,7 @@ async fn mark_spawning_intervention_and_emit_unknown_pattern(
             .await?;
             crate::orchestrator::wake_up();
         }
-        Err(CcbdError::AgentWrongState { .. }) => {}
+        Err(AhError::AgentWrongState { .. }) => {}
         Err(err) => return Err(err),
     }
     Ok(())
@@ -680,7 +680,7 @@ async fn mark_unknown_after_timeout(
     db: Arc<Db>,
     agent_id: String,
     capture: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let failed_changes = db::state_machine::mark_agent_failed_from_intervention(
         db.as_ref().clone(),
         agent_id.clone(),

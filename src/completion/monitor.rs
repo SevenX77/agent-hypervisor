@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::completion::parser::LogParseResult;
 use crate::completion::reader::{LogCursorMap, LogReadState, read_provider_log_tail_with_state};
 use crate::db;
-use crate::error::CcbdError;
+use crate::error::AhError;
 
 pub const LOG_MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub const MAX_LOG_MONITOR_WAIT: Duration = Duration::from_secs(15 * 60);
@@ -23,9 +23,9 @@ pub async fn run_log_monitor_tick(
     provider: &str,
     log_root: &Path,
     state: LogReadState,
-) -> Result<LogMonitorTickOutcome, CcbdError> {
+) -> Result<LogMonitorTickOutcome, AhError> {
     let read = read_provider_log_tail_with_state(provider, log_root, &state)
-        .map_err(|err| CcbdError::PtyIoError(format!("read provider log tail: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("read provider log tail: {err}")))?;
     let updated_cursors = read.cursors.clone();
     let updated_state = read.state.clone();
 

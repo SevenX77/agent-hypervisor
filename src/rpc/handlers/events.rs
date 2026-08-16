@@ -1,11 +1,11 @@
 use super::params::required_str;
 use crate::db::events::query_last_event_of_type_matching_payload;
 use crate::db::jobs::query_job;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use serde_json::{Value, json};
 
-pub async fn handle_event_subscribe(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_event_subscribe(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     if event_kind_includes(&params, "stuck") && params.get("since_seq_id").is_none() {
         if let Some(frame) = stuck_frame_for_filter(ctx, &params).await? {
             return Ok(frame);
@@ -17,15 +17,15 @@ pub async fn handle_event_subscribe(params: Value, ctx: &Ctx) -> Result<Value, C
         .next()
     {
         return serde_json::to_value(frame)
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("serialize event frame: {err}")));
+            .map_err(|err| AhError::IpcInvalidRequest(format!("serialize event frame: {err}")));
     }
     if should_use_job_terminal_subscription(&params) {
         let job_id = required_str(&params, "job_id")?.to_string();
         return event_frame_for_job(ctx, &job_id)
             .await?
-            .ok_or_else(|| CcbdError::PtyIoError("Timeout waiting for event frame".into()));
+            .ok_or_else(|| AhError::PtyIoError("Timeout waiting for event frame".into()));
     }
-    Err(CcbdError::PtyIoError(
+    Err(AhError::PtyIoError(
         "Timeout waiting for event frame".into(),
     ))
 }
@@ -34,7 +34,7 @@ pub async fn stream_event_subscribe<W>(
     params: Value,
     ctx: &Ctx,
     writer: &mut W,
-) -> Result<(), CcbdError>
+) -> Result<(), AhError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -44,7 +44,7 @@ where
         .next()
     {
         let value = serde_json::to_value(frame)
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("serialize event frame: {err}")))?;
+            .map_err(|err| AhError::IpcInvalidRequest(format!("serialize event frame: {err}")))?;
         write_event_frame(writer, value).await?;
         return Ok(());
     }
@@ -62,7 +62,7 @@ where
             match rx.recv().await {
                 Ok(frame) if event_frame_matches_filter(&frame, &params) => {
                     let value = serde_json::to_value(frame).map_err(|err| {
-                        CcbdError::IpcInvalidRequest(format!("serialize event frame: {err}"))
+                        AhError::IpcInvalidRequest(format!("serialize event frame: {err}"))
                     })?;
                     write_event_frame(writer, value).await?;
                     return Ok(());
@@ -75,14 +75,14 @@ where
                         .next()
                     {
                         let value = serde_json::to_value(frame).map_err(|err| {
-                            CcbdError::IpcInvalidRequest(format!("serialize event frame: {err}"))
+                            AhError::IpcInvalidRequest(format!("serialize event frame: {err}"))
                         })?;
                         write_event_frame(writer, value).await?;
                         return Ok(());
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(CcbdError::IpcInvalidRequest(
+                    return Err(AhError::IpcInvalidRequest(
                         "event subscription closed".into(),
                     ));
                 }
@@ -113,7 +113,7 @@ where
                 }
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                return Err(CcbdError::IpcInvalidRequest(
+                return Err(AhError::IpcInvalidRequest(
                     "event subscription closed".into(),
                 ));
             }
@@ -121,7 +121,7 @@ where
     }
 }
 
-async fn write_event_frame<W>(writer: &mut W, frame: Value) -> Result<(), CcbdError>
+async fn write_event_frame<W>(writer: &mut W, frame: Value) -> Result<(), AhError>
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
@@ -129,11 +129,11 @@ where
     writer
         .write_all(frame.to_string().as_bytes())
         .await
-        .map_err(|err| CcbdError::PtyIoError(format!("write event frame: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("write event frame: {err}")))?;
     writer
         .write_all(b"\n")
         .await
-        .map_err(|err| CcbdError::PtyIoError(format!("write event frame newline: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("write event frame newline: {err}")))?;
     Ok(())
 }
 
@@ -169,7 +169,7 @@ fn should_use_job_terminal_subscription(params: &Value) -> bool {
 async fn subscription_backfill(
     ctx: &Ctx,
     params: &Value,
-) -> Result<Vec<crate::orchestrator::pubsub::EventFrame>, CcbdError> {
+) -> Result<Vec<crate::orchestrator::pubsub::EventFrame>, AhError> {
     let Some(since_seq_id) = params.get("since_seq_id").and_then(Value::as_i64) else {
         return Ok(Vec::new());
     };
@@ -220,7 +220,7 @@ fn event_frame_matches_filter(
 pub(super) async fn stuck_frame_for_filter(
     ctx: &Ctx,
     params: &Value,
-) -> Result<Option<Value>, CcbdError> {
+) -> Result<Option<Value>, AhError> {
     let agent_id = match params.get("agent_id").and_then(Value::as_str) {
         Some(agent_id) => agent_id.to_string(),
         None => {
@@ -230,9 +230,7 @@ pub(super) async fn stuck_frame_for_filter(
             };
             let job = query_job(ctx.db.clone(), job_id.to_string())
                 .await?
-                .ok_or_else(|| {
-                    CcbdError::IpcInvalidRequest(format!("job_id not found: {job_id}"))
-                })?;
+                .ok_or_else(|| AhError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
             job.agent_id
         }
     };
@@ -286,10 +284,10 @@ pub(super) async fn stuck_frame_for_filter(
     }
 }
 
-async fn event_frame_for_job(ctx: &Ctx, job_id: &str) -> Result<Option<Value>, CcbdError> {
+async fn event_frame_for_job(ctx: &Ctx, job_id: &str) -> Result<Option<Value>, AhError> {
     let job = query_job(ctx.db.clone(), job_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
     if !matches!(job.status.as_str(), "COMPLETED" | "FAILED" | "CANCELLED") {
         return Ok(None);
     }

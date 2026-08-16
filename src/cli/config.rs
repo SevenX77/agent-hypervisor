@@ -251,7 +251,10 @@ pub fn load_project_config(path: &Path) -> Result<ProjectConfig, CliError> {
     })?;
     reject_removed_layout_field(&raw)?;
     let mut config: ProjectConfig = toml::from_str(&raw)?;
-    normalize_project_config(&mut config, std::env::var_os("HOME").map(PathBuf::from).as_deref());
+    normalize_project_config(
+        &mut config,
+        std::env::var_os("HOME").map(PathBuf::from).as_deref(),
+    );
     let diagnostics = validate_project_config(&config);
     if let Some(diagnostic) = diagnostics
         .iter()
@@ -277,7 +280,7 @@ pub fn warn_config_diagnostics(config: &ProjectConfig) {
 }
 
 pub fn find_config(start_dir: &Path) -> Result<PathBuf, CliError> {
-    find_config_with_env(start_dir, std::env::var_os("CCB_CONFIG_PATH"))
+    find_config_with_env(start_dir, std::env::var_os("AH_CONFIG_PATH"))
 }
 
 pub fn validate_project_config(config: &ProjectConfig) -> Vec<Diagnostic> {
@@ -499,7 +502,7 @@ pub(crate) fn find_config_with_env(
             return Ok(path);
         }
         return Err(CliError::Config(format!(
-            "CCB_CONFIG_PATH points to missing config: {}",
+            "AH_CONFIG_PATH points to missing config: {}",
             path.display()
         )));
     }
@@ -523,7 +526,7 @@ pub(crate) fn find_config_with_env(
     }
 
     Err(CliError::Config(format!(
-        "could not find ah.toml from {}; create one or set CCB_CONFIG_PATH",
+        "could not find ah.toml from {}; create one or set AH_CONFIG_PATH",
         start_dir.display()
     )))
 }
@@ -1055,9 +1058,18 @@ provider = "bash"
         )
         .unwrap();
 
-        assert_eq!(config.master.env.get("ONLY_MASTER").map(String::as_str), Some("1"));
-        assert_eq!(config.master.env.get("SHARED").map(String::as_str), Some("master"));
-        assert_eq!(config.env.get("ONLY_PROJECT").map(String::as_str), Some("1"));
+        assert_eq!(
+            config.master.env.get("ONLY_MASTER").map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            config.master.env.get("SHARED").map(String::as_str),
+            Some("master")
+        );
+        assert_eq!(
+            config.env.get("ONLY_PROJECT").map(String::as_str),
+            Some("1")
+        );
         assert!(errors(&config).is_empty());
     }
 

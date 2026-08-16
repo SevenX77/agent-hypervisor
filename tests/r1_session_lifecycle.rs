@@ -37,7 +37,7 @@ async fn kill_session_lifecycle_removes_session() {
             !has_session.status.success(),
             "tmux session should be gone after kill-session"
         );
-        Ok::<(), ah::error::CcbdError>(())
+        Ok::<(), ah::error::AhError>(())
     }
     .await;
 
@@ -88,7 +88,7 @@ async fn ensure_session_locks_pty_size_and_window_size_manual() {
             "window-size manual"
         );
 
-        Ok::<(), ah::error::CcbdError>(())
+        Ok::<(), ah::error::AhError>(())
     }
     .await;
 
@@ -159,7 +159,7 @@ async fn cleanup_agent_runtime_resources_kills_agent_session() {
         assert!(!sandbox.exists());
         assert!(!parser_registry::contains(agent_id));
         assert!(!registry::contains(agent_id));
-        Ok::<(), ah::error::CcbdError>(())
+        Ok::<(), ah::error::AhError>(())
     }
     .await;
 

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 #
-# Idempotent cleanup of orphan ccbd-rust tmux sockets and residual tempdirs.
+# Idempotent cleanup of orphan agent-hypervisor tmux sockets and residual tempdirs.
 #
-# A ccbd socket is stale only when `tmux -L <name> list-sessions` fails.
-# Live ccbd tmux servers are preserved regardless of PPID.
+# A ah socket is stale only when `tmux -L <name> list-sessions` fails.
+# Live ah tmux servers are preserved regardless of PPID.
 #
 # Usage:
 #   bash scripts/cleanup_orphan_tmux.sh
@@ -22,8 +22,8 @@ fi
 orphan_count=0
 preserved_count=0
 
-# Iterate ccbd sockets and probe each one. A live server responds to list-sessions.
-for sock in "$socket_dir"/ccbd-*; do
+# Iterate ah sockets and probe each one. A live server responds to list-sessions.
+for sock in "$socket_dir"/ah-*; do
   [ -e "$sock" ] || continue
   name=$(basename "$sock")
 
@@ -66,7 +66,7 @@ done
 echo "Cleanup: removed ${orphan_count} orphan socket(s); preserved ${preserved_count} live server(s)."
 
 # Remove residual /tmp/.tmp?????? workdirs only when no live process references
-# them. Active ccbd state dirs and tmux working directories are preserved.
+# them. Active ah state dirs and tmux working directories are preserved.
 find /tmp -maxdepth 1 -type d -name '.tmp??????' 2>/dev/null | while IFS= read -r dir; do
   if pgrep -af "$dir" >/dev/null 2>&1; then
     continue

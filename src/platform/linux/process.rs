@@ -1,6 +1,6 @@
 //! Linux pidfd registry and syscall helpers.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::collections::HashMap;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -13,20 +13,20 @@ pub static PIDFD_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, OwnedFd>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 /// Open a pidfd for a live process id.
-pub fn pidfd_open(pid: i32) -> Result<OwnedFd, CcbdError> {
+pub fn pidfd_open(pid: i32) -> Result<OwnedFd, AhError> {
     // SAFETY: pidfd_open is called with a plain pid and flags=0. It returns a new
     // owned file descriptor on success, or -1 with errno set on failure.
     let raw = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0_u32) };
     if raw < 0 {
         let err = std::io::Error::last_os_error();
         return match err.raw_os_error() {
-            Some(libc::ESRCH) => Err(CcbdError::AgentUnexpectedExit {
+            Some(libc::ESRCH) => Err(AhError::AgentUnexpectedExit {
                 details: format!("pid {pid} is not alive"),
             }),
-            Some(errno) => Err(CcbdError::SandboxMountFailed {
+            Some(errno) => Err(AhError::SandboxMountFailed {
                 details: format!("pidfd_open({pid}) failed with errno {errno}: {err}"),
             }),
-            None => Err(CcbdError::SandboxMountFailed {
+            None => Err(AhError::SandboxMountFailed {
                 details: format!("pidfd_open({pid}) failed: {err}"),
             }),
         };
@@ -38,7 +38,7 @@ pub fn pidfd_open(pid: i32) -> Result<OwnedFd, CcbdError> {
 }
 
 /// Send SIGKILL through a pidfd.
-pub fn pidfd_send_sigkill(pidfd: BorrowedFd<'_>) -> Result<(), CcbdError> {
+pub fn pidfd_send_sigkill(pidfd: BorrowedFd<'_>) -> Result<(), AhError> {
     // SAFETY: the borrowed pidfd remains valid for the duration of this call,
     // siginfo is null as allowed by pidfd_send_signal, and flags=0.
     let result = unsafe {
@@ -52,7 +52,7 @@ pub fn pidfd_send_sigkill(pidfd: BorrowedFd<'_>) -> Result<(), CcbdError> {
     };
     if result < 0 {
         let err = std::io::Error::last_os_error();
-        return Err(CcbdError::PtyIoError(format!(
+        return Err(AhError::PtyIoError(format!(
             "pidfd_send_signal(SIGKILL) failed: {err}"
         )));
     }

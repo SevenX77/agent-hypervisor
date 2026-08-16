@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::extensions::HookGroup;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
@@ -43,7 +43,7 @@ pub struct BundleDigestEntry {
     pub digest: String,
 }
 
-pub fn compute_config_hash(input: &ConfigFingerprintInput<'_>) -> Result<String, CcbdError> {
+pub fn compute_config_hash(input: &ConfigFingerprintInput<'_>) -> Result<String, AhError> {
     let role = match &input.role {
         ConfigRole::Master { cmd, env } => json!({
             "kind": "master",
@@ -80,9 +80,9 @@ pub fn compute_config_hash(input: &ConfigFingerprintInput<'_>) -> Result<String,
     Ok(format!("{digest:x}"))
 }
 
-pub fn deterministic_json(value: Value) -> Result<String, CcbdError> {
+pub fn deterministic_json(value: Value) -> Result<String, AhError> {
     serde_json::to_string(&sort_value(value))
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("serialize config fingerprint: {err}")))
+        .map_err(|err| AhError::IpcInvalidRequest(format!("serialize config fingerprint: {err}")))
 }
 
 #[cfg(test)]

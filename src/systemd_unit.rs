@@ -20,7 +20,7 @@ mod tests {
     use super::detect_current_service_unit_from_cgroup;
 
     #[test]
-    fn detects_ccbd_service_with_user_manager_prefix() {
+    fn detects_ah_service_with_user_manager_prefix() {
         let cgroup = "0::/user.slice/user-1001.slice/user@1001.service/app.slice/ahd.service";
 
         assert_eq!(

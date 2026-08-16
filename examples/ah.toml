@@ -7,7 +7,7 @@ version = "1"
 shared_credentials_dir = "~/.claude"
 
 [env]
-PROJECT_ROOT = "/tmp/ccbd-example"
+PROJECT_ROOT = "/tmp/ah-example"
 
 [agents.a1]
 provider = "bash"

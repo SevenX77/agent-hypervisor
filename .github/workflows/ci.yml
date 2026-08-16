@@ -14,7 +14,7 @@ jobs:
       # 测试（pr4a_lifecycle_contract / prompt_handler_e2e mock 管道 / ack_fallback /
       # lib 单测）不读此变量、仍在 CI 真跑。真 provider 验证是终极达成门，留本地/VPS。
       # 三方（a1/a2/a3）收敛 2026-05-25：显式 env-gated 早返 ≠ 假绿（物理约束诚实声明）。
-      CCB_TEST_SKIP_REAL_PROVIDER: "1"
+      AH_TEST_SKIP_REAL_PROVIDER: "1"
     steps:
       - name: Checkout
         uses: actions/checkout@v6

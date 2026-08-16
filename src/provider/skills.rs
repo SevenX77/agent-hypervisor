@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub struct SkillMaterialization {
     pub target_dir: PathBuf,
 }
 
-pub fn parse_skill_refs(raw: &[String]) -> Result<Vec<SkillRef>, CcbdError> {
+pub fn parse_skill_refs(raw: &[String]) -> Result<Vec<SkillRef>, AhError> {
     raw.iter()
         .map(|name| {
             validate_skill_name(name)?;
@@ -30,7 +30,7 @@ pub fn parse_skill_refs(raw: &[String]) -> Result<Vec<SkillRef>, CcbdError> {
 pub fn resolve_project_skills(
     project_root: &Path,
     refs: &[SkillRef],
-) -> Result<Vec<ResolvedSkill>, CcbdError> {
+) -> Result<Vec<ResolvedSkill>, AhError> {
     let skills_root = project_root.join(".ah/skills");
     let canonical_project = project_root
         .canonicalize()
@@ -110,7 +110,7 @@ fn plan_skill_materialization(
         .collect()
 }
 
-fn validate_skill_name(name: &str) -> Result<(), CcbdError> {
+fn validate_skill_name(name: &str) -> Result<(), AhError> {
     if name.is_empty() {
         return Err(skill_err("skill name must not be empty"));
     }
@@ -129,8 +129,8 @@ fn validate_skill_name(name: &str) -> Result<(), CcbdError> {
     }
 }
 
-fn skill_err(details: impl Into<String>) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn skill_err(details: impl Into<String>) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: details.into(),
     }
 }

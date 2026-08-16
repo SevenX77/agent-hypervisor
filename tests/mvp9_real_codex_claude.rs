@@ -114,7 +114,7 @@ impl RpcClient for HandlerClient {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_launcher_config_parse_and_batch_spawn_real() {
-    if std::env::var("CCB_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
+    if std::env::var("AH_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
         return;
     }
     let h = RealHarness::new();
@@ -249,7 +249,7 @@ async fn wait_job(h: &RealHarness, job_id: &str) -> String {
     result["reply_text"].as_str().unwrap().to_string()
 }
 
-fn map_rpc_error(err: ah::error::CcbdError) -> CliError {
+fn map_rpc_error(err: ah::error::AhError) -> CliError {
     CliError::Rpc {
         code: -32000,
         message: err.to_string(),

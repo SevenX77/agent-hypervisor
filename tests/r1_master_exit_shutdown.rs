@@ -66,12 +66,12 @@ impl Drop for DevStateCleanupGuard {
 
 fn spawn_daemon(state_dir: &Path) -> Child {
     let child = Command::new(env!("CARGO_BIN_EXE_ahd"))
-        .env("CCB_ENV", "dev")
-        .env_remove("CCB_SOCKET")
+        .env("AH_ENV", "dev")
+        .env_remove("AH_SOCKET")
         .env("AH_STATE_DIR", state_dir)
-        .env("CCBD_UNSAFE_NO_SANDBOX", "1")
+        .env("AH_UNSAFE_NO_SANDBOX", "1")
         .spawn()
-        .expect("spawn ccbd");
+        .expect("spawn ah");
     wait_for_socket(&state_dir.join("ahd.sock"), Duration::from_secs(5));
     child
 }
@@ -84,11 +84,11 @@ fn wait_for_socket(path: &Path, timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    panic!("ccbd socket did not appear at {}", path.display());
+    panic!("ah socket did not appear at {}", path.display());
 }
 
 fn rpc_call(socket_path: &Path, id: u64, method: &str, params: Value) -> Value {
-    let mut stream = UnixStream::connect(socket_path).expect("connect ccbd socket");
+    let mut stream = UnixStream::connect(socket_path).expect("connect ah socket");
     let request = json!({
         "jsonrpc": "2.0",
         "id": id,
@@ -196,7 +196,7 @@ fn kill_pid(pid: i32) {
 fn wait_for_daemon_exit(child: &mut Child, timeout: Duration) -> Option<std::process::ExitStatus> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll ccbd child") {
+        if let Some(status) = child.try_wait().expect("poll ah child") {
             return Some(status);
         }
         std::thread::sleep(Duration::from_millis(100));
@@ -207,25 +207,23 @@ fn wait_for_daemon_exit(child: &mut Child, timeout: Duration) -> Option<std::pro
 fn wait_for_output(mut child: Child, timeout: Duration) -> Output {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if child.try_wait().expect("poll ccbd child").is_some() {
-            return child.wait_with_output().expect("collect ccbd output");
+        if child.try_wait().expect("poll ah child").is_some() {
+            return child.wait_with_output().expect("collect ah output");
         }
         std::thread::sleep(Duration::from_millis(25));
     }
 
     let _ = child.kill();
-    let output = child
-        .wait_with_output()
-        .expect("collect killed ccbd output");
+    let output = child.wait_with_output().expect("collect killed ah output");
     panic!(
-        "ccbd did not exit within {:?}; stderr={}",
+        "ah did not exit within {:?}; stderr={}",
         timeout,
         String::from_utf8_lossy(&output.stderr)
     );
 }
 
 fn terminate_daemon(mut child: Child) {
-    // SAFETY: child.id is the ccbd process spawned by this test.
+    // SAFETY: child.id is the ah process spawned by this test.
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
@@ -428,8 +426,8 @@ fn wait_for_agent_session_replaced(
     );
 }
 
-fn ccbd_process_count(state_dir: &Path) -> usize {
-    let ccbd_exe = env!("CARGO_BIN_EXE_ahd");
+fn ah_process_count(state_dir: &Path) -> usize {
+    let ah_exe = env!("CARGO_BIN_EXE_ahd");
     let state_needle = format!("AH_STATE_DIR={}", state_dir.display());
     std::fs::read_dir("/proc")
         .expect("read /proc")
@@ -445,7 +443,7 @@ fn ccbd_process_count(state_dir: &Path) -> usize {
             let proc_dir = entry.path();
             let cmdline = std::fs::read(proc_dir.join("cmdline")).unwrap_or_default();
             let environ = std::fs::read(proc_dir.join("environ")).unwrap_or_default();
-            String::from_utf8_lossy(&cmdline).contains(ccbd_exe)
+            String::from_utf8_lossy(&cmdline).contains(ah_exe)
                 && String::from_utf8_lossy(&environ).contains(&state_needle)
         })
         .count()
@@ -464,14 +462,14 @@ async fn second_daemon_exits_without_stealing_live_socket() {
     UnixStream::connect(&socket_path).expect("first daemon socket should accept connections");
 
     let second = Command::new(env!("CARGO_BIN_EXE_ahd"))
-        .env("CCB_ENV", "dev")
-        .env_remove("CCB_SOCKET")
+        .env("AH_ENV", "dev")
+        .env_remove("AH_SOCKET")
         .env("AH_STATE_DIR", &state_dir)
-        .env("CCBD_UNSAFE_NO_SANDBOX", "1")
+        .env("AH_UNSAFE_NO_SANDBOX", "1")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn second ccbd");
+        .expect("spawn second ah");
     let output = wait_for_output(second, Duration::from_secs(5));
     let second_output = format!(
         "{}{}",
@@ -480,17 +478,17 @@ async fn second_daemon_exits_without_stealing_live_socket() {
     );
     assert!(
         output.status.success(),
-        "second ccbd should exit successfully, output={second_output}"
+        "second ah should exit successfully, output={second_output}"
     );
     assert!(
         second_output.contains("already running"),
-        "second ccbd output should explain singleton exit: {second_output}"
+        "second ah output should explain singleton exit: {second_output}"
     );
     UnixStream::connect(&socket_path).expect("first daemon socket should remain connected");
     assert_eq!(
-        ccbd_process_count(&state_dir),
+        ah_process_count(&state_dir),
         1,
-        "only first ccbd for this test state dir should remain"
+        "only first ah for this test state dir should remain"
     );
 
     terminate_daemon(child);

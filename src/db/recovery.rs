@@ -1,5 +1,5 @@
 use crate::db::Db;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::extensions::HookGroup;
 use crate::provider::fingerprint::BundleDigest;
 use crate::sandbox::SandboxOverrides;
@@ -138,12 +138,12 @@ impl RecoveryIntentAction {
         }
     }
 
-    pub(crate) fn from_db_str(value: &str) -> Result<Self, CcbdError> {
+    pub(crate) fn from_db_str(value: &str) -> Result<Self, AhError> {
         match value {
             "REVIVE" => Ok(Self::Revive),
             "REVIVE_IDLE" => Ok(Self::ReviveIdle),
             "REAP_ONLY" => Ok(Self::ReapOnly),
-            other => Err(CcbdError::DbConstraintViolation(format!(
+            other => Err(AhError::DbConstraintViolation(format!(
                 "unknown recovery intent action: {other}"
             ))),
         }
@@ -181,7 +181,7 @@ pub(crate) struct AgentRecoveryIntent {
 pub(crate) fn persist_agent_recovery_intent_sync(
     conn: &Connection,
     intent: &AgentRecoveryIntent,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     tracing::info!(
         agent_id = %intent.agent_id,
         action = intent.action.as_db_str(),
@@ -244,7 +244,7 @@ pub(crate) fn persist_agent_recovery_intent_sync(
         ],
     )
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("persist agent recovery intent: {err}"))
+        AhError::DbConstraintViolation(format!("persist agent recovery intent: {err}"))
     })?;
     Ok(())
 }
@@ -252,7 +252,7 @@ pub(crate) fn persist_agent_recovery_intent_sync(
 pub(crate) fn query_agent_recovery_intent_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Option<AgentRecoveryIntent>, CcbdError> {
+) -> Result<Option<AgentRecoveryIntent>, AhError> {
     conn.query_row(
         "SELECT agent_id, session_id, provider, previous_state, crashed_state_version,
                 interrupted_job_id, interrupted_job_status, interrupted_job_request_id,
@@ -283,7 +283,7 @@ pub(crate) fn query_agent_recovery_intent_sync(
         },
     )
     .optional()
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("query agent recovery intent: {err}")))?
+    .map_err(|err| AhError::DbConstraintViolation(format!("query agent recovery intent: {err}")))?
     .map(
         |(
             agent_id,
@@ -335,7 +335,7 @@ pub(crate) fn query_agent_recovery_intent_sync(
 pub(crate) fn requeue_interrupted_job_from_captured_intent_sync(
     conn: &Connection,
     intent: &AgentRecoveryIntent,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     if intent.action != RecoveryIntentAction::Revive {
         tracing::debug!(
             agent_id = %intent.agent_id,
@@ -402,7 +402,7 @@ pub(crate) fn requeue_interrupted_job_from_captured_intent_sync(
         &marker,
     )?;
     if inserted_id != captured_job.id {
-        return Err(CcbdError::DbConstraintViolation(format!(
+        return Err(AhError::DbConstraintViolation(format!(
             "captured interrupted job restored as unexpected id: expected {}, got {}",
             captured_job.id, inserted_id
         )));
@@ -413,18 +413,18 @@ pub(crate) fn requeue_interrupted_job_from_captured_intent_sync(
 pub(crate) fn requeue_interrupted_job_from_captured_intent_standalone_sync(
     db: &Db,
     intent: &AgentRecoveryIntent,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
+            AhError::DbConstraintViolation(format!(
                 "begin requeue interrupted job from captured intent: {err}"
             ))
         })?;
     let requeued = requeue_interrupted_job_from_captured_intent_sync(&tx, intent)?;
     tx.commit().map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "commit requeue interrupted job from captured intent: {err}"
         ))
     })?;
@@ -438,12 +438,12 @@ pub(crate) fn replace_killed_agent_and_requeue_job_sync(
     config_hash: &str,
     pid: i64,
     captured_intent: Option<&AgentRecoveryIntent>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
+            AhError::DbConstraintViolation(format!(
                 "begin replace killed agent and requeue job: {err}"
             ))
         })?;
@@ -456,19 +456,19 @@ pub(crate) fn replace_killed_agent_and_requeue_job_sync(
         )
         .optional()
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
+            AhError::DbConstraintViolation(format!(
                 "query killed agent before atomic replacement: {err}"
             ))
         })?;
     if current_state.as_deref() != Some("KILLED") {
-        return Err(CcbdError::DbConstraintViolation(format!(
+        return Err(AhError::DbConstraintViolation(format!(
             "agent {} is not KILLED before atomic replacement",
             spec.agent_id
         )));
     }
 
     tx.execute("DELETE FROM agents WHERE id = ?", params![spec.agent_id])
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("delete killed agent: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("delete killed agent: {err}")))?;
     run_replace_killed_agent_after_delete_test_hook();
 
     crate::db::agents::insert_agent_sync(
@@ -489,7 +489,7 @@ pub(crate) fn replace_killed_agent_and_requeue_job_sync(
     };
 
     tx.commit().map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "commit replace killed agent and requeue job: {err}"
         ))
     })?;
@@ -503,9 +503,9 @@ pub(crate) fn persist_agent_spawn_spec_sync(
     conn: &Connection,
     spec: &AgentSpawnSpec,
     config_hash: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let spec_json = serde_json::to_string(spec).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("serialize agent spawn spec: {err}"))
+        AhError::DbConstraintViolation(format!("serialize agent spawn spec: {err}"))
     })?;
     conn.execute(
         "INSERT INTO agent_spawn_specs (agent_id, spec_version, provider, config_hash, spec_json, updated_at) \
@@ -518,14 +518,14 @@ pub(crate) fn persist_agent_spawn_spec_sync(
              updated_at = unixepoch()",
         params![spec.agent_id, spec.provider, config_hash, spec_json],
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("persist agent spawn spec: {err}")))?;
+    .map_err(|err| AhError::DbConstraintViolation(format!("persist agent spawn spec: {err}")))?;
     Ok(())
 }
 
 pub(crate) fn query_agent_spawn_spec_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Option<StoredAgentSpawnSpec>, CcbdError> {
+) -> Result<Option<StoredAgentSpawnSpec>, AhError> {
     let row = conn
         .query_row(
             "SELECT spec_json, config_hash, spec_version, updated_at FROM agent_spawn_specs WHERE agent_id = ?",
@@ -540,10 +540,10 @@ pub(crate) fn query_agent_spawn_spec_sync(
             },
         )
         .optional()
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("query agent spawn spec: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("query agent spawn spec: {err}")))?;
     row.map(|(spec_json, config_hash, spec_version, updated_at)| {
         let spec = serde_json::from_str(&spec_json).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("deserialize agent spawn spec: {err}"))
+            AhError::DbConstraintViolation(format!("deserialize agent spawn spec: {err}"))
         })?;
         Ok(StoredAgentSpawnSpec {
             spec,
@@ -558,7 +558,7 @@ pub(crate) fn query_agent_spawn_spec_sync(
 pub(crate) fn query_agent_spawn_specs_for_session_sync(
     conn: &Connection,
     session_id: &str,
-) -> Result<Vec<StoredAgentSpawnSpec>, CcbdError> {
+) -> Result<Vec<StoredAgentSpawnSpec>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT s.spec_json, s.config_hash, s.spec_version, s.updated_at \
@@ -568,7 +568,7 @@ pub(crate) fn query_agent_spawn_specs_for_session_sync(
              ORDER BY a.created_at ASC, a.id ASC",
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
+            AhError::DbConstraintViolation(format!(
                 "prepare query session agent spawn specs: {err}"
             ))
         })?;
@@ -582,14 +582,14 @@ pub(crate) fn query_agent_spawn_specs_for_session_sync(
             ))
         })
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query session agent spawn specs: {err}"))
+            AhError::DbConstraintViolation(format!("query session agent spawn specs: {err}"))
         })?;
     rows.map(|row| {
         let (spec_json, config_hash, spec_version, updated_at) = row.map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("collect session agent spawn specs: {err}"))
+            AhError::DbConstraintViolation(format!("collect session agent spawn specs: {err}"))
         })?;
         let spec = serde_json::from_str(&spec_json).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("deserialize session agent spawn spec: {err}"))
+            AhError::DbConstraintViolation(format!("deserialize session agent spawn spec: {err}"))
         })?;
         Ok(StoredAgentSpawnSpec {
             spec,
@@ -606,7 +606,7 @@ pub(crate) fn try_claim_agent_recovery_sync(
     agent_id: &str,
     expected_state_version: i64,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let changed = conn
         .execute(
             "UPDATE agents \
@@ -618,7 +618,7 @@ pub(crate) fn try_claim_agent_recovery_sync(
                AND (next_retry_at IS NULL OR next_retry_at <= ?)",
             params![agent_id, expected_state_version, now],
         )
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("claim agent recovery: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("claim agent recovery: {err}")))?;
     Ok(changed == 1)
 }
 
@@ -626,7 +626,7 @@ pub(crate) fn record_recovery_failure_backoff_sync(
     conn: &Connection,
     agent_id: &str,
     now: i64,
-) -> Result<RecoveryBackoff, CcbdError> {
+) -> Result<RecoveryBackoff, AhError> {
     let current = conn
         .query_row(
             "SELECT retry_count FROM agents WHERE id = ?",
@@ -634,11 +634,9 @@ pub(crate) fn record_recovery_failure_backoff_sync(
             |row| row.get::<_, i64>(0),
         )
         .optional()
-        .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query recovery backoff: {err}"))
-        })?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("query recovery backoff: {err}")))?;
     let Some(current_retry_count) = current else {
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
     let retry_count = (current_retry_count + 1).min(5);
     let retry_exhausted = retry_count >= 5;
@@ -663,7 +661,7 @@ pub(crate) fn record_recovery_failure_backoff_sync(
             agent_id
         ],
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("record recovery backoff: {err}")))?;
+    .map_err(|err| AhError::DbConstraintViolation(format!("record recovery backoff: {err}")))?;
     Ok(RecoveryBackoff {
         retry_count,
         next_retry_at,
@@ -674,14 +672,14 @@ pub(crate) fn record_recovery_failure_backoff_sync(
 pub(crate) fn clear_recovery_backoff_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE agents \
          SET retry_count = 0, next_retry_at = NULL, retry_exhausted = 0, updated_at = unixepoch() \
          WHERE id = ?",
         params![agent_id],
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("clear recovery backoff: {err}")))?;
+    .map_err(|err| AhError::DbConstraintViolation(format!("clear recovery backoff: {err}")))?;
     Ok(())
 }
 
@@ -696,10 +694,7 @@ pub(crate) fn clear_recovery_backoff_sync(
 /// Body is intentionally `unimplemented!` (zero production logic) so the a4 RED
 /// contract test panics until a1 implements the real clear.
 #[allow(dead_code)] // P0-2 seam: a1 wires this into the health/recovery stability tick
-pub(crate) fn confirm_agent_stable_sync(
-    conn: &Connection,
-    agent_id: &str,
-) -> Result<(), CcbdError> {
+pub(crate) fn confirm_agent_stable_sync(conn: &Connection, agent_id: &str) -> Result<(), AhError> {
     clear_recovery_backoff_sync(conn, agent_id)
 }
 
@@ -709,7 +704,7 @@ pub(crate) fn try_claim_agent_recovery(
     agent_id: String,
     expected_state_version: i64,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     try_claim_agent_recovery_sync(&conn, &agent_id, expected_state_version, now)
 }

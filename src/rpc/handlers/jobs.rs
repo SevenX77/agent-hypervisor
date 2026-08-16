@@ -5,13 +5,13 @@ use crate::db::jobs::{
     insert_job, mark_dispatched_job_cancelled_if_agent_idle, mark_queued_job_cancelled, query_job,
     request_dispatched_job_cancel,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use serde_json::{Value, json};
 use std::time::Duration;
 use uuid::Uuid;
 
-pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?;
     let prompt_text = required_str(&params, "text")?;
     let request_id = params
@@ -21,9 +21,9 @@ pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
 
     let agent = query_agent(ctx.db.clone(), agent_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
     if matches!(agent.state.as_str(), "CRASHED" | "KILLED") {
-        return Err(CcbdError::AgentWrongState {
+        return Err(AhError::AgentWrongState {
             current_state: agent.state,
         });
     }
@@ -45,7 +45,7 @@ pub async fn handle_job_submit(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     }))
 }
 
-pub async fn handle_job_wait(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_job_wait(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let job_id = required_str(&params, "job_id")?.to_string();
     let timeout_secs = params.get("timeout").and_then(Value::as_u64).unwrap_or(30);
     let mut rx = crate::orchestrator::pubsub::subscribe_job_updates();
@@ -69,7 +69,7 @@ pub async fn handle_job_wait(params: Value, ctx: &Ctx) -> Result<Value, CcbdErro
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(CcbdError::IpcInvalidRequest(
+                    return Err(AhError::IpcInvalidRequest(
                         "job update subscription closed".into(),
                     ));
                 }
@@ -79,16 +79,16 @@ pub async fn handle_job_wait(params: Value, ctx: &Ctx) -> Result<Value, CcbdErro
 
     match tokio::time::timeout(Duration::from_secs(timeout_secs), wait_future).await {
         Ok(result) => result,
-        Err(_) => Err(CcbdError::PtyIoError(
+        Err(_) => Err(AhError::PtyIoError(
             "Timeout waiting for job completion".into(),
         )),
     }
 }
 
-async fn terminal_job_response(ctx: &Ctx, job_id: &str) -> Result<Option<Value>, CcbdError> {
+async fn terminal_job_response(ctx: &Ctx, job_id: &str) -> Result<Option<Value>, AhError> {
     let job = query_job(ctx.db.clone(), job_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
     if matches!(job.status.as_str(), "COMPLETED" | "FAILED" | "CANCELLED") {
         Ok(Some(json!({
             "job_id": job.id,
@@ -101,11 +101,11 @@ async fn terminal_job_response(ctx: &Ctx, job_id: &str) -> Result<Option<Value>,
     }
 }
 
-pub async fn handle_job_cancel(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_job_cancel(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let job_id = required_str(&params, "job_id")?.to_string();
     let job = query_job(ctx.db.clone(), job_id.clone())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("job_id not found: {job_id}")))?;
 
     match job.status.as_str() {
         "QUEUED" => {
@@ -120,11 +120,11 @@ pub async fn handle_job_cancel(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
                 return Ok(json!({ "job_id": job_id, "status": "CANCELLED" }));
             }
             let pane_id = crate::agent_io::pane_id(&job.agent_id).ok_or_else(|| {
-                CcbdError::PtyIoError(format!("tmux pane not registered for {}", job.agent_id))
+                AhError::PtyIoError(format!("tmux pane not registered for {}", job.agent_id))
             })?;
             let agent = query_agent(ctx.db.clone(), job.agent_id.clone())
                 .await?
-                .ok_or_else(|| CcbdError::AgentNotFound(job.agent_id.clone()))?;
+                .ok_or_else(|| AhError::AgentNotFound(job.agent_id.clone()))?;
             for cancel_keysym in
                 crate::provider::manifest::cancel_keysyms_for_provider(&agent.provider)
             {
@@ -141,7 +141,7 @@ pub async fn handle_job_cancel(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
             "job_id": job_id,
             "status": job.status,
         })),
-        other => Err(CcbdError::IpcInvalidRequest(format!(
+        other => Err(AhError::IpcInvalidRequest(format!(
             "job {job_id} is in unknown status {other}"
         ))),
     }

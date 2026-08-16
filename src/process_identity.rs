@@ -29,12 +29,7 @@ mod tests {
 
     #[test]
     fn process_identity_vars_are_not_daemon_identity_vars() {
-        let daemon_identity_vars = [
-            "CCB_SOCKET",
-            "AH_STATE_DIR",
-            "CCBD_STATE_DIR",
-            "XDG_STATE_HOME",
-        ];
+        let daemon_identity_vars = ["AH_SOCKET", "AH_STATE_DIR", "XDG_STATE_HOME"];
 
         for key in [AH_AGENT_ID, AH_SESSION_ID, AH_ROLE] {
             assert!(

@@ -1,4 +1,4 @@
-use ah::error::CcbdError;
+use ah::error::AhError;
 use ah::marker::MarkerMatcher;
 use ah::prompt_handler::{
     PromptAction, PromptIo, PromptKb, PromptRunOutcome, RunnerContext, default_cases,
@@ -28,13 +28,13 @@ Do you trust this directory?
 const READY_PROMPT: &str = "\
 worktree clean
   ›
-  gpt-5.5 default · ~/coding/ccbd-rust
+  gpt-5.5 default · ~/coding/agent-hypervisor
 ";
 
 const READY_WITH_PROBE: &str = "\
 worktree clean
   › x
-  gpt-5.5 default · ~/coding/ccbd-rust
+  gpt-5.5 default · ~/coding/agent-hypervisor
 ";
 
 const CLAUDE_READY_WITH_STATUS_NOISE: &str = "\
@@ -72,19 +72,19 @@ impl ScriptedPromptIo {
 }
 
 impl PromptIo for ScriptedPromptIo {
-    fn capture_pane(&self, _pane: &TmuxPaneId) -> Result<String, CcbdError> {
+    fn capture_pane(&self, _pane: &TmuxPaneId) -> Result<String, AhError> {
         self.captures
             .lock()
             .expect("captures lock")
             .pop()
-            .ok_or_else(|| CcbdError::TmuxCommandFailed {
+            .ok_or_else(|| AhError::TmuxCommandFailed {
                 cmd: "capture-pane".to_string(),
                 stderr: "no scripted capture left".to_string(),
                 exit: 1,
             })
     }
 
-    fn send_key_literal(&self, _pane: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+    fn send_key_literal(&self, _pane: &TmuxPaneId, value: &str) -> Result<(), AhError> {
         self.sent
             .lock()
             .expect("sent lock")
@@ -92,7 +92,7 @@ impl PromptIo for ScriptedPromptIo {
         Ok(())
     }
 
-    fn send_key_keysym(&self, _pane: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+    fn send_key_keysym(&self, _pane: &TmuxPaneId, value: &str) -> Result<(), AhError> {
         self.sent
             .lock()
             .expect("sent lock")

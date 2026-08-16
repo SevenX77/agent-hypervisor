@@ -89,7 +89,7 @@ impl Drop for RealHarness {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_claude_spawn_ask_flow() {
-    if std::env::var("CCB_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
+    if std::env::var("AH_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
         return;
     }
     let Some(shared_credentials_dir) = real_claude_shared_credentials_dir() else {
@@ -103,13 +103,13 @@ async fn test_claude_spawn_ask_flow() {
     let env_job = submit_job(
         &h,
         agent_id,
-        "Run `env | grep '^CCB_'` and reply with the values for CCB_CLAUDE_MD_MODE, CCB_REPLY_LANG, and CCB_CTX_TRANSFER_LAST_N.\n",
+        "Run `env | grep '^AH_'` and reply with the values for AH_CLAUDE_MD_MODE, AH_REPLY_LANG, and AH_CTX_TRANSFER_LAST_N.\n",
     )
     .await;
     let env_reply = wait_job(&h, &env_job).await;
-    assert!(env_reply.contains("CCB_CLAUDE_MD_MODE"));
-    assert!(env_reply.contains("CCB_REPLY_LANG"));
-    assert!(env_reply.contains("CCB_CTX_TRANSFER_LAST_N"));
+    assert!(env_reply.contains("AH_CLAUDE_MD_MODE"));
+    assert!(env_reply.contains("AH_REPLY_LANG"));
+    assert!(env_reply.contains("AH_CTX_TRANSFER_LAST_N"));
 
     let first = submit_job(&h, agent_id, "Reply with exactly: echo 1\n").await;
     assert!(wait_job(&h, &first).await.contains('1'));

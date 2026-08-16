@@ -8,7 +8,7 @@
 //!
 //! Every test drives real RPCs through the router against a real tmux server +
 //! sqlite, provider `bash`, `unsafe_no_sandbox` (so the injection asymmetry
-//! reproduces via CCB_SOCKET + AH_* alone). Critically, each agent is spawned via
+//! reproduces via AH_SOCKET + AH_* alone). Critically, each agent is spawned via
 //! the REAL `agent.spawn` path so the stored `config_hash` is the *injected* one —
 //! the gap existing fingerprint tests miss by seeding the raw hash directly.
 //!
@@ -220,7 +220,7 @@ fn env_of(pairs: &[(&str, &str)]) -> Env {
 // ---------------------------------------------------------------------------
 
 /// CORE (Leak A): an agent whose declared config is unchanged must NOT drift. The
-/// stored hash (from real spawn, over the INJECTED env: CCB_SOCKET + AH_*) must equal
+/// stored hash (from real spawn, over the INJECTED env: AH_SOCKET + AH_*) must equal
 /// the realign hash (over the raw declared env). RED today: stored ≠ recomputed ⇒ every
 /// first `ah up` force-respawns every agent.
 #[tokio::test]
@@ -236,7 +236,7 @@ async fn spawn_then_realign_unchanged_config_is_no_change() {
     assert_eq!(
         agent_status(&result, "a1"),
         "NO_CHANGE",
-        "unchanged declared config must NOT drift; injected identity vars (CCB_SOCKET/AH_*) \
+        "unchanged declared config must NOT drift; injected identity vars (AH_SOCKET/AH_*) \
          must be excluded from the fingerprint on the spawn side. result={result}"
     );
 }

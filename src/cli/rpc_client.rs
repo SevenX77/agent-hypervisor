@@ -115,13 +115,13 @@ pub fn resolve_socket_path() -> Result<PathBuf, CliError> {
 /// Resolves the daemon socket for a project-scoped command.
 ///
 /// One resolution path for every command (decision 0005): explicit `--config`
-/// (or `CCB_CONFIG_PATH`, matching `ah events`), else the ah.toml found by
+/// (or `AH_CONFIG_PATH`, matching `ah events`), else the ah.toml found by
 /// walking up from the working directory. Failure is an error, not a fallback:
 /// the old silent `default` state dir let unrelated projects share one
 /// database (#46).
 pub fn resolve_socket_path_for_config(config_path: Option<&Path>) -> Result<PathBuf, CliError> {
-    let socket_override = std::env::var("CCB_SOCKET").ok().map(PathBuf::from);
-    let env_config = std::env::var_os("CCB_CONFIG_PATH")
+    let socket_override = std::env::var("AH_SOCKET").ok().map(PathBuf::from);
+    let env_config = std::env::var_os("AH_CONFIG_PATH")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from);
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -344,7 +344,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message};
+    use super::{
+        CliError, parse_rpc_response, resolve_socket_path_for_config_inner, rpc_error_message,
+    };
     use serde_json::json;
     use std::ffi::OsString;
 
@@ -356,13 +358,7 @@ mod tests {
 
     impl ResolutionEnvGuard {
         fn clear() -> Self {
-            let keys = [
-                "AH_STATE_DIR",
-                "CCBD_STATE_DIR",
-                "XDG_STATE_HOME",
-                "CCB_ENV",
-                "CCB_CONFIG_PATH",
-            ];
+            let keys = ["AH_STATE_DIR", "XDG_STATE_HOME", "AH_ENV", "AH_CONFIG_PATH"];
             let saved = keys
                 .iter()
                 .map(|key| {
@@ -416,10 +412,7 @@ mod tests {
             rpc_error_message(&json!({"data": {"error_code": "AGENT_NOT_FOUND"}})),
             "AGENT_NOT_FOUND"
         );
-        assert_eq!(
-            rpc_error_message(&json!({"message": "boom"})),
-            "boom"
-        );
+        assert_eq!(rpc_error_message(&json!({"message": "boom"})), "boom");
     }
 
     #[test]
@@ -476,7 +469,10 @@ mod tests {
 
         let message = err.to_string();
         assert!(message.contains("no ah.toml found"), "got: {message}");
-        assert!(message.contains("--config"), "the fix must be named: {message}");
+        assert!(
+            message.contains("--config"),
+            "the fix must be named: {message}"
+        );
     }
 
     /// #43: a bare `--config ah.toml` used to hash the empty string, sending

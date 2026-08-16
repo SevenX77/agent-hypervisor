@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use crate::rpc::handlers::{
     handle_agent_assert_state, handle_agent_discard_evidence, handle_agent_kill,
@@ -53,7 +53,7 @@ pub async fn dispatch(line: &str, ctx: &Ctx) -> String {
         Err(err) => {
             return error_response(
                 Value::Null,
-                CcbdError::IpcInvalidRequest(format!("malformed JSON: {err}")),
+                AhError::IpcInvalidRequest(format!("malformed JSON: {err}")),
             );
         }
     };
@@ -63,21 +63,21 @@ pub async fn dispatch(line: &str, ctx: &Ctx) -> String {
     if request.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
         return error_response(
             id,
-            CcbdError::IpcInvalidRequest("missing or invalid jsonrpc version".into()),
+            AhError::IpcInvalidRequest("missing or invalid jsonrpc version".into()),
         );
     }
 
     let Some(method) = request.get("method").and_then(Value::as_str) else {
         return error_response(
             id,
-            CcbdError::IpcInvalidRequest("missing field 'method'".into()),
+            AhError::IpcInvalidRequest("missing field 'method'".into()),
         );
     };
 
     if !METHODS.contains(&method) {
         return error_response(
             id,
-            CcbdError::IpcInvalidRequest(format!("unknown method: {method}")),
+            AhError::IpcInvalidRequest(format!("unknown method: {method}")),
         );
     }
 
@@ -119,7 +119,7 @@ pub async fn dispatch(line: &str, ctx: &Ctx) -> String {
 
     match result {
         Ok(value) => success_response(id, value),
-        Err(CcbdError::IpcInvalidRequest(message))
+        Err(AhError::IpcInvalidRequest(message))
             if method == "job.mark_requires_evidence" && message.contains("job_id not found") =>
         {
             json!({
@@ -133,9 +133,9 @@ pub async fn dispatch(line: &str, ctx: &Ctx) -> String {
             })
             .to_string()
         }
-        Err(CcbdError::DuplicateRequest { existing_seq_id }) => error_response(
+        Err(AhError::DuplicateRequest { existing_seq_id }) => error_response(
             id,
-            CcbdError::IpcInvalidRequest(format!(
+            AhError::IpcInvalidRequest(format!(
                 "internal duplicate request sentinel leaked for seq_id={existing_seq_id}"
             )),
         ),
@@ -152,7 +152,7 @@ fn success_response(id: Value, result: Value) -> String {
     .to_string()
 }
 
-fn error_response(id: Value, err: CcbdError) -> String {
+fn error_response(id: Value, err: AhError) -> String {
     json!({
         "jsonrpc": "2.0",
         "id": id,

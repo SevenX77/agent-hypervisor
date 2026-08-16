@@ -1,4 +1,4 @@
-# ah.toml — ccbd-rust 过渡拓扑(2026-07-09 codex 配额耗尽期,7/11 后再议切回)
+# ah.toml — agent-hypervisor 过渡拓扑(2026-07-09 codex 配额耗尽期,7/11 后再议切回)
 # 变更:a1 codex→antigravity(主力实施);a2 摘除(保 codex 残余 2% 应急额度)
 # 2026-07-09 CLI 层配置(用户拍板):审计=opus4.8+最高档;master=sonnet5+medium
 # (operator 推荐,编排决策不需要长思考);statusline 按 operator 监控需求配

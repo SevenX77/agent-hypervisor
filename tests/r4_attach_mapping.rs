@@ -13,9 +13,8 @@ fn attach_session_name_resolves_to_agent_session_name() {
 fn attach_requires_agent_id_argument() {
     let output = Command::new(env!("CARGO_BIN_EXE_ah"))
         .args(["attach"])
-        .env_remove("CCB_SOCKET")
+        .env_remove("AH_SOCKET")
         .env_remove("AH_STATE_DIR")
-        .env_remove("CCBD_STATE_DIR")
         .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap();
@@ -29,9 +28,8 @@ fn attach_requires_agent_id_argument() {
 fn attach_help_documents_agent_id() {
     let output = Command::new(env!("CARGO_BIN_EXE_ah"))
         .args(["attach", "--help"])
-        .env_remove("CCB_SOCKET")
+        .env_remove("AH_SOCKET")
         .env_remove("AH_STATE_DIR")
-        .env_remove("CCBD_STATE_DIR")
         .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap();

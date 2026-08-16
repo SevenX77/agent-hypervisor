@@ -20,9 +20,9 @@ ah 的 `start`/`ps`/`ask`/`stop` 都是项目级命令，适用形态 1。现状
 
 1. **一个解析函数。** `state_layout::resolve_cli_state_layout(cwd, config_path)` 是 CLI 侧唯一的项目身份判定，返回 `Result`。`rpc_client` 的 socket 解析、以及由它服务的全部命令共用它。`ah events` 原有的正确行为（绝对化 + 向上找）即由此函数统一提供。
 2. **显式路径先绝对化、必须存在。** 相对 `--config` 以当前目录绝对化；指向的文件或目录不存在即报错。空字符串永远到不了哈希函数——`e3b0c442` 这一类共享目录从机制上不可能再产生。
-3. **无显式路径就向上找。** 从当前目录逐级向上找 `ah.toml`（README 一直如此描述，此前是死代码）。`CCB_CONFIG_PATH` 环境变量视同 `--config`，与 `ah events` 既有行为一致。
-4. **找不到就报错，不回落。** git 式错误：`no ah.toml found in <cwd> or any parent directory; cd into a project or pass --config <path>`。环境覆盖（`AH_STATE_DIR`、`CCBD_STATE_DIR`、`XDG_STATE_HOME`）与 `CCB_ENV=dev` 的优先级保持不变。
-5. **非项目命令不受解析约束。** `version`、`reclaim`、`setup`、`config validate`、`bundle`、`internal-bridge`、带显式 `--socket`/`CCB_SOCKET` 的 `agent notify` 在任何目录都必须能跑；解析失败只在真正需要栈的命令上出现。
+3. **无显式路径就向上找。** 从当前目录逐级向上找 `ah.toml`（README 一直如此描述，此前是死代码）。`AH_CONFIG_PATH` 环境变量视同 `--config`，与 `ah events` 既有行为一致。
+4. **找不到就报错，不回落。** git 式错误：`no ah.toml found in <cwd> or any parent directory; cd into a project or pass --config <path>`。环境覆盖（`AH_STATE_DIR`、`XDG_STATE_HOME`）与 `AH_ENV=dev` 的优先级保持不变。
+5. **非项目命令不受解析约束。** `version`、`reclaim`、`setup`、`config validate`、`bundle`、`internal-bridge`、带显式 `--socket`/`AH_SOCKET` 的 `agent notify` 在任何目录都必须能跑；解析失败只在真正需要栈的命令上出现。
 6. **守护进程侧不动。** `ahd` 由 `ah start` 以显式 `AH_STATE_DIR` 拉起，保留其原有解析与告警回落；本决议只修 CLI 侧的寻址。
 
 ## 迁移

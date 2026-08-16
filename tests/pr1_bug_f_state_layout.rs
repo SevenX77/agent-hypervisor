@@ -35,11 +35,10 @@ fn remove_env(key: &str) {
 fn clear_state_env() {
     for key in [
         "AH_STATE_DIR",
-        "CCBD_STATE_DIR",
         "XDG_STATE_HOME",
-        "CCB_ENV",
-        "CCB_SOCKET",
-        "CCB_RS_STATE_HOME",
+        "AH_ENV",
+        "AH_SOCKET",
+        "AH_RS_STATE_HOME",
     ] {
         remove_env(key);
     }
@@ -80,7 +79,7 @@ fn resolve(cwd: &Path, config_path: Option<PathBuf>) -> ah::state_layout::StateL
 }
 
 #[test]
-fn repo_cwd_with_ccb_toml_resolves_to_project_xdg_state_not_repo_ccb_rs() {
+fn repo_cwd_with_ah_toml_resolves_to_project_xdg_state_not_repo_ah_rs() {
     let _guard = env_lock();
     clear_state_env();
     let home = tempfile::tempdir().unwrap();
@@ -97,7 +96,7 @@ fn repo_cwd_with_ccb_toml_resolves_to_project_xdg_state_not_repo_ccb_rs() {
 
     assert_eq!(
         layout.state_dir, expected,
-        "cwd=repo with ah.toml must use per-project ~/.local/state/ah/<project_id>, not ProjectDirs ccbd or repo-local state"
+        "cwd=repo with ah.toml must use per-project ~/.local/state/ah/<project_id>, not ProjectDirs ah or repo-local state"
     );
     assert!(
         !layout.state_dir.starts_with(repo.join(".ah")),
@@ -161,20 +160,11 @@ fn state_layout_priority_chain_honors_explicit_overrides_before_project_discover
     );
 
     remove_env("AH_STATE_DIR");
-    set_env("CCBD_STATE_DIR", explicit.path());
-    let layout = resolve(project.path(), Some(project.path().join("ah.toml")));
-    assert_eq!(
-        layout.state_dir,
-        explicit.path(),
-        "CCBD_STATE_DIR must remain a one-version fallback alias"
-    );
-
-    remove_env("CCBD_STATE_DIR");
     set_env("XDG_STATE_HOME", xdg.path());
     let layout = resolve(project.path(), Some(project.path().join("ah.toml")));
     assert_eq!(
         layout.state_dir,
-        xdg.path().join("ccbd"),
+        xdg.path().join("ah"),
         "explicit XDG_STATE_HOME must still be honored for test isolation compatibility"
     );
 }
@@ -189,7 +179,7 @@ fn config_path_directory_wins_over_cwd_discovery_and_dev_fallback() {
     write_config(cwd_project.path());
     write_config(config_project.path());
     set_env("HOME", home.path());
-    set_env_str("CCB_ENV", "dev");
+    set_env_str("AH_ENV", "dev");
 
     let layout = resolve(
         cwd_project.path(),
@@ -199,12 +189,12 @@ fn config_path_directory_wins_over_cwd_discovery_and_dev_fallback() {
     assert_eq!(
         layout.state_dir,
         expected_project_state(home.path(), config_project.path()),
-        "--config directory must beat cwd discovery and CCB_ENV=dev fallback"
+        "--config directory must beat cwd discovery and AH_ENV=dev fallback"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn pane_at_death_evidence_is_written_under_state_dir_not_relative_ccb() {
+async fn pane_at_death_evidence_is_written_under_state_dir_not_relative_ah() {
     which::which("tmux").expect("tmux binary required for pane_at_death evidence test");
     let _guard = env_lock();
     let original_cwd = std::env::current_dir().unwrap();
@@ -262,16 +252,16 @@ async fn pane_at_death_evidence_is_written_under_state_dir_not_relative_ccb() {
             .join(agent_id)
             .join("pane_at_death.txt")
             .is_file(),
-        "pane_at_death.txt must be written under state_dir/evidence/<agent>/, not relative .ccb/agents/"
+        "pane_at_death.txt must be written under state_dir/evidence/<agent>/, not relative .ah/agents/"
     );
     assert!(
         !temp_cwd
             .path()
-            .join(".ccb")
+            .join(".ah")
             .join("agents")
             .join(agent_id)
             .join("pane_at_death.txt")
             .exists(),
-        "pane_at_death must not create a relative .ccb/agents directory in daemon cwd"
+        "pane_at_death must not create a relative .ah/agents directory in daemon cwd"
     );
 }

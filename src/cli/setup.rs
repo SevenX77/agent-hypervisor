@@ -710,8 +710,13 @@ fn install_browser_bridge_if_needed(
     } else {
         Ok(FixOutcome {
             status: PrereqStatus::Fail,
-            detail: format!("failed to write /usr/local/bin/xdg-open: {}", result.stderr.trim()),
-            suggestion: Some("install the wslu package manually, then rerun ah setup --check".to_string()),
+            detail: format!(
+                "failed to write /usr/local/bin/xdg-open: {}",
+                result.stderr.trim()
+            ),
+            suggestion: Some(
+                "install the wslu package manually, then rerun ah setup --check".to_string(),
+            ),
         })
     }
 }

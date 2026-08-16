@@ -6,7 +6,7 @@ use crate::db::jobs::{
     mark_job_cancelled_conn_sync, mark_job_completed_conn_sync,
     query_dispatched_job_for_agent_sync, strip_ansi_escapes,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 
@@ -81,7 +81,7 @@ pub fn transit_agent_state_sync(
     from_state_list: &[&str],
     to_state: &str,
     reason: Option<&str>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let tx = conn
         .transaction()
         .map_err(|err| map_db_error("begin transit agent state", err))?;
@@ -97,7 +97,7 @@ pub(crate) fn transit_agent_state_conn_sync(
     from_state_list: &[&str],
     to_state: &str,
     reason: Option<&str>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     transit_agent_state_conn_inner(
         conn,
         agent_id,
@@ -118,7 +118,7 @@ fn transit_agent_state_conn_inner(
     reason: Option<&str>,
     expected_version: Option<i64>,
     strict: bool,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let current = conn
         .query_row(
             "SELECT state, state_version FROM agents WHERE id = ?",
@@ -130,7 +130,7 @@ fn transit_agent_state_conn_inner(
 
     let Some((previous_state, state_version)) = current else {
         return if strict {
-            Err(CcbdError::AgentNotFound(agent_id.to_string()))
+            Err(AhError::AgentNotFound(agent_id.to_string()))
         } else {
             Ok(false)
         };
@@ -141,7 +141,7 @@ fn transit_agent_state_conn_inner(
         from_state_list.is_empty() || from_state_list.contains(&previous_state.as_str());
     if !version_matches || !from_matches {
         return if strict {
-            Err(CcbdError::AgentWrongState {
+            Err(AhError::AgentWrongState {
                 current_state: previous_state,
             })
         } else {
@@ -157,7 +157,7 @@ fn transit_agent_state_conn_inner(
         .map_err(|err| map_db_error("transit agent state", err))?;
     if changes != 1 {
         return if strict {
-            Err(CcbdError::AgentWrongState {
+            Err(AhError::AgentWrongState {
                 current_state: previous_state,
             })
         } else {
@@ -188,7 +188,7 @@ pub(crate) fn mark_agent_waiting_for_ack_sync(
     conn: &mut Connection,
     agent_id: &str,
     expected_version: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let tx = conn
         .transaction()
         .map_err(|err| map_db_error("begin mark agent waiting for ack", err))?;
@@ -210,7 +210,7 @@ pub(crate) fn mark_agent_prompt_pending_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -227,7 +227,7 @@ pub(crate) fn mark_agent_prompt_pending_sync(
     let Some((previous_state, state_version)) = current else {
         tx.rollback()
             .map_err(|err| map_db_error("rollback mark prompt pending missing agent", err))?;
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
     let allowed = [STATE_IDLE, STATE_SPAWNING];
     if !allowed.contains(&previous_state.as_str()) {
@@ -240,7 +240,7 @@ pub(crate) fn mark_agent_prompt_pending_sync(
         );
         tx.rollback()
             .map_err(|err| map_db_error("rollback mark prompt pending invalid state", err))?;
-        return Err(CcbdError::AgentWrongState {
+        return Err(AhError::AgentWrongState {
             current_state: previous_state,
         });
     }
@@ -295,14 +295,14 @@ pub(crate) fn mark_agent_prompt_pending_sync(
 }
 
 #[cfg(test)]
-pub(crate) fn mark_agent_idle_matched_sync(db: &Db, agent_id: &str) -> Result<usize, CcbdError> {
+pub(crate) fn mark_agent_idle_matched_sync(db: &Db, agent_id: &str) -> Result<usize, AhError> {
     mark_agent_idle_matched_outcome_sync(db, agent_id).map(|outcome| outcome.changes)
 }
 
 fn mark_agent_idle_matched_outcome_sync(
     db: &Db,
     agent_id: &str,
-) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
+) -> Result<MarkerMatchedSyncOutcome, AhError> {
     mark_agent_idle_matched_outcome_sync_inner(db, agent_id, "MARKER_MATCHED")
 }
 
@@ -310,7 +310,7 @@ fn mark_agent_idle_matched_outcome_sync_inner(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
+) -> Result<MarkerMatchedSyncOutcome, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -476,7 +476,7 @@ fn mark_agent_idle_matched_conn_inner(
     dispatched_job_reply: Option<(String, String, bool)>,
     reason: &str,
     allow_from_stuck: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let changes = if allow_from_stuck {
         conn.execute(
             "UPDATE agents SET state = 'IDLE', sub_state = 'Matched', state_version = state_version + 1, updated_at = unixepoch() WHERE id = ? AND state IN ('SPAWNING', 'WAITING_FOR_ACK', 'BUSY', 'STUCK') AND state_version = ?",
@@ -526,7 +526,7 @@ pub(crate) fn mark_agent_idle_log_event_sync(
     raw_path: &str,
     raw_offset: u64,
     provider_turn_id: Option<&str>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_idle_log_event_outcome_sync(
         db,
         agent_id,
@@ -546,7 +546,7 @@ pub(crate) fn mark_agent_idle_hook_event_sync(
     hook_event: &str,
     event_id: Option<&str>,
     reply: Option<&str>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_idle_hook_event_outcome_sync(
         db, agent_id, provider, hook_event, event_id, reply, None,
     )
@@ -562,7 +562,7 @@ pub(crate) fn mark_agent_idle_hook_event_at_version_sync(
     event_id: Option<&str>,
     reply: Option<&str>,
     expected_state_version: i64,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_idle_hook_event_outcome_sync(
         db,
         agent_id,
@@ -583,7 +583,7 @@ fn mark_agent_idle_hook_event_outcome_sync(
     event_id: Option<&str>,
     reply: Option<&str>,
     expected_state_version: Option<i64>,
-) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
+) -> Result<MarkerMatchedSyncOutcome, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -761,7 +761,7 @@ fn mark_agent_idle_log_event_outcome_sync(
     raw_path: &str,
     raw_offset: u64,
     provider_turn_id: Option<&str>,
-) -> Result<MarkerMatchedSyncOutcome, CcbdError> {
+) -> Result<MarkerMatchedSyncOutcome, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -933,7 +933,7 @@ fn late_health_completion_stuck_allows_terminal(
     conn: &Connection,
     agent_id: &str,
     dispatched_job_id: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let payload = conn
         .query_row(
             "SELECT payload FROM events \
@@ -966,7 +966,7 @@ fn latest_ah_idle_marker_job_id(
     conn: &Connection,
     agent_id: &str,
     dispatched_at_seq_id: Option<i64>,
-) -> Result<Option<String>, CcbdError> {
+) -> Result<Option<String>, AhError> {
     let since_seq_id = dispatched_at_seq_id.unwrap_or(0);
     let mut stmt = conn
         .prepare(
@@ -1014,7 +1014,7 @@ fn evidence_denial_for_job(
     conn: &Connection,
     agent_id: &str,
     job: &crate::db::schema::Job,
-) -> Result<Option<String>, CcbdError> {
+) -> Result<Option<String>, AhError> {
     if job.requires_physical_evidence
         && !has_job_evidence_sync(
             conn,
@@ -1040,7 +1040,7 @@ fn insert_evidence_denied_event(
     agent_id: &str,
     job_id: &str,
     message: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let payload = json!({
         "job_id": job_id,
         "reason": "missing_physical_evidence",
@@ -1073,7 +1073,7 @@ fn has_completion_deferred_event(
     agent_id: &str,
     job_id: &str,
     candidate_hash: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT payload FROM events WHERE agent_id = ? AND event_type = 'completion_deferred'",
@@ -1103,7 +1103,7 @@ fn insert_completion_deferred_event(
     job_id: &str,
     reason: &str,
     candidate_hash: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let payload = json!({
         "job_id": job_id,
         "reason": reason,
@@ -1124,7 +1124,7 @@ fn handle_completion_deferral_sync(
     candidate_reply: &str,
     previous_state: &str,
     state_version: i64,
-) -> Result<Option<String>, CcbdError> {
+) -> Result<Option<String>, AhError> {
     let hash = recapture_content_hash(candidate_reply);
 
     let already_nudged = has_completion_deferred_event(conn, agent_id, job_id, &hash)?;
@@ -1172,7 +1172,7 @@ pub(crate) fn mark_agent_stuck_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_stuck_outcome_sync(db, agent_id, reason).map(|outcome| outcome.changes)
 }
 
@@ -1180,7 +1180,7 @@ fn mark_agent_stuck_outcome_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<StuckOutcome, CcbdError> {
+) -> Result<StuckOutcome, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -1315,7 +1315,7 @@ pub(crate) fn mark_agent_unknown_sync(
     reason: &str,
     pane_bytes: Vec<u8>,
     failed_rules: Value,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -1399,7 +1399,7 @@ pub(crate) fn mark_agent_failed_from_intervention_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -1462,7 +1462,7 @@ pub async fn mark_agent_unknown(
     reason: String,
     pane_bytes: Vec<u8>,
     failed_rules: Value,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -1487,7 +1487,7 @@ pub async fn mark_agent_failed_from_intervention(
     db: Db,
     agent_id: String,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let result = spawn_db(
         "state_machine::mark_agent_failed_from_intervention",
         move || mark_agent_failed_from_intervention_sync(&db, &agent_id, &reason),
@@ -1499,11 +1499,7 @@ pub async fn mark_agent_failed_from_intervention(
     result
 }
 
-pub async fn mark_agent_stuck(
-    db: Db,
-    agent_id: String,
-    reason: String,
-) -> Result<usize, CcbdError> {
+pub async fn mark_agent_stuck(db: Db, agent_id: String, reason: String) -> Result<usize, AhError> {
     let outcome = spawn_db("state_machine::mark_agent_stuck", move || {
         mark_agent_stuck_outcome_sync(&db, &agent_id, &reason)
     })
@@ -1539,7 +1535,7 @@ pub async fn mark_agent_waiting_for_ack(
     db: Db,
     agent_id: String,
     expected_version: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let result = spawn_db("state_machine::mark_agent_waiting_for_ack", move || {
         let mut conn = db.conn();
         mark_agent_waiting_for_ack_sync(&mut conn, &agent_id, expected_version)
@@ -1555,7 +1551,7 @@ pub async fn mark_agent_prompt_pending(
     db: Db,
     agent_id: String,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let result = spawn_db("state_machine::mark_agent_prompt_pending", move || {
         mark_agent_prompt_pending_sync(&db, &agent_id, &reason)
     })
@@ -1572,7 +1568,7 @@ pub async fn transit_agent_state(
     from_state_list: Vec<String>,
     to_state: String,
     reason: Option<String>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let result = spawn_db("state_machine::transit_agent_state", move || {
         let mut conn = db.conn();
         let from_states = from_state_list
@@ -1597,7 +1593,7 @@ pub async fn transit_agent_state(
 pub async fn mark_agent_idle_matched(
     db: Db,
     agent_id: String,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     let outcome = mark_agent_idle_matched_outcome(db, agent_id).await?;
     Ok((outcome.changes, outcome.affected_job))
 }
@@ -1610,7 +1606,7 @@ pub async fn mark_agent_idle_log_event(
     raw_path: String,
     raw_offset: u64,
     provider_turn_id: Option<String>,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     let outcome = mark_agent_idle_log_event_outcome(
         db,
         agent_id,
@@ -1631,7 +1627,7 @@ pub async fn mark_agent_idle_hook_event(
     hook_event: String,
     event_id: Option<String>,
     reply: Option<String>,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -1713,7 +1709,7 @@ fn test_denial_nudges() -> Vec<(String, String)> {
 pub async fn mark_agent_idle_matched_outcome(
     db: Db,
     agent_id: String,
-) -> Result<MarkerMatchedOutcome, CcbdError> {
+) -> Result<MarkerMatchedOutcome, AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -1762,7 +1758,7 @@ pub async fn mark_agent_idle_log_event_outcome(
     raw_path: String,
     raw_offset: u64,
     provider_turn_id: Option<String>,
-) -> Result<MarkerMatchedOutcome, CcbdError> {
+) -> Result<MarkerMatchedOutcome, AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -1828,7 +1824,7 @@ mod tests {
     };
     use crate::db::sessions::insert_session_sync;
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use rusqlite::params;
 
     fn with_test_db_handle<T>(test: impl FnOnce(&Db) -> T) -> T {
@@ -1993,7 +1989,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+            assert!(matches!(err, AhError::AgentWrongState { .. }));
             assert_eq!(state, STATE_BUSY);
             drop(conn);
             assert_eq!(state_change_count(db, "a_invalid_from"), 0);
@@ -2013,7 +2009,7 @@ mod tests {
             )
             .unwrap_err();
 
-            assert!(matches!(err, CcbdError::AgentNotFound(agent) if agent == "a_missing"));
+            assert!(matches!(err, AhError::AgentNotFound(agent) if agent == "a_missing"));
             drop(conn);
             assert_eq!(state_change_count(db, "a_missing"), 0);
         });
@@ -2865,7 +2861,7 @@ mod tests {
                         row.get(0)
                     })
                     .unwrap();
-                assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+                assert!(matches!(err, AhError::AgentWrongState { .. }));
                 assert!(matches!(state.as_str(), STATE_WAITING_FOR_ACK | STATE_BUSY));
                 assert_eq!(state_change_count(db, agent_id), 0);
             }
@@ -2914,7 +2910,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+            assert!(matches!(err, AhError::AgentWrongState { .. }));
             assert_eq!(state, STATE_CRASHED);
             assert_eq!(state_change_count(db, "a_crashed"), 0);
         });

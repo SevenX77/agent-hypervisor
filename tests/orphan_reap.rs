@@ -219,7 +219,7 @@ fn find_agent_scope(daemon_marker: &str, agent_id: &str) -> Option<String> {
         .output()
         .ok()?;
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let needle = format!("ccbd-agent-{agent_id}@{daemon_marker}");
+    let needle = format!("ah-agent-{agent_id}@{daemon_marker}");
     stdout.lines().find_map(|line| {
         if line.contains(&needle) {
             line.split_whitespace().next().map(str::to_string)

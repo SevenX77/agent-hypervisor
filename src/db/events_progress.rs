@@ -1,6 +1,6 @@
 use crate::db::Db;
 use crate::db::common::{map_db_error, spawn_db};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{TransactionBehavior, params};
 use serde_json::Value;
 
@@ -10,7 +10,7 @@ pub(crate) fn record_send_progress_sync(
     final_payload: &Value,
     agent_id: &str,
     write_succeeded: bool,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -31,7 +31,7 @@ pub async fn record_send_progress(
     final_payload: Value,
     agent_id: String,
     write_succeeded: bool,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("events_progress::record_send_progress", move || {
         record_send_progress_sync(&db, seq_id, &final_payload, &agent_id, write_succeeded)
     })

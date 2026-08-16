@@ -18,12 +18,12 @@ fn codex_probe_accepts_v0125_footer_after_prompt() {
          │ >_ OpenAI Codex (v0.125.0)                   │\n\
          │                                              │\n\
          │ model:       gpt-5.5   /model to change      │\n\
-         │ directory:   ~/coding/ccbd-rust           │\n\
+         │ directory:   ~/coding/agent-hypervisor           │\n\
          │ permissions: YOLO mode                       │\n\
          ╰──────────────────────────────────────────────╯\n\
            Tip: New Use /fast to enable our fastest inference with increased plan usage.\n\
          › Summarize recent commits\n\
-           gpt-5.5 default · ~/coding/ccbd-rust"
+           gpt-5.5 default · ~/coding/agent-hypervisor"
     ));
 }
 

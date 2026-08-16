@@ -7,7 +7,7 @@ use crate::db::agents::delete_agent;
 use crate::db::agents_lifecycle::mark_agent_killed;
 use crate::db::events::insert_event;
 use crate::db::sessions::{query_session_by_id, update_session_config_hash};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::master_revival::{
     MasterTransitionOutcome, master_spawn_lock, query_master_runtime, try_claim_master_transition,
 };
@@ -92,7 +92,7 @@ fn populate_bundle_digests(
     project_root: &std::path::Path,
     master: &mut RealignMasterParams,
     agents: &mut [RealignAgentParams],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     if master.bundle_digest.is_none() {
         master.bundle_digest =
             digest_for_bundles(project_root, BundleRole::Master, &master.bundle)?;
@@ -106,7 +106,7 @@ fn populate_bundle_digests(
     Ok(())
 }
 
-pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?.to_string();
     let force = optional_bool(&params, "force", false)?;
     let skip_master = optional_bool(&params, "_skip_master", false)?;
@@ -114,27 +114,27 @@ pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, C
         params
             .get("master")
             .cloned()
-            .ok_or_else(|| CcbdError::IpcInvalidRequest("missing field 'master'".into()))?,
+            .ok_or_else(|| AhError::IpcInvalidRequest("missing field 'master'".into()))?,
     )
-    .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid master: {err}")))?;
+    .map_err(|err| AhError::IpcInvalidRequest(format!("invalid master: {err}")))?;
     let mut agents: Vec<RealignAgentParams> = serde_json::from_value(
         params
             .get("agents")
             .cloned()
-            .ok_or_else(|| CcbdError::IpcInvalidRequest("missing field 'agents'".into()))?,
+            .ok_or_else(|| AhError::IpcInvalidRequest("missing field 'agents'".into()))?,
     )
-    .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid agents: {err}")))?;
+    .map_err(|err| AhError::IpcInvalidRequest(format!("invalid agents: {err}")))?;
     // ISSUE-13 §3a: project-level `[env]` carried raw; the server merges it into each
     // agent's fingerprint env via the same `bare_config_env` helper the spawn side uses.
     let config_env: HashMap<String, String> = match params.get("config_env") {
         Some(value) => serde_json::from_value(value.clone())
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid config_env: {err}")))?,
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid config_env: {err}")))?,
         None => HashMap::new(),
     };
 
     let session = query_session_by_id(ctx.db.clone(), session_id.clone())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
     let project_root = std::path::PathBuf::from(&session.absolute_path);
     populate_bundle_digests(&project_root, &mut master, &mut agents)?;
     let mut results = Vec::new();
@@ -180,7 +180,7 @@ pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, C
         let spawn_lock = master_spawn_lock(&session_id);
         let _master_spawn_guard = spawn_lock.lock().await;
         let runtime = query_master_runtime(&ctx.db, &session_id)?.ok_or_else(|| {
-            CcbdError::IpcInvalidRequest(format!("active master runtime not found: {session_id}"))
+            AhError::IpcInvalidRequest(format!("active master runtime not found: {session_id}"))
         })?;
         match try_claim_master_transition(&ctx.db, &session_id, runtime.pid, runtime.generation)? {
             MasterTransitionOutcome::Claimed => {}
@@ -409,7 +409,7 @@ pub async fn handle_session_realign(params: Value, ctx: &Ctx) -> Result<Value, C
     Ok(json!({ "statuses": results }))
 }
 
-pub async fn handle_agent_realign(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_realign(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?.to_string();
     let force = optional_bool(&params, "force", false)?;
     // ISSUE-13 §3a: forward the project `[env]` so agent.realign fingerprints the same
@@ -419,7 +419,7 @@ pub async fn handle_agent_realign(params: Value, ctx: &Ctx) -> Result<Value, Ccb
         .cloned()
         .unwrap_or_else(|| json!({}));
     let agent: RealignAgentParams = serde_json::from_value(params)
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid agent realign: {err}")))?;
+        .map_err(|err| AhError::IpcInvalidRequest(format!("invalid agent realign: {err}")))?;
     handle_session_realign(
         json!({
             "session_id": session_id,
@@ -452,7 +452,7 @@ pub(crate) async fn spawn_realign_agent(
     is_recovery: bool,
     config_env: &HashMap<String, String>,
     captured_intent: Option<crate::db::recovery::AgentRecoveryIntent>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let uses_atomic_replacement = captured_intent.is_some();
     let db_action = if uses_atomic_replacement {
         AgentSpawnDbAction::ReplaceKilledAndRequeue {
@@ -527,7 +527,7 @@ async fn persist_realign_snapshot_after_success(
     agent: &RealignAgentParams,
     expected_hash: &str,
     config_env: &HashMap<String, String>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let spec = crate::db::recovery::AgentSpawnSpec {
         agent_id: agent.agent_id.clone(),
         provider: agent.provider.clone(),
@@ -642,16 +642,14 @@ mod ra2_tests {
 fn running_agent_hashes(
     ctx: &Ctx,
     session_id: &str,
-) -> Result<Vec<RunningAgentConfigHash>, CcbdError> {
+) -> Result<Vec<RunningAgentConfigHash>, AhError> {
     let conn = ctx.db.conn();
     let mut stmt = conn
         .prepare(
             "SELECT id, provider, state, config_hash FROM agents \
              WHERE session_id = ? AND state != 'KILLED' ORDER BY id ASC",
         )
-        .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("prepare realign agents: {err}"))
-        })?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("prepare realign agents: {err}")))?;
     let rows = stmt
         .query_map([session_id], |row| {
             Ok(RunningAgentConfigHash {
@@ -661,9 +659,9 @@ fn running_agent_hashes(
                 config_hash: row.get(3)?,
             })
         })
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("query realign agents: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("query realign agents: {err}")))?;
     rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("collect realign agents: {err}")))
+        .map_err(|err| AhError::DbConstraintViolation(format!("collect realign agents: {err}")))
 }
 
 /// ISSUE-13 §4b (commit C): space out consecutive destructive respawns within one realign.

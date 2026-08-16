@@ -8,7 +8,7 @@ use crate::db::master_recovery::expire_master_recovery_window_sync;
 use crate::db::state_machine::{
     STATE_BUSY, STATE_PROMPT_PENDING, STATE_SPAWNING, STATE_WAITING_FOR_ACK,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::monitor::session_watch::unit_name_for_session;
 use crate::platform::sys::scope::RealSystemctlRunner;
 pub(crate) use crate::platform::sys::scope::{ScopeUnit, SystemctlRunner};
@@ -97,7 +97,7 @@ pub fn recovery_eligible_orphan_scope_should_be_preserved(
     agent_state == "CRASHED" && crate::provider::manifest::is_recovery_eligible_provider(provider)
 }
 
-pub(crate) fn system_dump_sync(db: &Db) -> Result<Value, CcbdError> {
+pub(crate) fn system_dump_sync(db: &Db) -> Result<Value, AhError> {
     let conn = db.conn();
     let projects = {
         let mut stmt = conn
@@ -189,7 +189,7 @@ pub(crate) fn cascade_kill_session_agents_sync(
     db: &Db,
     session_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     cascade_kill_session_agents_with_runner_sync(db, session_id, reason, None, &RealSystemctlRunner)
 }
 
@@ -216,7 +216,7 @@ pub(crate) struct WorkerRuntimeCleanupOutcome {
 pub(crate) fn snapshot_master_death_session_activity(
     db: &Db,
     session_id: &str,
-) -> Result<MasterDeathSessionSnapshot, CcbdError> {
+) -> Result<MasterDeathSessionSnapshot, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -279,7 +279,7 @@ pub(crate) fn clean_worker_runtime_resources_with_runner_sync(
     daemon_marker: Option<&str>,
     preserve_session_anchor: bool,
     runner: &dyn SystemctlRunner,
-) -> Result<WorkerRuntimeCleanupOutcome, CcbdError> {
+) -> Result<WorkerRuntimeCleanupOutcome, AhError> {
     let mut outcome = WorkerRuntimeCleanupOutcome::default();
     let worker_set = worker_ids.iter().cloned().collect::<HashSet<_>>();
 
@@ -319,7 +319,7 @@ pub(crate) fn clean_worker_runtime_resources_with_runner_sync(
             let Some(agent_id) = worker_ids.iter().find(|agent_id| {
                 scope
                     .description
-                    .contains(&format!("ccbd-agent-{agent_id}@{daemon_marker}"))
+                    .contains(&format!("ah-agent-{agent_id}@{daemon_marker}"))
             }) else {
                 continue;
             };
@@ -397,7 +397,7 @@ pub(crate) fn clean_worker_runtime_resources_sync(
     reason: &str,
     daemon_marker: Option<&str>,
     preserve_session_anchor: bool,
-) -> Result<WorkerRuntimeCleanupOutcome, CcbdError> {
+) -> Result<WorkerRuntimeCleanupOutcome, AhError> {
     clean_worker_runtime_resources_with_runner_sync(
         db,
         session_id,
@@ -415,7 +415,7 @@ pub(crate) fn cascade_kill_session_agents_with_runner_sync(
     reason: &str,
     daemon_marker: Option<&str>,
     runner: &dyn SystemctlRunner,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let status_changed = {
         let conn = db.conn();
         conn.execute(
@@ -504,7 +504,7 @@ fn stop_agent_scopes_with_runner(
     };
     let agent_needles = agent_ids
         .iter()
-        .map(|agent_id| (agent_id, format!("ccbd-agent-{agent_id}@{daemon_marker}")))
+        .map(|agent_id| (agent_id, format!("ah-agent-{agent_id}@{daemon_marker}")))
         .collect::<Vec<_>>();
 
     for scope in scopes {
@@ -553,7 +553,7 @@ pub(crate) fn stop_session_anchor_for_session_sync(session_id: &str) {
     stop_session_anchor_with_runner(session_id, &RealSystemctlRunner);
 }
 
-pub(crate) fn session_agent_ids_sync(db: &Db, session_id: &str) -> Result<Vec<String>, CcbdError> {
+pub(crate) fn session_agent_ids_sync(db: &Db, session_id: &str) -> Result<Vec<String>, AhError> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT id FROM agents WHERE session_id = ? ORDER BY created_at ASC, id ASC")
@@ -567,14 +567,14 @@ pub(crate) fn session_agent_ids_sync(db: &Db, session_id: &str) -> Result<Vec<St
 
 /// Reconcile active agents during daemon startup.
 #[cfg(test)]
-pub(crate) fn reconcile_startup_sync(db: &Db) -> Result<usize, CcbdError> {
+pub(crate) fn reconcile_startup_sync(db: &Db) -> Result<usize, AhError> {
     reconcile_active_agents_to_crashed_sync(db, None, None)
 }
 
 pub(crate) fn reconcile_startup_sync_with_state_dir(
     db: &Db,
     state_dir: Option<&Path>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     reconcile_startup_sync_with_state_dir_and_runner(
         db,
         state_dir,
@@ -590,14 +590,14 @@ fn reconcile_startup_sync_with_state_dir_and_runner(
     runner: &dyn SystemctlRunner,
     now: i64,
     orphan_dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let socket_name = state_dir.map(crate::tmux::compute_socket_name);
     let agents_count =
         reconcile_active_agents_to_crashed_sync(db, state_dir, socket_name.as_deref())?;
     let daemon_marker = state_dir
         .map(crate::tmux::compute_socket_name)
         .map(DaemonMarker::explicit)
-        .unwrap_or_else(|| DaemonMarker::ambient("ccbd-unknown"));
+        .unwrap_or_else(|| DaemonMarker::ambient("ah-unknown"));
     // Recovery windows are authoritative after ahd restart. Reconcile them before
     // ordinary orphan-scope cleanup so live recovery windows keep their scopes.
     let recovery_count =
@@ -607,16 +607,13 @@ fn reconcile_startup_sync_with_state_dir_and_runner(
     Ok(agents_count + recovery_count + scopes_count)
 }
 
-pub(crate) fn reconcile_orphan_scopes_sync(
-    db: &Db,
-    daemon_marker: &str,
-) -> Result<usize, CcbdError> {
+pub(crate) fn reconcile_orphan_scopes_sync(db: &Db, daemon_marker: &str) -> Result<usize, AhError> {
     let dry_run = reconcile_orphan_scopes_dry_run_enabled();
     reconcile_orphan_scopes_with_runner_sync(db, &RealSystemctlRunner, daemon_marker, dry_run)
 }
 
 fn reconcile_orphan_scopes_dry_run_enabled() -> bool {
-    std::env::var("CCBD_RECONCILE_DRY_RUN").as_deref() == Ok("1")
+    std::env::var("AH_RECONCILE_DRY_RUN").as_deref() == Ok("1")
 }
 
 pub(crate) fn reconcile_orphan_scopes_with_runner_sync(
@@ -624,7 +621,7 @@ pub(crate) fn reconcile_orphan_scopes_with_runner_sync(
     runner: &dyn SystemctlRunner,
     daemon_marker: &str,
     dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     reconcile_orphan_scopes_with_marker_sync(
         db,
         runner,
@@ -638,7 +635,7 @@ fn reconcile_orphan_scopes_with_marker_sync(
     runner: &dyn SystemctlRunner,
     daemon_marker: &DaemonMarker,
     dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     if !daemon_marker.may_stop_scopes() {
         tracing::warn!(
             daemon_marker = %daemon_marker.value,
@@ -659,8 +656,7 @@ fn reconcile_orphan_scopes_with_marker_sync(
 
     let mut stopped = 0;
     for scope in scopes {
-        if !is_own_ccbd_scope(&scope, &daemon_marker.value) || !is_orphan_scope(&scope, &live_refs)
-        {
+        if !is_own_ah_scope(&scope, &daemon_marker.value) || !is_orphan_scope(&scope, &live_refs) {
             continue;
         }
         if dry_run {
@@ -686,14 +682,11 @@ struct StartupMasterRecoveryWindow {
     defer_until: i64,
 }
 
-pub(crate) fn reconcile_master_recovery_windows_sync(
-    db: &Db,
-    now: i64,
-) -> Result<usize, CcbdError> {
+pub(crate) fn reconcile_master_recovery_windows_sync(db: &Db, now: i64) -> Result<usize, AhError> {
     reconcile_master_recovery_windows_with_marker_sync(
         db,
         now,
-        &DaemonMarker::ambient("ccbd-unknown"),
+        &DaemonMarker::ambient("ah-unknown"),
         &RealSystemctlRunner,
     )
 }
@@ -703,7 +696,7 @@ fn reconcile_master_recovery_windows_with_runner_sync(
     now: i64,
     daemon_marker: &str,
     runner: &dyn SystemctlRunner,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     reconcile_master_recovery_windows_with_marker_sync(
         db,
         now,
@@ -717,7 +710,7 @@ fn reconcile_master_recovery_windows_with_marker_sync(
     now: i64,
     daemon_marker: &DaemonMarker,
     runner: &dyn SystemctlRunner,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let windows = {
         let conn = db.conn();
         let mut stmt = conn
@@ -794,7 +787,7 @@ fn unixepoch() -> i64 {
     }
 }
 
-fn active_session_and_agent_refs_sync(db: &Db) -> Result<HashSet<String>, CcbdError> {
+fn active_session_and_agent_refs_sync(db: &Db) -> Result<HashSet<String>, AhError> {
     let conn = db.conn();
     let mut refs = HashSet::new();
     {
@@ -841,8 +834,8 @@ fn active_session_and_agent_refs_sync(db: &Db) -> Result<HashSet<String>, CcbdEr
     Ok(refs)
 }
 
-fn is_own_ccbd_scope(scope: &ScopeUnit, daemon_marker: &str) -> bool {
-    crate::platform::sys::scope::is_own_ccbd_scope(scope, daemon_marker)
+fn is_own_ah_scope(scope: &ScopeUnit, daemon_marker: &str) -> bool {
+    crate::platform::sys::scope::is_own_ah_scope(scope, daemon_marker)
 }
 
 fn is_orphan_scope(scope: &ScopeUnit, live_refs: &HashSet<String>) -> bool {
@@ -853,7 +846,7 @@ pub(crate) fn reconcile_active_agents_to_crashed_sync(
     db: &Db,
     state_dir: Option<&Path>,
     socket_name: Option<&str>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     startup_reconcile_phase_prompt_pending_preserve(db)?;
     let candidates = startup_reconcile_phase_a_select_candidates(db)?;
     let (dead, alive) = startup_reconcile_phase_b_probe_pids(candidates);
@@ -882,7 +875,7 @@ pub(crate) fn reconcile_active_agents_to_crashed_sync(
     Ok(changed)
 }
 
-fn startup_reconcile_phase_prompt_pending_preserve(db: &Db) -> Result<(), CcbdError> {
+fn startup_reconcile_phase_prompt_pending_preserve(db: &Db) -> Result<(), AhError> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare("SELECT id FROM agents WHERE state = ? ORDER BY id ASC")
@@ -907,7 +900,7 @@ fn startup_reconcile_phase_prompt_pending_preserve(db: &Db) -> Result<(), CcbdEr
 
 fn startup_reconcile_phase_a_select_candidates(
     db: &Db,
-) -> Result<Vec<StartupAgentCandidate>, CcbdError> {
+) -> Result<Vec<StartupAgentCandidate>, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -1160,7 +1153,7 @@ fn probe_pid_alive(pid: i32) -> Result<bool, std::io::Error> {
 fn startup_reconcile_phase_c_crash_dead(
     db: &Db,
     dead: &[StartupCrashCandidate],
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     if dead.is_empty() {
         return Ok(0);
     }
@@ -1215,7 +1208,7 @@ fn startup_reconcile_phase_c_crash_dead(
 fn startup_reconcile_phase_d_reregister_alive(
     db: &Db,
     alive: Vec<StartupAliveIoCandidate>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for alive_agent in alive {
         let candidate = alive_agent.agent;
         let Some(pid) = candidate.pid else {
@@ -1223,12 +1216,12 @@ fn startup_reconcile_phase_d_reregister_alive(
         };
         let pidfd = match crate::monitor::pidfd_open(pid as i32) {
             Ok(pidfd) => pidfd,
-            Err(CcbdError::AgentUnexpectedExit { .. }) => continue,
+            Err(AhError::AgentUnexpectedExit { .. }) => continue,
             Err(err) => return Err(err),
         };
         let task_fd = pidfd
             .try_clone()
-            .map_err(|err| CcbdError::EnvironmentNotSupported {
+            .map_err(|err| AhError::EnvironmentNotSupported {
                 details: format!("clone agent pidfd for {}: {err}", candidate.id),
             })?;
         crate::monitor::register(candidate.id.clone(), pidfd);
@@ -1298,7 +1291,7 @@ fn startup_reconcile_phase_d_reregister_alive(
     Ok(())
 }
 
-pub async fn system_dump(db: Db) -> Result<Value, CcbdError> {
+pub async fn system_dump(db: Db) -> Result<Value, AhError> {
     spawn_db("system::system_dump", move || system_dump_sync(&db)).await
 }
 
@@ -1306,7 +1299,7 @@ pub async fn cascade_kill_session_agents(
     db: Db,
     session_id: String,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("system::cascade_kill_session_agents", move || {
         cascade_kill_session_agents_sync(&db, &session_id, &reason)
     })
@@ -1318,7 +1311,7 @@ pub async fn cascade_kill_session_agents_for_daemon(
     session_id: String,
     reason: String,
     daemon_marker: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db(
         "system::cascade_kill_session_agents_for_daemon",
         move || {
@@ -1334,14 +1327,14 @@ pub async fn cascade_kill_session_agents_for_daemon(
     .await
 }
 
-pub async fn session_agent_ids(db: Db, session_id: String) -> Result<Vec<String>, CcbdError> {
+pub async fn session_agent_ids(db: Db, session_id: String) -> Result<Vec<String>, AhError> {
     spawn_db("system::session_agent_ids", move || {
         session_agent_ids_sync(&db, &session_id)
     })
     .await
 }
 
-pub async fn reconcile_startup(db: Db) -> Result<usize, CcbdError> {
+pub async fn reconcile_startup(db: Db) -> Result<usize, AhError> {
     let state_dir = crate::env::resolve_state_dir();
     reconcile_startup_with_tmux_socket_and_provenance(
         db,
@@ -1355,7 +1348,7 @@ pub async fn reconcile_startup(db: Db) -> Result<usize, CcbdError> {
 pub async fn reconcile_startup_with_state_dir(
     db: Db,
     state_dir: PathBuf,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     reconcile_startup_with_tmux_socket(db, state_dir, None).await
 }
 
@@ -1363,7 +1356,7 @@ pub async fn reconcile_startup_with_tmux_socket(
     db: Db,
     state_dir: PathBuf,
     current_socket_name: Option<String>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     reconcile_startup_with_tmux_socket_and_gateway(db, state_dir, current_socket_name, None).await
 }
 
@@ -1372,7 +1365,7 @@ pub async fn reconcile_startup_with_tmux_socket_and_gateway(
     state_dir: PathBuf,
     current_socket_name: Option<String>,
     claude_gateway: Option<Arc<crate::claude_gateway::ClaudeGatewayService>>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let reconciled = reconcile_startup_with_tmux_socket_and_provenance(
         db.clone(),
         state_dir.clone(),
@@ -1396,7 +1389,7 @@ async fn reconcile_startup_with_tmux_socket_and_provenance(
     state_dir: PathBuf,
     current_socket_name: Option<String>,
     marker_provenance: DaemonMarkerProvenance,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("system::reconcile_startup", move || {
         reconcile_startup_with_tmux_socket_sync_and_runner(
             &db,
@@ -1419,7 +1412,7 @@ fn reconcile_startup_with_tmux_socket_sync_and_runner(
     runner: &dyn SystemctlRunner,
     now: i64,
     orphan_dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let socket_name = current_socket_name
         .map(str::to_string)
         .unwrap_or_else(|| crate::tmux::compute_socket_name(state_dir));
@@ -1437,7 +1430,7 @@ fn reconcile_startup_with_tmux_socket_sync_and_runner(
     Ok(agents_count + recovery_count + scopes_count)
 }
 
-fn select_startup_claude_gateway_seats_sync(db: &Db) -> Result<StartupClaudeSeats, CcbdError> {
+fn select_startup_claude_gateway_seats_sync(db: &Db) -> Result<StartupClaudeSeats, AhError> {
     let conn = db.conn();
     let workers = {
         let mut stmt = conn
@@ -1479,7 +1472,7 @@ async fn reconcile_claude_gateway_seats(
     db: Db,
     state_dir: PathBuf,
     claude_gateway: Arc<crate::claude_gateway::ClaudeGatewayService>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let seats = spawn_db("system::select_startup_claude_gateway_seats", move || {
         select_startup_claude_gateway_seats_sync(&db)
     })
@@ -1539,7 +1532,7 @@ async fn reconcile_startup_with_tmux_socket_and_runner_for_test(
     runner: Arc<dyn SystemctlRunner + Send + Sync>,
     now: i64,
     orphan_dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("system::reconcile_startup_test", move || {
         reconcile_startup_with_tmux_socket_sync_and_runner(
             &db,
@@ -1562,7 +1555,7 @@ async fn reconcile_startup_with_ambient_marker_and_runner_for_test(
     runner: Arc<dyn SystemctlRunner + Send + Sync>,
     now: i64,
     orphan_dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("system::reconcile_startup_ambient_test", move || {
         reconcile_startup_with_tmux_socket_sync_and_runner(
             &db,
@@ -1583,7 +1576,7 @@ async fn reconcile_startup_from_ambient_env_with_runner_for_test(
     runner: Arc<dyn SystemctlRunner + Send + Sync>,
     now: i64,
     orphan_dry_run: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let state_dir = crate::env::resolve_state_dir();
     spawn_db("system::reconcile_startup_ambient_env_test", move || {
         reconcile_startup_with_tmux_socket_sync_and_runner(
@@ -1599,9 +1592,7 @@ async fn reconcile_startup_from_ambient_env_with_runner_for_test(
     .await
 }
 
-pub fn sweep_stale_tmux_sockets_sync(
-    current_socket_name: Option<&str>,
-) -> Result<usize, CcbdError> {
+pub fn sweep_stale_tmux_sockets_sync(current_socket_name: Option<&str>) -> Result<usize, AhError> {
     #[cfg(windows)]
     {
         let _ = current_socket_name;
@@ -1615,7 +1606,7 @@ pub fn sweep_stale_tmux_sockets_sync(
             Ok(entries) => entries,
             Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(0),
             Err(err) => {
-                return Err(CcbdError::EnvironmentNotSupported {
+                return Err(AhError::EnvironmentNotSupported {
                     details: format!("read tmux socket dir {socket_dir}: {err}"),
                 });
             }
@@ -1631,7 +1622,7 @@ pub fn sweep_stale_tmux_sockets_sync(
                 }
             };
             let name = entry.file_name().to_string_lossy().into_owned();
-            if !(name.starts_with("ahd-") || name.starts_with("ccbd-"))
+            if !(name.starts_with("ahd-") || name.starts_with("ah-"))
                 || current_socket_name == Some(name.as_str())
             {
                 continue;
@@ -2343,7 +2334,7 @@ mod tests {
             let runner = RecordingSystemctl::new(
                 vec![ScopeUnit {
                     unit: "run-order-agent.scope".to_string(),
-                    description: format!("ccbd-agent-a_reconcile_order@{daemon_marker}"),
+                    description: format!("ah-agent-a_reconcile_order@{daemon_marker}"),
                 }],
                 events.clone(),
             );
@@ -2486,7 +2477,7 @@ mod tests {
             let runner = FakeSystemctl {
                 list_result: Ok(vec![ScopeUnit {
                     unit: "run-a-scope-fallback.scope".to_string(),
-                    description: "ccbd-agent-a_scope_fallback@ahd-test-sock".to_string(),
+                    description: "ah-agent-a_scope_fallback@ahd-test-sock".to_string(),
                 }]),
                 stopped: RefCell::new(Vec::new()),
                 stop_result: Err(std::io::ErrorKind::TimedOut),
@@ -2524,7 +2515,7 @@ mod tests {
             );
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-a-scope-success.scope".to_string(),
-                description: "ccbd-agent-a_scope_success@ahd-test-sock".to_string(),
+                description: "ah-agent-a_scope_success@ahd-test-sock".to_string(),
             }]);
 
             let outcome = clean_worker_runtime_resources_with_runner_sync(
@@ -2558,7 +2549,7 @@ mod tests {
             );
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-a-preserve-anchor.scope".to_string(),
-                description: "ccbd-agent-a_preserve_anchor@ahd-test-sock".to_string(),
+                description: "ah-agent-a_preserve_anchor@ahd-test-sock".to_string(),
             }]);
 
             let outcome = clean_worker_runtime_resources_with_runner_sync(
@@ -2670,7 +2661,7 @@ mod tests {
             let runner = FakeSystemctl {
                 list_result: Ok(vec![ScopeUnit {
                     unit: "run-a-double-failure.scope".to_string(),
-                    description: "ccbd-agent-a_double_failure@ahd-test-sock".to_string(),
+                    description: "ah-agent-a_double_failure@ahd-test-sock".to_string(),
                 }]),
                 stopped: RefCell::new(Vec::new()),
                 stop_result: Err(std::io::ErrorKind::TimedOut),
@@ -2788,15 +2779,15 @@ mod tests {
             let runner = FakeSystemctl::with_scopes(vec![
                 ScopeUnit {
                     unit: "run-a1.scope".to_string(),
-                    description: "ccbd-agent-a1@ahd-test-sock".to_string(),
+                    description: "ah-agent-a1@ahd-test-sock".to_string(),
                 },
                 ScopeUnit {
                     unit: "run-a2.scope".to_string(),
-                    description: "ccbd-agent-a2@ahd-test-sock".to_string(),
+                    description: "ah-agent-a2@ahd-test-sock".to_string(),
                 },
                 ScopeUnit {
                     unit: "run-foreign.scope".to_string(),
-                    description: "ccbd-agent-a3@other-daemon".to_string(),
+                    description: "ah-agent-a3@other-daemon".to_string(),
                 },
             ]);
 
@@ -2831,7 +2822,7 @@ mod tests {
             }
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-a1.scope".to_string(),
-                description: "ccbd-agent-a1@ahd-test-sock".to_string(),
+                description: "ah-agent-a1@ahd-test-sock".to_string(),
             }]);
 
             let count = cascade_kill_session_agents_with_runner_sync(
@@ -2934,13 +2925,9 @@ mod tests {
     fn test_remove_agent_sandbox_dir_archives_session_records_to_the_project() {
         let state_dir = tempfile::TempDir::new().unwrap();
         let project = tempfile::TempDir::new().unwrap();
-        let sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
-            state_dir.path(),
-            "s1",
-            "a1",
-            project.path(),
-        )
-        .unwrap();
+        let sandbox_dir =
+            crate::sandbox::path::resolve_sandbox_dir(state_dir.path(), "s1", "a1", project.path())
+                .unwrap();
         let home = sandbox_home_for_sandbox_dir(&sandbox_dir).unwrap();
         fs::create_dir_all(home.join(".codex/sessions")).unwrap();
         fs::write(home.join(".codex/sessions/rollout.jsonl"), b"{\"turn\":1}").unwrap();
@@ -3371,11 +3358,11 @@ mod tests {
             vec![
                 ScopeUnit {
                     unit: "run-live-agent.scope".to_string(),
-                    description: format!("ccbd-agent-a_reconcile_live@{daemon_marker}"),
+                    description: format!("ah-agent-a_reconcile_live@{daemon_marker}"),
                 },
                 ScopeUnit {
                     unit: "run-orphan-agent.scope".to_string(),
-                    description: format!("ccbd-agent-a_reconcile_orphan@{daemon_marker}"),
+                    description: format!("ah-agent-a_reconcile_orphan@{daemon_marker}"),
                 },
             ],
             stopped.clone(),
@@ -3413,15 +3400,15 @@ mod tests {
             let runner = FakeSystemctl::with_scopes(vec![
                 ScopeUnit {
                     unit: "run-foreign-a1.scope".to_string(),
-                    description: format!("ccbd-agent-a1@{marker_b}"),
+                    description: format!("ah-agent-a1@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-foreign-a2.scope".to_string(),
-                    description: format!("ccbd-agent-a2@{marker_b}"),
+                    description: format!("ah-agent-a2@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-own-orphan.scope".to_string(),
-                    description: format!("ccbd-agent-a_orphan@{marker_a}"),
+                    description: format!("ah-agent-a_orphan@{marker_a}"),
                 },
             ]);
 
@@ -3451,15 +3438,15 @@ mod tests {
             vec![
                 ScopeUnit {
                     unit: "run-foreign-a1.scope".to_string(),
-                    description: format!("ccbd-agent-a1@{marker_b}"),
+                    description: format!("ah-agent-a1@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-foreign-a2.scope".to_string(),
-                    description: format!("ccbd-agent-a2@{marker_b}"),
+                    description: format!("ah-agent-a2@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-own-orphan.scope".to_string(),
-                    description: format!("ccbd-agent-a_orphan@{marker_a}"),
+                    description: format!("ah-agent-a_orphan@{marker_a}"),
                 },
             ],
             stopped.clone(),
@@ -3490,7 +3477,7 @@ mod tests {
         let runner = Arc::new(ThreadSafeRecordingSystemctl::new(
             vec![ScopeUnit {
                 unit: "run-live-a1.scope".to_string(),
-                description: format!("ccbd-agent-a1@{leaked_marker}"),
+                description: format!("ah-agent-a1@{leaked_marker}"),
             }],
             stopped.clone(),
         ));
@@ -3524,15 +3511,15 @@ mod tests {
             vec![
                 ScopeUnit {
                     unit: "run-foreign-a1.scope".to_string(),
-                    description: format!("ccbd-agent-a1@{marker_b}"),
+                    description: format!("ah-agent-a1@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-foreign-a2.scope".to_string(),
-                    description: format!("ccbd-agent-a2@{marker_b}"),
+                    description: format!("ah-agent-a2@{marker_b}"),
                 },
                 ScopeUnit {
                     unit: "run-env-owned-orphan.scope".to_string(),
-                    description: format!("ccbd-agent-a_orphan@{marker_a}"),
+                    description: format!("ah-agent-a_orphan@{marker_a}"),
                 },
             ],
             stopped.clone(),
@@ -3552,12 +3539,12 @@ mod tests {
     fn test_reconcile_orphan_scopes_skips_foreign_daemon_scopes() {
         with_test_db_handle(|db| {
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
-                unit: "ccbd-tmux-deadbeefcafebabe.scope".to_string(),
-                description: "legacy Python ccb tmux scope".to_string(),
+                unit: "ah-tmux-deadbeefcafebabe.scope".to_string(),
+                description: "legacy Python ah tmux scope".to_string(),
             }]);
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-own", false).unwrap();
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-own", false).unwrap();
 
             assert_eq!(count, 0);
             assert!(runner.stopped.borrow().is_empty());
@@ -3569,11 +3556,11 @@ mod tests {
         with_test_db_handle(|db| {
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-123.scope".to_string(),
-                description: "ccbd-agent-a_dead@ccbd-own".to_string(),
+                description: "ah-agent-a_dead@ah-own".to_string(),
             }]);
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-own", true).unwrap();
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-own", true).unwrap();
 
             assert_eq!(count, 1);
             assert!(runner.stopped.borrow().is_empty());
@@ -3585,11 +3572,11 @@ mod tests {
         with_test_db_handle(|db| {
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-123.scope".to_string(),
-                description: "ccbd-agent-a_dead@ccbd-own".to_string(),
+                description: "ah-agent-a_dead@ah-own".to_string(),
             }]);
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-own", false).unwrap();
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-own", false).unwrap();
 
             assert_eq!(count, 1);
             assert_eq!(runner.stopped.borrow().as_slice(), ["run-123.scope"]);
@@ -3600,8 +3587,8 @@ mod tests {
     #[serial_test::serial(global_env)]
     fn test_reconcile_orphan_scopes_defaults_to_real_stop() {
         unsafe {
-            std::env::remove_var("CCBD_RECONCILE_DRY_RUN");
-            std::env::remove_var("CCBD_RECONCILE_FORCE");
+            std::env::remove_var("AH_RECONCILE_DRY_RUN");
+            std::env::remove_var("AH_RECONCILE_FORCE");
         }
 
         assert!(!reconcile_orphan_scopes_dry_run_enabled());
@@ -3611,14 +3598,14 @@ mod tests {
     #[serial_test::serial(global_env)]
     fn test_reconcile_orphan_scopes_dry_run_escape_hatch() {
         unsafe {
-            std::env::set_var("CCBD_RECONCILE_DRY_RUN", "1");
-            std::env::remove_var("CCBD_RECONCILE_FORCE");
+            std::env::set_var("AH_RECONCILE_DRY_RUN", "1");
+            std::env::remove_var("AH_RECONCILE_FORCE");
         }
 
         assert!(reconcile_orphan_scopes_dry_run_enabled());
 
         unsafe {
-            std::env::remove_var("CCBD_RECONCILE_DRY_RUN");
+            std::env::remove_var("AH_RECONCILE_DRY_RUN");
         }
     }
 
@@ -3634,16 +3621,16 @@ mod tests {
             let runner = FakeSystemctl::with_scopes(vec![
                 ScopeUnit {
                     unit: "run-stale-agent.scope".to_string(),
-                    description: "ccbd-agent-a_dead@ccbd-old-generation".to_string(),
+                    description: "ah-agent-a_dead@ah-old-generation".to_string(),
                 },
                 ScopeUnit {
                     unit: "run-foreign-agent.scope".to_string(),
-                    description: "ccbd-agent-foreign@ccbd-old-generation".to_string(),
+                    description: "ah-agent-foreign@ah-old-generation".to_string(),
                 },
             ]);
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-new-generation", false)
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-new-generation", false)
                     .unwrap();
 
             assert_eq!(count, 0);
@@ -3661,11 +3648,11 @@ mod tests {
             }
             let runner = FakeSystemctl::with_scopes(vec![ScopeUnit {
                 unit: "run-123.scope".to_string(),
-                description: "ccbd-agent-a1@ccbd-own sess_active".to_string(),
+                description: "ah-agent-a1@ah-own sess_active".to_string(),
             }]);
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-own", false).unwrap();
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-own", false).unwrap();
 
             assert_eq!(count, 0);
             assert!(runner.stopped.borrow().is_empty());
@@ -3682,7 +3669,7 @@ mod tests {
             };
 
             let count =
-                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ccbd-own", false).unwrap();
+                reconcile_orphan_scopes_with_runner_sync(db, &runner, "ah-own", false).unwrap();
 
             assert_eq!(count, 0);
             assert!(runner.stopped.borrow().is_empty());

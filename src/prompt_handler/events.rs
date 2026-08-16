@@ -4,7 +4,7 @@ use crate::db::Db;
 use crate::db::events::insert_event_and_notify;
 #[cfg(test)]
 use crate::db::events::insert_event_sync;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::prompt_handler::runner::PromptSnapshot;
 use serde::{Deserialize, Serialize};
 
@@ -44,9 +44,9 @@ pub async fn emit_unknown_prompt_detected(
     db: Db,
     agent_id: String,
     payload: UnknownPromptPayload,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let payload_json = serde_json::to_string(&payload).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
+        AhError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
     })?;
     insert_event_and_notify(
         db,
@@ -64,7 +64,7 @@ pub(crate) fn emit_unknown_prompt_detected_sync(
     conn: &rusqlite::Connection,
     agent_id: &str,
     payload: &UnknownPromptPayload,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     tracing::info!(
         agent_id,
         block_reason = %payload.block_reason,
@@ -72,7 +72,7 @@ pub(crate) fn emit_unknown_prompt_detected_sync(
         "unknown prompt event emit start"
     );
     let payload_json = serde_json::to_string(payload).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
+        AhError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
     })?;
     let seq_id = insert_event_sync(conn, agent_id, None, UNKNOWN_PROMPT_DETECTED, &payload_json)
         .map_err(|err| {

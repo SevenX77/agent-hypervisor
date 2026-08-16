@@ -99,7 +99,7 @@ pub fn parse_systemctl_scope_units(output: &str) -> Vec<ScopeUnit> {
         .collect()
 }
 
-pub fn is_own_ccbd_scope(scope: &ScopeUnit, daemon_marker: &str) -> bool {
+pub fn is_own_ah_scope(scope: &ScopeUnit, daemon_marker: &str) -> bool {
     scope.description.contains(&format!("@{daemon_marker}"))
 }
 
@@ -139,7 +139,7 @@ pub fn wrap_in_scope(base_cmd: &str, base_args: &[&str], policy: &ScopePolicy) -
 pub fn unit_name_for_socket(socket_name: &str) -> String {
     let suffix = socket_name
         .strip_prefix("ahd-")
-        .or_else(|| socket_name.strip_prefix("ccbd-"))
+        .or_else(|| socket_name.strip_prefix("ah-"))
         .unwrap_or(socket_name);
     format!("ahd-tmux-{}", &suffix[..suffix.len().min(8)])
 }
@@ -227,7 +227,7 @@ pub fn wrap_command(
         "--user".to_string(),
         "--scope".to_string(),
         "--collect".to_string(),
-        format!("--description=ccbd-agent-{agent_id}@{daemon_marker}"),
+        format!("--description=ah-agent-{agent_id}@{daemon_marker}"),
     ];
     if env_state.under_systemd {
         cmd.push(format!("--slice={}", agent_slice_for_project(project_id)));
@@ -281,7 +281,7 @@ pub fn wrap_command_with_recovery_and_sandbox_overrides(
         "--user".to_string(),
         "--scope".to_string(),
         "--collect".to_string(),
-        format!("--description=ccbd-agent-{agent_id}@{daemon_marker}"),
+        format!("--description=ah-agent-{agent_id}@{daemon_marker}"),
     ];
     if env_state.under_systemd {
         cmd.push(format!("--slice={}", agent_slice_for_project(project_id)));
@@ -364,14 +364,11 @@ fn append_read_only_bind_overrides(cmd: &mut Vec<String>, overrides: &SandboxOve
 }
 
 fn agent_slice_for_project(project_id: &str) -> String {
-    format!("ccb-{}-ccbd-agents.slice", sanitize_project_id(project_id))
+    format!("ah-{}-agents.slice", sanitize_project_id(project_id))
 }
 
 fn workspace_slice_for_project(project_id: &str) -> String {
-    format!(
-        "ccb-{}-ccbd-workspace.slice",
-        sanitize_project_id(project_id)
-    )
+    format!("ah-{}-workspace.slice", sanitize_project_id(project_id))
 }
 
 fn sanitize_project_id(project_id: &str) -> String {
@@ -545,7 +542,7 @@ fn master_shell_command_with_env_prefix(
     cmd.extend([
         "sh".to_string(),
         "-lc".to_string(),
-        "echo 500 > /proc/self/oom_score_adj 2>/dev/null || { echo 'ccbd master failed to set oom_score_adj=500' >&2; exit 126; }; exec sh -lc \"$1\"".to_string(),
+        "echo 500 > /proc/self/oom_score_adj 2>/dev/null || { echo 'ah master failed to set oom_score_adj=500' >&2; exit 126; }; exec sh -lc \"$1\"".to_string(),
         "sh".to_string(),
         command,
     ]);

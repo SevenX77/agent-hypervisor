@@ -11,7 +11,7 @@
 //! directory, because an asset that only exists inside ah's state dir is one
 //! reclaim away from gone.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -86,10 +86,10 @@ impl ArchiveOutcome {
 /// session row before the sandbox is cleaned, and the master-death cleanup in
 /// `ahd` runs without a handle to the session at all. The marker travels with
 /// the sandbox, so every destruction path reads the same answer.
-pub fn write_project_root_marker(sandbox_dir: &Path, project_root: &Path) -> Result<(), CcbdError> {
+pub fn write_project_root_marker(sandbox_dir: &Path, project_root: &Path) -> Result<(), AhError> {
     let marker = sandbox_dir.join(PROJECT_ROOT_MARKER);
     fs::write(&marker, format!("{}\n", project_root.display())).map_err(|err| {
-        CcbdError::SandboxMountFailed {
+        AhError::SandboxMountFailed {
             details: format!("write sandbox project marker {}: {err}", marker.display()),
         }
     })
@@ -206,11 +206,8 @@ fn holds_records(path: &Path) -> bool {
     if !metadata.is_dir() {
         return false;
     }
-    fs::read_dir(path).is_ok_and(|entries| {
-        entries
-            .flatten()
-            .any(|entry| holds_records(&entry.path()))
-    })
+    fs::read_dir(path)
+        .is_ok_and(|entries| entries.flatten().any(|entry| holds_records(&entry.path())))
 }
 
 /// Creates the archive root carrying its own `.gitignore`, the way cargo marks
@@ -370,7 +367,8 @@ mod tests {
         let host_secret = temp.path().join("host-credentials.json");
         fs::write(&host_secret, "{\"refresh_token\":\"secret\"}").unwrap();
         write(&home.join(".claude/projects/-tmp-p/s.jsonl"), "claude\n");
-        std::os::unix::fs::symlink(&host_secret, home.join(".claude/projects/linked.json")).unwrap();
+        std::os::unix::fs::symlink(&host_secret, home.join(".claude/projects/linked.json"))
+            .unwrap();
 
         let ArchiveOutcome::Archived { destination, files } =
             archive_session_records_into(&project, &home, "sess_1", "a1")
@@ -446,7 +444,10 @@ mod tests {
         let home = temp.path().join("home");
         write(&home.join(".codex/sessions/r.jsonl"), "turn one\n");
         archive_session_records_into(&project, &home, "sess_1", "a1");
-        write(&home.join(".codex/sessions/r.jsonl"), "turn one\nturn two\n");
+        write(
+            &home.join(".codex/sessions/r.jsonl"),
+            "turn one\nturn two\n",
+        );
 
         let outcome = archive_session_records_into(&project, &home, "sess_1", "a1");
 

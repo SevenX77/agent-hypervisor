@@ -41,8 +41,8 @@ fn cleanup_state(state_dir: &Path) {
 
 fn spawn_daemon(state_dir: &Path) -> Child {
     let child = Command::new(env!("CARGO_BIN_EXE_ahd"))
-        .env("CCB_ENV", "dev")
-        .env_remove("CCB_SOCKET")
+        .env("AH_ENV", "dev")
+        .env_remove("AH_SOCKET")
         .env("AH_STATE_DIR", state_dir)
         .spawn()
         .expect("spawn ahd for master scope dogfood");
@@ -313,7 +313,7 @@ fn agent_scope_unit(state_dir: &Path, agent_id: &str) -> Option<String> {
 
 fn agent_scope_line(state_dir: &Path, agent_id: &str) -> Option<String> {
     let server = TmuxServer::new(state_dir);
-    let needle = format!("ccbd-agent-{agent_id}@{}", server.socket_name());
+    let needle = format!("ah-agent-{agent_id}@{}", server.socket_name());
     let output = Command::new("systemctl")
         .args([
             "--user",

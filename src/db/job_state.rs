@@ -49,7 +49,7 @@
 //!   into `job_transitions` (single audit surface — reuse, do not reinvent).
 #![allow(dead_code)] // scaffolding: bodies unimplemented until g2-m1 lands D1.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::Connection;
 
 /// Business status of a job. The DB representation is the SCREAMING-CASE string
@@ -110,16 +110,16 @@ pub(crate) fn transit_job_state(
     expected_from: JobStatus,
     to: JobStatus,
     reason: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let job = crate::db::jobs::query_job_sync(conn, job_id)?
-        .ok_or_else(|| CcbdError::DbConstraintViolation(format!("job {job_id} not found")))?;
+        .ok_or_else(|| AhError::DbConstraintViolation(format!("job {job_id} not found")))?;
 
     let actual_status = JobStatus::from_db_str(&job.status).ok_or_else(|| {
-        CcbdError::DbConstraintViolation(format!("unrecognized job status in DB: {}", job.status))
+        AhError::DbConstraintViolation(format!("unrecognized job status in DB: {}", job.status))
     })?;
 
     if actual_status != expected_from {
-        return Err(CcbdError::DbConstraintViolation(format!(
+        return Err(AhError::DbConstraintViolation(format!(
             "CAS mismatch for job {job_id}: expected {expected_from:?}, actual {actual_status:?}"
         )));
     }
@@ -137,7 +137,7 @@ pub(crate) fn transit_job_state(
         (JobStatus::Failed, JobStatus::Completed) => {
             let has_evidence = check_late_completion_evidence(conn, &job.agent_id, job_id)?;
             if !has_evidence {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "FAILED -> COMPLETED transition refused for job {job_id}: no late evidence"
                 )));
             }
@@ -148,7 +148,7 @@ pub(crate) fn transit_job_state(
     };
 
     if !is_legal {
-        return Err(CcbdError::DbConstraintViolation(format!(
+        return Err(AhError::DbConstraintViolation(format!(
             "illegal state transition for job {job_id} from {expected_from:?} to {to:?}"
         )));
     }
@@ -163,7 +163,7 @@ pub(crate) fn transit_job_state(
             )
             .map_err(|err| crate::db::common::map_db_error("transit job status and dispatched_at", err))?;
             if changes == 0 {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "CAS mismatch for job {job_id} during UPDATE: expected status {expected_str}"
                 )));
             }
@@ -175,7 +175,7 @@ pub(crate) fn transit_job_state(
             )
             .map_err(|err| crate::db::common::map_db_error("transit job status and completed_at", err))?;
             if changes == 0 {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "CAS mismatch for job {job_id} during UPDATE: expected status {expected_str}"
                 )));
             }
@@ -187,7 +187,7 @@ pub(crate) fn transit_job_state(
             )
             .map_err(|err| crate::db::common::map_db_error("transit job status and clear execution fields", err))?;
             if changes == 0 {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "CAS mismatch for job {job_id} during UPDATE: expected status {expected_str}"
                 )));
             }
@@ -225,7 +225,7 @@ fn check_late_completion_evidence(
     conn: &Connection,
     agent_id: &str,
     dispatched_job_id: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     use rusqlite::OptionalExtension;
     use serde_json::Value;
     let payload = conn
@@ -281,10 +281,10 @@ pub(crate) fn force_cancel_pending_dispatched_job_conn_sync(
     job_id: &str,
     now_epoch: i64,
     timeout_secs: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     use rusqlite::OptionalExtension;
     let job = crate::db::jobs::query_job_sync(conn, job_id)?
-        .ok_or_else(|| CcbdError::DbConstraintViolation(format!("job {job_id} not found")))?;
+        .ok_or_else(|| AhError::DbConstraintViolation(format!("job {job_id} not found")))?;
 
     if job.status != "DISPATCHED" || !job.cancel_requested {
         return Ok(false);
@@ -325,17 +325,17 @@ pub(crate) fn requeue_job_state_conn_sync(
     expected_from: JobStatus,
     error_reason: Option<&str>,
     reason: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     // 1. CAS pre-check to avoid updating error_reason if we will fail CAS anyway
     let job = crate::db::jobs::query_job_sync(conn, job_id)?
-        .ok_or_else(|| CcbdError::DbConstraintViolation(format!("job {job_id} not found")))?;
+        .ok_or_else(|| AhError::DbConstraintViolation(format!("job {job_id} not found")))?;
 
     let actual_status = JobStatus::from_db_str(&job.status).ok_or_else(|| {
-        CcbdError::DbConstraintViolation(format!("unrecognized job status in DB: {}", job.status))
+        AhError::DbConstraintViolation(format!("unrecognized job status in DB: {}", job.status))
     })?;
 
     if actual_status != expected_from {
-        return Err(CcbdError::DbConstraintViolation(format!(
+        return Err(AhError::DbConstraintViolation(format!(
             "CAS mismatch for job {job_id}: expected {expected_from:?}, actual {actual_status:?}"
         )));
     }

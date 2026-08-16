@@ -3,7 +3,7 @@
 use crate::db::prompt_experience::{
     NewPromptExperience, PromptExperienceLookup, PromptFingerprintType,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::MarkerMatcher;
 use crate::prompt_handler::gating::{GateContext, PromptGateDecision, classify_capture};
 use crate::prompt_handler::llm_client::LlmClassifier;
@@ -17,9 +17,9 @@ const CAN_INPUT_PROBE_CAPTURE_ATTEMPTS: usize = 3;
 const UNKNOWN_STABLE_SCAN_THRESHOLD: usize = 3;
 
 pub trait PromptIo: Send + Sync {
-    fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError>;
-    fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError>;
-    fn send_key_keysym(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError>;
+    fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, AhError>;
+    fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError>;
+    fn send_key_keysym(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError>;
 }
 
 pub struct TmuxPromptIo {
@@ -33,15 +33,15 @@ impl TmuxPromptIo {
 }
 
 impl PromptIo for TmuxPromptIo {
-    fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
+    fn capture_pane(&self, pane_id: &TmuxPaneId) -> Result<String, AhError> {
         self.tmux.capture_pane_sync(pane_id)
     }
 
-    fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+    fn send_key_literal(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
         self.tmux.send_keys_literal_sync(pane_id, value)
     }
 
-    fn send_key_keysym(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+    fn send_key_keysym(&self, pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
         self.tmux.send_keys_keysym_sync(pane_id, value)
     }
 }
@@ -135,7 +135,7 @@ pub enum PromptRunOutcome {
         depth: usize,
     },
     ExecutorFailed {
-        error: CcbdError,
+        error: AhError,
         depth: usize,
     },
 }
@@ -494,7 +494,7 @@ pub fn handle_prompt_chain(ctx: RunnerContext<'_>, max_depth: usize) -> PromptRu
                     "prompt runner stopped after learning-layer lookup failure"
                 );
                 return PromptRunOutcome::ExecutorFailed {
-                    error: CcbdError::DbConstraintViolation(error),
+                    error: AhError::DbConstraintViolation(error),
                     depth,
                 };
             }
@@ -670,7 +670,7 @@ fn llm_error_block_reason(error: &crate::prompt_handler::llm_client::LlmError) -
 enum CanInputProbe {
     Confirmed,
     NotCandidate,
-    Failed(CcbdError),
+    Failed(AhError),
 }
 
 fn confirm_can_input(ctx: &RunnerContext<'_>, capture: &str, depth: usize) -> CanInputProbe {
@@ -738,7 +738,7 @@ fn wait_for_probe_echo(
     ctx: &RunnerContext<'_>,
     probe: &str,
     depth: usize,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let mut captured_once = false;
     for _ in 0..CAN_INPUT_PROBE_CAPTURE_ATTEMPTS {
         settle_after_probe_action(ctx);
@@ -763,7 +763,7 @@ fn wait_for_probe_cleanup(
     ctx: &RunnerContext<'_>,
     probe: &str,
     depth: usize,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let mut captured_once = false;
     for _ in 0..CAN_INPUT_PROBE_CAPTURE_ATTEMPTS {
         settle_after_probe_action(ctx);
@@ -848,8 +848,8 @@ fn log_probe_error(
     ctx: &RunnerContext<'_>,
     depth: usize,
     step: &'static str,
-    error: CcbdError,
-) -> CcbdError {
+    error: AhError,
+) -> AhError {
     tracing::error!(
         agent_id = ctx.agent_id,
         depth,
@@ -866,7 +866,7 @@ fn execute_actions(
     case_id: &str,
     actions: &[PromptAction],
     depth: usize,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for action in actions {
         match action.validate() {
             Ok(ValidatedAction::Key(keysym)) => {
@@ -902,7 +902,7 @@ fn execute_actions(
                     impact = "invalid prompt action rejected before terminal input",
                     "prompt runner rejected prompt action"
                 );
-                return Err(CcbdError::from(error));
+                return Err(AhError::from(error));
             }
         }
     }
@@ -913,8 +913,8 @@ fn log_action_error(
     ctx: &RunnerContext<'_>,
     depth: usize,
     case_id: &str,
-    error: CcbdError,
-) -> CcbdError {
+    error: AhError,
+) -> AhError {
     tracing::error!(
         agent_id = ctx.agent_id,
         depth,
@@ -936,7 +936,7 @@ mod tests {
         NewPromptExperience, PromptFingerprintType, upsert_prompt_experience_sync,
     };
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::marker::MarkerMatcher;
     use crate::prompt_handler::llm_client::{LlmClassifier, LlmError, LlmOutcome};
     use crate::prompt_handler::matcher::PromptScanPurpose;
@@ -1024,9 +1024,9 @@ mod tests {
     }
 
     impl PromptIo for FakePromptIo {
-        fn capture_pane(&self, _pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
+        fn capture_pane(&self, _pane_id: &TmuxPaneId) -> Result<String, AhError> {
             if self.captures.lock().unwrap().is_empty() {
-                return Err(CcbdError::TmuxCommandFailed {
+                return Err(AhError::TmuxCommandFailed {
                     cmd: "fake capture".into(),
                     stderr: "no scripted capture".into(),
                     exit: 1,
@@ -1035,9 +1035,9 @@ mod tests {
             Ok(self.captures.lock().unwrap().remove(0))
         }
 
-        fn send_key_literal(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+        fn send_key_literal(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
             if self.fail_send {
-                return Err(CcbdError::TmuxCommandFailed {
+                return Err(AhError::TmuxCommandFailed {
                     cmd: "fake send literal".into(),
                     stderr: "scripted send failure".into(),
                     exit: 1,
@@ -1047,9 +1047,9 @@ mod tests {
             Ok(())
         }
 
-        fn send_key_keysym(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+        fn send_key_keysym(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
             if self.fail_send {
-                return Err(CcbdError::TmuxCommandFailed {
+                return Err(AhError::TmuxCommandFailed {
                     cmd: "fake send keysym".into(),
                     stderr: "scripted send failure".into(),
                     exit: 1,

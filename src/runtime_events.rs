@@ -1,5 +1,5 @@
 use crate::db::common::{map_db_error, spawn_db};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use crate::tmux::{TmuxPaneId, agent_session_name, master_session_name};
 use rusqlite::{Connection, params};
@@ -207,7 +207,7 @@ pub fn inactive_runtime_snapshot(input: RuntimeInactiveInput) -> RuntimeSnapshot
 pub async fn build_runtime_snapshot(
     ctx: &Ctx,
     request: RuntimeSnapshotRequest,
-) -> Result<RuntimeSnapshot, CcbdError> {
+) -> Result<RuntimeSnapshot, AhError> {
     let workspace_path = request.workspace_path.clone();
     let inventory = query_runtime_inventory(ctx.db.clone(), workspace_path.clone()).await?;
     let sessions = inventory.sessions;
@@ -353,16 +353,15 @@ pub async fn build_runtime_snapshot(
     })
 }
 
-pub fn runtime_snapshot_fingerprint(snapshot: &RuntimeSnapshot) -> Result<String, CcbdError> {
-    let mut value = serde_json::to_value(snapshot).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}"))
-    })?;
+pub fn runtime_snapshot_fingerprint(snapshot: &RuntimeSnapshot) -> Result<String, AhError> {
+    let mut value = serde_json::to_value(snapshot)
+        .map_err(|err| AhError::IpcInvalidRequest(format!("serialize runtime snapshot: {err}")))?;
     if let Value::Object(map) = &mut value {
         map.remove("sequence");
         map.remove("reason");
     }
     serde_json::to_string(&value)
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("fingerprint runtime snapshot: {err}")))
+        .map_err(|err| AhError::IpcInvalidRequest(format!("fingerprint runtime snapshot: {err}")))
 }
 
 async fn master_runtime_alive(
@@ -393,7 +392,7 @@ async fn master_runtime_alive(
 async fn query_runtime_inventory(
     db: crate::db::Db,
     workspace_path: Option<String>,
-) -> Result<RuntimeInventory, CcbdError> {
+) -> Result<RuntimeInventory, AhError> {
     spawn_db("runtime_events::query_inventory", move || {
         let conn = db.conn();
         query_runtime_inventory_sync(&conn, workspace_path.as_deref())
@@ -404,7 +403,7 @@ async fn query_runtime_inventory(
 fn query_runtime_inventory_sync(
     conn: &Connection,
     workspace_path: Option<&str>,
-) -> Result<RuntimeInventory, CcbdError> {
+) -> Result<RuntimeInventory, AhError> {
     let sessions = {
         let mut stmt = conn
             .prepare(
@@ -513,7 +512,7 @@ fn query_runtime_jobs_sync(
     conn: &Connection,
     workspace_path: Option<&str>,
     recent_terminal_cutoff: i64,
-) -> Result<Vec<RuntimeJobSnapshot>, CcbdError> {
+) -> Result<Vec<RuntimeJobSnapshot>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT jobs.id, jobs.agent_id, jobs.request_id, jobs.status,
@@ -560,7 +559,7 @@ fn query_runtime_jobs_sync(
 fn query_runtime_job_events_sync(
     conn: &Connection,
     workspace_path: Option<&str>,
-) -> Result<(Vec<RuntimeJobEventSnapshot>, i64), CcbdError> {
+) -> Result<(Vec<RuntimeJobEventSnapshot>, i64), AhError> {
     let job_event_cursor = conn
         .query_row(
             "SELECT COALESCE(MAX(job_transitions.job_event_id), 0)

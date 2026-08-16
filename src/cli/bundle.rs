@@ -224,6 +224,6 @@ fn sorted_unique(names: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn bundle_cli_error(err: crate::error::CcbdError) -> CliError {
+fn bundle_cli_error(err: crate::error::AhError) -> CliError {
     CliError::Config(err.to_string())
 }

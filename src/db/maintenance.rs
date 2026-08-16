@@ -13,7 +13,7 @@
 //! policy delete the failure you needed (#20), so the firehose is capped by
 //! count and the forensic rows are kept far longer.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::Connection;
 
 /// Event types that stream at pane speed. They are read while an agent is live
@@ -71,18 +71,15 @@ impl MaintenanceReport {
 pub fn run_state_maintenance(
     conn: &Connection,
     policy: RetentionPolicy,
-) -> Result<MaintenanceReport, CcbdError> {
+) -> Result<MaintenanceReport, AhError> {
     let mut report = MaintenanceReport::default();
 
-    report.firehose_events_deleted = delete_events_beyond_cap(
-        conn,
-        FIREHOSE_EVENT_TYPES,
-        true,
-        policy.firehose_events,
-    )?;
+    report.firehose_events_deleted =
+        delete_events_beyond_cap(conn, FIREHOSE_EVENT_TYPES, true, policy.firehose_events)?;
     report.forensic_events_deleted =
         delete_events_beyond_cap(conn, FIREHOSE_EVENT_TYPES, false, policy.forensic_events)?;
-    report.job_transitions_deleted = delete_job_transitions_beyond_cap(conn, policy.job_transitions)?;
+    report.job_transitions_deleted =
+        delete_job_transitions_beyond_cap(conn, policy.job_transitions)?;
 
     if report.deleted_rows() > 0 {
         reclaim_space(conn, policy, &mut report)?;
@@ -99,7 +96,7 @@ fn delete_events_beyond_cap(
     types: &[&str],
     matching: bool,
     keep: i64,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let placeholders = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
     let predicate = if matching {
         format!("event_type IN ({placeholders})")
@@ -120,24 +117,24 @@ fn delete_events_beyond_cap(
     }
     params.push(&keep);
     conn.execute(&sql, params.as_slice())
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("prune events: {err}")))
+        .map_err(|err| AhError::DbConstraintViolation(format!("prune events: {err}")))
 }
 
-fn delete_job_transitions_beyond_cap(conn: &Connection, keep: i64) -> Result<usize, CcbdError> {
+fn delete_job_transitions_beyond_cap(conn: &Connection, keep: i64) -> Result<usize, AhError> {
     conn.execute(
         "DELETE FROM job_transitions WHERE job_event_id NOT IN (
              SELECT job_event_id FROM job_transitions ORDER BY job_event_id DESC LIMIT ?1
          )",
         [keep],
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("prune job_transitions: {err}")))
+    .map_err(|err| AhError::DbConstraintViolation(format!("prune job_transitions: {err}")))
 }
 
 fn reclaim_space(
     conn: &Connection,
     policy: RetentionPolicy,
     report: &mut MaintenanceReport,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     // Incremental first: on a database created with auto_vacuum=INCREMENTAL this
     // returns the freed pages immediately and costs almost nothing. On any other
     // database it is a no-op, which is why the ratio check below still exists.
@@ -155,7 +152,7 @@ fn reclaim_space(
 
     if total_bytes >= policy.vacuum_min_bytes && free_ratio >= policy.vacuum_free_ratio {
         conn.execute_batch("VACUUM;")
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("vacuum state db: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("vacuum state db: {err}")))?;
         report.vacuumed = true;
     }
 
@@ -183,7 +180,8 @@ mod tests {
     }
 
     fn seed_agent(conn: &Connection) {
-        crate::db::sessions::insert_session_sync(conn, "s1", "p1", "/tmp/p1").expect("seed session");
+        crate::db::sessions::insert_session_sync(conn, "s1", "p1", "/tmp/p1")
+            .expect("seed session");
         crate::db::agents::insert_agent_sync(conn, "a1", "s1", "bash", "IDLE", None)
             .expect("seed agent");
     }
@@ -199,7 +197,11 @@ mod tests {
             insert_event(&conn, "output_chunk", &format!("{{\"text\":\"{i}\"}}"));
         }
         for i in 0..40 {
-            insert_event(&conn, "state_change", &format!("{{\"to\":\"BUSY\",\"i\":{i}}}"));
+            insert_event(
+                &conn,
+                "state_change",
+                &format!("{{\"to\":\"BUSY\",\"i\":{i}}}"),
+            );
         }
 
         let policy = RetentionPolicy {
@@ -279,7 +281,10 @@ mod tests {
 
         assert_eq!(first.deleted_rows(), 0);
         assert_eq!(second.deleted_rows(), 0);
-        assert!(!first.vacuumed, "a small tidy database must not be rewritten");
+        assert!(
+            !first.vacuumed,
+            "a small tidy database must not be rewritten"
+        );
     }
 
     /// The property this exists for: churn must not ratchet the file upward.

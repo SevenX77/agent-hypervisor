@@ -52,7 +52,7 @@ fn wait_for_socket(path: &std::path::Path, timeout: Duration) {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
-    panic!("ccbd socket did not appear at {}", path.display());
+    panic!("ah socket did not appear at {}", path.display());
 }
 
 fn terminate_and_wait(mut child: Child, timeout: Duration) {
@@ -62,15 +62,15 @@ fn terminate_and_wait(mut child: Child, timeout: Duration) {
 
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if let Some(status) = child.try_wait().expect("poll ccbd child") {
-            assert!(status.success(), "ccbd exited with {status}");
+        if let Some(status) = child.try_wait().expect("poll ah child") {
+            assert!(status.success(), "ah exited with {status}");
             return;
         }
         std::thread::sleep(Duration::from_millis(25));
     }
 
     let _ = child.kill();
-    panic!("ccbd did not exit after SIGTERM");
+    panic!("ah did not exit after SIGTERM");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -132,14 +132,13 @@ async fn daemon_shutdown_removes_agent_and_master_sessions() {
     }
 
     let child = Command::new(env!("CARGO_BIN_EXE_ahd"))
-        .env("CCB_ENV", "dev")
-        .env("CCBD_UNSAFE_NO_SANDBOX", "1")
-        .env_remove("CCB_SOCKET")
+        .env("AH_ENV", "dev")
+        .env("AH_UNSAFE_NO_SANDBOX", "1")
+        .env_remove("AH_SOCKET")
         .env_remove("AH_STATE_DIR")
-        .env_remove("CCBD_STATE_DIR")
         .env_remove("XDG_STATE_HOME")
         .spawn()
-        .expect("spawn ccbd");
+        .expect("spawn ah");
     wait_for_socket(&state_dir.join("ahd.sock"), Duration::from_secs(5));
     terminate_and_wait(child, Duration::from_secs(5));
 

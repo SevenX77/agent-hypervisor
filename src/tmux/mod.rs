@@ -75,7 +75,7 @@ mod tests {
         pane: &TmuxPaneId,
         needle: &str,
         timeout: Duration,
-    ) -> Result<(), crate::error::CcbdError> {
+    ) -> Result<(), crate::error::AhError> {
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             let capture = server.capture_pane(pane.clone()).await?;
@@ -84,7 +84,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        Err(crate::error::CcbdError::TmuxCommandFailed {
+        Err(crate::error::AhError::TmuxCommandFailed {
             cmd: "wait_for_pane_text".into(),
             stderr: format!("pane did not contain {needle:?} within {timeout:?}"),
             exit: -1,
@@ -196,7 +196,7 @@ mod tests {
             );
 
             server.kill_pane(pane).await?;
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         }
         .await;
 
@@ -223,7 +223,7 @@ mod tests {
                     vec!["bash".into(), "-lc".into(), "printf ready; sleep 1".into()],
                 )
                 .await?;
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         }
         .await;
 
@@ -296,7 +296,7 @@ mod tests {
                 "tmux server must remain alive after fast-exit panes"
             );
 
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         }
         .await;
 
@@ -369,7 +369,7 @@ mod tests {
                 }
             });
 
-            let buffer_name = "ccbd-test-buffer";
+            let buffer_name = "ah-test-buffer";
             let text = "for i in 1 2; do\n  echo \"line $i\"\ndone\n";
             for _ in 0..5 {
                 server
@@ -417,7 +417,7 @@ mod tests {
             );
 
             server.kill_pane(pane).await?;
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         }
         .await;
 

@@ -91,7 +91,7 @@ async fn test_tmux_server_in_scope() {
 async fn test_main_sigterm_cleans_resources() {
     which::which("tmux").expect("tmux binary required for mvp10 acceptance tests");
     let xdg_state = tempfile::tempdir().unwrap();
-    let state_dir = xdg_state.path().join("ccbd");
+    let state_dir = xdg_state.path().join("ah");
     let socket_name = compute_socket_name(&state_dir);
     let daemon_socket = state_dir.join("ahd.sock");
     let tmux_socket = tmux_socket_path(&socket_name);
@@ -99,12 +99,12 @@ async fn test_main_sigterm_cleans_resources() {
     let mut command = Command::new(env!("CARGO_BIN_EXE_ahd"));
     command
         .env("XDG_STATE_HOME", xdg_state.path())
-        .env("CCBD_STATE_DIR", &state_dir)
-        .env("CCBD_UNSAFE_NO_SANDBOX", "1")
-        .env_remove("CCB_ENV");
+        .env("AH_STATE_DIR", &state_dir)
+        .env("AH_UNSAFE_NO_SANDBOX", "1")
+        .env_remove("AH_ENV");
     let child = scrub_daemon_identity_env(&mut command)
         .spawn()
-        .expect("spawn ccbd daemon");
+        .expect("spawn ah daemon");
     let mut child = ChildGuard::new(child);
     wait_for(
         || daemon_socket.exists(),
@@ -146,7 +146,7 @@ async fn test_main_sigterm_cleans_resources() {
     }
     assert!(
         child.wait_timeout(Duration::from_secs(5)),
-        "ccbd daemon did not exit after SIGTERM"
+        "ah daemon did not exit after SIGTERM"
     );
     wait_for(
         || !tmux_socket_alive(&socket_name) && !tmux_socket.exists(),
@@ -191,9 +191,9 @@ fn test_main_sigkill_systemd_cleans() {
     let state_dir = tempfile::tempdir().unwrap();
     let socket_name = compute_socket_name(state_dir.path());
     let tmux_scope = format!("{}.scope", unit_name_for_socket(&socket_name));
-    let unit = format!("ccbd-test-victim-{}", std::process::id());
+    let unit = format!("ah-test-victim-{}", std::process::id());
     let scope_unit = format!("{unit}.scope");
-    let setenv = format!("--setenv=CCBD_TEST_WRAPPER_SCOPE={scope_unit}");
+    let setenv = format!("--setenv=AH_TEST_WRAPPER_SCOPE={scope_unit}");
     let unit_arg = format!("--unit={unit}");
     let state_dir_arg = state_dir.path().display().to_string();
 
@@ -251,7 +251,7 @@ fn test_no_orphan_tmux_after_test_suite() {
     if let Ok(entries) = std::fs::read_dir(&socket_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with("ccbd-") && !tmux_socket_alive(&name) {
+            if name.starts_with("ah-") && !tmux_socket_alive(&name) {
                 stale.push(name);
             }
         }

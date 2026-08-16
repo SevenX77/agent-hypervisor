@@ -13,7 +13,7 @@
 
 use super::types::{PerceptionEvent, PerceptionLayer, Verdict};
 use crate::db::common::map_db_error;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, params};
 use serde_json::Value;
 
@@ -28,7 +28,7 @@ pub(crate) fn emit_perception_event_sync(
     epoch: i64,
     observed_at: i64,
     detail: &Value,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let layer_str = match layer {
         PerceptionLayer::Os => "Os",
         PerceptionLayer::Log => "Log",
@@ -65,7 +65,7 @@ pub(crate) fn emit_perception_event_sync(
 pub(crate) fn query_perception_events_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Vec<PerceptionEvent>, CcbdError> {
+) -> Result<Vec<PerceptionEvent>, AhError> {
     let mut stmt = conn
         .prepare("SELECT payload FROM events WHERE agent_id = ? AND event_type = 'perception' ORDER BY seq_id ASC")
         .map_err(|err| map_db_error("prepare query perception events", err))?;
@@ -82,20 +82,20 @@ pub(crate) fn query_perception_events_sync(
         let payload_str =
             payload_res.map_err(|err| map_db_error("get perception event row", err))?;
         let value: serde_json::Value = serde_json::from_str(&payload_str).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
+            AhError::DbConstraintViolation(format!(
                 "invalid json in perception event payload: {err}"
             ))
         })?;
 
         let layer_str = value["layer"]
             .as_str()
-            .ok_or_else(|| CcbdError::DbConstraintViolation("missing layer field".to_string()))?;
+            .ok_or_else(|| AhError::DbConstraintViolation("missing layer field".to_string()))?;
         let layer = match layer_str {
             "Os" | "os" => PerceptionLayer::Os,
             "Log" | "log" => PerceptionLayer::Log,
             "Hook" | "hook" => PerceptionLayer::Hook,
             other => {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "unknown layer: {other}"
                 )));
             }
@@ -103,24 +103,24 @@ pub(crate) fn query_perception_events_sync(
 
         let verdict_str = value["verdict"]
             .as_str()
-            .ok_or_else(|| CcbdError::DbConstraintViolation("missing verdict field".to_string()))?;
+            .ok_or_else(|| AhError::DbConstraintViolation("missing verdict field".to_string()))?;
         let verdict = match verdict_str {
             "True" | "true" => Verdict::True,
             "False" | "false" => Verdict::False,
             "Unknown" | "unknown" => Verdict::Unknown,
             other => {
-                return Err(CcbdError::DbConstraintViolation(format!(
+                return Err(AhError::DbConstraintViolation(format!(
                     "unknown verdict: {other}"
                 )));
             }
         };
 
         let epoch = value["epoch"].as_i64().ok_or_else(|| {
-            CcbdError::DbConstraintViolation("missing or invalid epoch field".to_string())
+            AhError::DbConstraintViolation("missing or invalid epoch field".to_string())
         })?;
 
         let observed_at = value["observed_at"].as_i64().ok_or_else(|| {
-            CcbdError::DbConstraintViolation("missing or invalid observed_at field".to_string())
+            AhError::DbConstraintViolation("missing or invalid observed_at field".to_string())
         })?;
 
         let detail = value["detail"].clone();

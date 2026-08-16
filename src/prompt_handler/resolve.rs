@@ -7,7 +7,7 @@ use crate::db::jobs::query_dispatched_job_for_agent_sync;
 use crate::db::state_machine::{
     STATE_BUSY, STATE_IDLE, STATE_PROMPT_PENDING, transit_agent_state_sync,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::prompt_handler::events::{UNKNOWN_PROMPT_DETECTED, UnknownPromptPayload};
 use crate::prompt_handler::kb::{load_or_bootstrap_kb, save_kb_atomic};
 use crate::prompt_handler::runner::PromptIo;
@@ -37,22 +37,22 @@ pub struct ResolvePromptRequest {
     pub save_to_kb: bool,
 }
 
-pub fn normalize_action_value(value: serde_json::Value) -> Result<Vec<PromptAction>, CcbdError> {
+pub fn normalize_action_value(value: serde_json::Value) -> Result<Vec<PromptAction>, AhError> {
     if value.is_array() {
         serde_json::from_value(value).map_err(|err| {
-            CcbdError::IpcInvalidRequest(format!("invalid prompt action array: {err}"))
+            AhError::IpcInvalidRequest(format!("invalid prompt action array: {err}"))
         })
     } else {
         serde_json::from_value::<PromptAction>(value)
             .map(|action| vec![action])
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid prompt action: {err}")))
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid prompt action: {err}")))
     }
 }
 
 pub async fn resolve_prompt_with_io(
     request: ResolvePromptRequest,
     io: &dyn PromptIo,
-) -> Result<ResolvePromptResult, CcbdError> {
+) -> Result<ResolvePromptResult, AhError> {
     let ResolvePromptRequest {
         db,
         agent_id,
@@ -122,7 +122,7 @@ pub async fn resolve_prompt_with_io(
     })
 }
 
-fn ensure_prompt_pending_sync(db: &Db, agent_id: &str) -> Result<(), CcbdError> {
+fn ensure_prompt_pending_sync(db: &Db, agent_id: &str) -> Result<(), AhError> {
     let conn = db.conn();
     let current = conn
         .query_row(
@@ -132,7 +132,7 @@ fn ensure_prompt_pending_sync(db: &Db, agent_id: &str) -> Result<(), CcbdError> 
         )
         .optional()
         .map_err(|err| map_db_error("query state before prompt resolve", err))?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
     if current != STATE_PROMPT_PENDING {
         tracing::warn!(
             agent_id,
@@ -140,22 +140,22 @@ fn ensure_prompt_pending_sync(db: &Db, agent_id: &str) -> Result<(), CcbdError> 
             impact = "manual prompt action rejected because agent is not blocked on a prompt",
             "resolve prompt rejected wrong state"
         );
-        return Err(CcbdError::AgentWrongState {
+        return Err(AhError::AgentWrongState {
             current_state: current,
         });
     }
     Ok(())
 }
 
-fn validate_actions(actions: &[PromptAction]) -> Result<Vec<ValidatedAction>, CcbdError> {
+fn validate_actions(actions: &[PromptAction]) -> Result<Vec<ValidatedAction>, AhError> {
     if actions.is_empty() {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "action must contain at least one prompt action".to_string(),
         ));
     }
     actions
         .iter()
-        .map(|action| action.validate().map_err(CcbdError::from))
+        .map(|action| action.validate().map_err(AhError::from))
         .collect()
 }
 
@@ -163,7 +163,7 @@ fn execute_validated_actions(
     io: &dyn PromptIo,
     pane_id: &TmuxPaneId,
     actions: &[ValidatedAction],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for action in actions {
         match action {
             ValidatedAction::Key(keysym) => {
@@ -179,7 +179,7 @@ fn execute_validated_actions(
     Ok(())
 }
 
-fn resolve_prompt_state_sync(db: &Db, agent_id: &str) -> Result<String, CcbdError> {
+fn resolve_prompt_state_sync(db: &Db, agent_id: &str) -> Result<String, AhError> {
     let mut conn = db.conn();
     let current = conn
         .query_row(
@@ -189,7 +189,7 @@ fn resolve_prompt_state_sync(db: &Db, agent_id: &str) -> Result<String, CcbdErro
         )
         .optional()
         .map_err(|err| map_db_error("query state before prompt resolve", err))?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
     if current != STATE_PROMPT_PENDING {
         tracing::warn!(
             agent_id,
@@ -197,7 +197,7 @@ fn resolve_prompt_state_sync(db: &Db, agent_id: &str) -> Result<String, CcbdErro
             impact = "manual prompt action rejected because agent is not blocked on a prompt",
             "resolve prompt rejected wrong state"
         );
-        return Err(CcbdError::AgentWrongState {
+        return Err(AhError::AgentWrongState {
             current_state: current,
         });
     }
@@ -224,11 +224,11 @@ fn save_resolved_prompt_case_sync(
     provider: &str,
     kb_path: &Path,
     actions: Vec<PromptAction>,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let payload = latest_unknown_prompt_payload(db, agent_id)?;
     let screenshot = payload.pane_screenshot.trim();
     if screenshot.is_empty() {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "cannot save prompt case from empty prompt snapshot".to_string(),
         ));
     }
@@ -237,7 +237,7 @@ fn save_resolved_prompt_case_sync(
         unix_timestamp(),
         short_hash(&payload.capture_hash)
     );
-    let mut kb = load_or_bootstrap_kb(kb_path).map_err(CcbdError::from)?;
+    let mut kb = load_or_bootstrap_kb(kb_path).map_err(AhError::from)?;
     let prompt_case = PromptCase {
         id: case_id.clone(),
         provider: Some(provider.to_string()),
@@ -254,11 +254,11 @@ fn save_resolved_prompt_case_sync(
         used_count: 0,
         created_at: Some(unix_timestamp().to_string()),
         last_used_at: None,
-        created_by: Some("ccbd-master".to_string()),
+        created_by: Some("ah-master".to_string()),
         regex_flags: Vec::new(),
         trigger_state: Some(STATE_PROMPT_PENDING.to_string()),
     };
-    prompt_case.validate().map_err(CcbdError::from)?;
+    prompt_case.validate().map_err(AhError::from)?;
     tracing::info!(
         agent_id,
         case_id,
@@ -266,23 +266,20 @@ fn save_resolved_prompt_case_sync(
         "resolve prompt saving KB case"
     );
     kb.cases.insert(0, prompt_case);
-    save_kb_atomic(kb_path, &kb).map_err(CcbdError::from)?;
+    save_kb_atomic(kb_path, &kb).map_err(AhError::from)?;
     Ok(case_id)
 }
 
-fn latest_unknown_prompt_payload(
-    db: &Db,
-    agent_id: &str,
-) -> Result<UnknownPromptPayload, CcbdError> {
+fn latest_unknown_prompt_payload(db: &Db, agent_id: &str) -> Result<UnknownPromptPayload, AhError> {
     let conn = db.conn();
     let event = query_last_event_of_type_sync(&conn, agent_id, UNKNOWN_PROMPT_DETECTED)?
         .ok_or_else(|| {
-            CcbdError::IpcInvalidRequest(format!(
+            AhError::IpcInvalidRequest(format!(
                 "agent {agent_id} has no UNKNOWN_PROMPT_DETECTED event to save"
             ))
         })?;
     serde_json::from_str(&event.payload).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("invalid UNKNOWN_PROMPT_DETECTED payload: {err}"))
+        AhError::IpcInvalidRequest(format!("invalid UNKNOWN_PROMPT_DETECTED payload: {err}"))
     })
 }
 
@@ -315,7 +312,7 @@ mod tests {
     use crate::db::sessions::insert_session_sync;
     use crate::db::state_machine::{STATE_BUSY, STATE_IDLE, STATE_PROMPT_PENDING};
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::prompt_handler::events::{UNKNOWN_PROMPT_DETECTED, UnknownPromptPayload};
     use crate::prompt_handler::kb::load_or_bootstrap_kb;
     use crate::prompt_handler::runner::{PromptIo, PromptSnapshot};
@@ -329,16 +326,16 @@ mod tests {
     }
 
     impl PromptIo for FakeIo {
-        fn capture_pane(&self, _pane_id: &TmuxPaneId) -> Result<String, CcbdError> {
+        fn capture_pane(&self, _pane_id: &TmuxPaneId) -> Result<String, AhError> {
             Ok(String::new())
         }
 
-        fn send_key_literal(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+        fn send_key_literal(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
             self.sent.lock().unwrap().push(format!("literal:{value}"));
             Ok(())
         }
 
-        fn send_key_keysym(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), CcbdError> {
+        fn send_key_keysym(&self, _pane_id: &TmuxPaneId, value: &str) -> Result<(), AhError> {
             self.sent.lock().unwrap().push(format!("key:{value}"));
             Ok(())
         }
@@ -538,7 +535,7 @@ mod tests {
         .await
         .unwrap_err();
 
-        assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+        assert!(matches!(err, AhError::AgentWrongState { .. }));
     }
 
     #[tokio::test(flavor = "current_thread")]

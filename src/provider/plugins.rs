@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,7 +26,7 @@ pub struct ResolvedPlugin {
     pub cache_dir: PathBuf,
 }
 
-pub fn parse_plugin_spec(raw: &str) -> Result<PluginSpec, CcbdError> {
+pub fn parse_plugin_spec(raw: &str) -> Result<PluginSpec, AhError> {
     let Some((name, rest)) = raw.split_once("@git@") else {
         return Ok(PluginSpec::IdOnly(raw.to_string()));
     };
@@ -58,7 +58,7 @@ pub fn resolve_plugins_for_provider(
     provider: &str,
     source_home: &Path,
     plugins: &[String],
-) -> Result<Vec<ResolvedPlugin>, CcbdError> {
+) -> Result<Vec<ResolvedPlugin>, AhError> {
     let mut resolved = Vec::new();
     for raw in plugins {
         match parse_plugin_spec(raw)? {
@@ -87,7 +87,7 @@ fn resolve_id_only(provider: &str, source_home: &Path, name: String) -> Resolved
     }
 }
 
-fn clone_or_update(spec: &GitUrlSpec) -> Result<PathBuf, CcbdError> {
+fn clone_or_update(spec: &GitUrlSpec) -> Result<PathBuf, AhError> {
     let target = git_cache_root()?
         .join(&spec.host)
         .join(&spec.owner)
@@ -195,7 +195,7 @@ fn clone_or_update(spec: &GitUrlSpec) -> Result<PathBuf, CcbdError> {
     Ok(target)
 }
 
-fn git_cache_root() -> Result<PathBuf, CcbdError> {
+fn git_cache_root() -> Result<PathBuf, AhError> {
     let cache_root = match std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         Some(cache) => PathBuf::from(cache),
         None => env_home()?.join(".cache"),
@@ -203,7 +203,7 @@ fn git_cache_root() -> Result<PathBuf, CcbdError> {
     Ok(cache_root.join("ah/cache/git"))
 }
 
-fn parse_git_cache_key(url: &str) -> Result<(String, String, String), CcbdError> {
+fn parse_git_cache_key(url: &str) -> Result<(String, String, String), AhError> {
     let without_scheme = url
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))
@@ -271,15 +271,15 @@ fn cleanup_empty_dir(path: &Path) {
     let _ = fs::remove_dir(path);
 }
 
-fn env_home() -> Result<PathBuf, CcbdError> {
+fn env_home() -> Result<PathBuf, AhError> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
         .ok_or_else(|| plugin_err("HOME is not set for git plugin provisioning"))
 }
 
-fn plugin_err(details: impl Into<String>) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn plugin_err(details: impl Into<String>) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: details.into(),
     }
 }

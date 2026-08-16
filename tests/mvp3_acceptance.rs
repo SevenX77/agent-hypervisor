@@ -3,7 +3,7 @@ mod common;
 use ah::db;
 use ah::db::agents::query_agent_state;
 use ah::db::sessions::insert_session;
-use ah::error::CcbdError;
+use ah::error::AhError;
 use ah::rpc::Ctx;
 use ah::rpc::handlers::{
     handle_agent_kill, handle_agent_read, handle_agent_send, handle_agent_spawn,
@@ -351,7 +351,7 @@ async fn ac7_busy_agent_rejects_second_new_send() {
     assert_eq!(first["state"], "WAITING_FOR_ACK");
     assert!(matches!(
         second,
-        CcbdError::AgentWrongState { current_state } if current_state == "WAITING_FOR_ACK"
+        AhError::AgentWrongState { current_state } if current_state == "WAITING_FOR_ACK"
     ));
     assert_eq!(command_count(&h, &agent_id), 1);
     cleanup_agent(&h, &agent_id).await;

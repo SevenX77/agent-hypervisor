@@ -1,4 +1,4 @@
-//! Built-in ah rule resources embedded into the ccbd binary.
+//! Built-in ah rule resources embedded into the ah binary.
 
 pub const MASTER_KERNEL: &str = include_str!("../../assets/builtin/master_kernel.md");
 pub const WORKER_KERNEL: &str = include_str!("../../assets/builtin/worker_kernel.md");

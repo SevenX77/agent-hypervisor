@@ -2,7 +2,7 @@ pub mod reader;
 pub mod registry;
 pub mod writer;
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 
 pub use reader::spawn_agent_io_reader_task;
 pub use registry::{
@@ -12,7 +12,7 @@ pub use registry::{
 };
 pub use writer::{send_text_to_pane, send_text_to_pane_with_options};
 
-pub async fn send_text_to_registered_pane(agent_id: &str, text: String) -> Result<(), CcbdError> {
+pub async fn send_text_to_registered_pane(agent_id: &str, text: String) -> Result<(), AhError> {
     let Some((pane, socket_name)) = registry::pane_binding(agent_id) else {
         tracing::warn!(
             agent_id,
@@ -27,7 +27,7 @@ pub async fn send_text_to_registered_pane(agent_id: &str, text: String) -> Resul
 pub async fn shutdown_reader(
     agent_id: &str,
     expected_session_id: Option<&str>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     registry::cleanup_agent_runtime_resources(agent_id, expected_session_id);
     Ok(())
 }
@@ -91,7 +91,7 @@ mod tests {
             assert!(fifo_path.exists(), "live fifo must remain");
             assert_eq!(server.get_pane_pid_sync(&live_pane)?, live_pid);
             assert!(server.session_exists_sync(&tmux_session)?);
-            Ok::<(), CcbdError>(())
+            Ok::<(), AhError>(())
         }
         .await;
 

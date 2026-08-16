@@ -280,20 +280,20 @@ async fn mark_requires_evidence_then_mark_idle_denies_without_read() {
 }
 
 #[tokio::test]
-async fn dispatched_job_env_contains_ccb_job_id() {
+async fn dispatched_job_env_contains_ah_job_id() {
     let h = Harness::new();
-    let old_socket = std::env::var_os("CCB_SOCKET");
-    let old_job = std::env::var_os("CCB_JOB_ID");
+    let old_socket = std::env::var_os("AH_SOCKET");
+    let old_job = std::env::var_os("AH_JOB_ID");
     unsafe {
-        std::env::set_var("CCB_SOCKET", "/tmp/pr1b-ahd.sock");
-        std::env::set_var("CCB_JOB_ID", "job_env_one");
+        std::env::set_var("AH_SOCKET", "/tmp/pr1b-ahd.sock");
+        std::env::set_var("AH_JOB_ID", "job_env_one");
     }
     let spawn_env = collect_spawn_env(&get_manifest("claude"), &HashMap::new());
-    restore_env("CCB_SOCKET", old_socket.as_ref());
-    restore_env("CCB_JOB_ID", old_job.as_ref());
+    restore_env("AH_SOCKET", old_socket.as_ref());
+    restore_env("AH_JOB_ID", old_job.as_ref());
 
-    assert_env_contains(&spawn_env, "CCB_SOCKET", "/tmp/pr1b-ahd.sock");
-    assert_env_contains(&spawn_env, "CCB_JOB_ID", "job_env_one");
+    assert_env_contains(&spawn_env, "AH_SOCKET", "/tmp/pr1b-ahd.sock");
+    assert_env_contains(&spawn_env, "AH_JOB_ID", "job_env_one");
 
     let conn = h.ctx.db.conn();
     insert_job_row(&conn, "job_env_one", "a1", "QUEUED");
@@ -311,9 +311,9 @@ async fn dispatched_job_env_contains_ccb_job_id() {
     .unwrap();
     assert_eq!(first.job.id, "job_env_one");
     assert_eq!(
-        first.job_payload["env"]["CCB_JOB_ID"].as_str(),
+        first.job_payload["env"]["AH_JOB_ID"].as_str(),
         Some("job_env_one"),
-        "dispatched command payload must carry per-job CCB_JOB_ID, not a static agent env"
+        "dispatched command payload must carry per-job AH_JOB_ID, not a static agent env"
     );
 }
 
@@ -530,8 +530,8 @@ struct HookRun {
 fn run_hook(socket_path: &Path, job_id: &str, stdin_json: Value) -> HookRun {
     let mut child = Command::new("bash")
         .arg(HOOK_PATH)
-        .env("CCB_SOCKET", socket_path)
-        .env("CCB_JOB_ID", job_id)
+        .env("AH_SOCKET", socket_path)
+        .env("AH_JOB_ID", job_id)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

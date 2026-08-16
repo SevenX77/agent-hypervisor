@@ -566,7 +566,7 @@ fn clear_apply_failure(conn: &Connection, event_id: &str) {
 pub fn cold_scan_all_agents(
     db: &crate::db::Db,
     state_dir: &Path,
-) -> Result<ScanReport, crate::error::CcbdError> {
+) -> Result<ScanReport, crate::error::AhError> {
     let root = outbox_root(state_dir);
     let mut report = ScanReport::default();
     if !root.is_dir() {

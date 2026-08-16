@@ -1,7 +1,7 @@
 use crate::completion::reader::{LogCursorMap, collect_provider_log_cursors};
 use crate::db::Db;
 use crate::db::sessions::query_session_by_id;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::master_revival::{
     confirm_master_stable, master_runtime_generation_matches,
     remove_master_monitor_key_if_generation_matches,
@@ -36,17 +36,17 @@ pub(crate) async fn spawn_replacement_master_pane(
     session_id: &str,
     master_cmd: &str,
     redispatch_marker_path: Option<&Path>,
-) -> Result<SpawnedRevivedMaster, CcbdError> {
+) -> Result<SpawnedRevivedMaster, AhError> {
     let session = query_session_by_id(db.clone(), session_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
     let master_cwd: PathBuf = session.absolute_path.clone().into();
     let master_session = master_session_name(&session.project_id);
     let mut master_env_vars = HashMap::new();
     master_env_vars.insert("AH_STATE_DIR".to_string(), state_dir.display().to_string());
     crate::process_identity::inject_master_identity(&mut master_env_vars, session_id);
     master_env_vars.insert(
-        "CCB_SOCKET".to_string(),
+        "AH_SOCKET".to_string(),
         state_dir.join("ahd.sock").display().to_string(),
     );
     master_env_vars.insert("AH_MASTER_ROLE".to_string(), "managed".to_string());
@@ -77,7 +77,7 @@ pub(crate) async fn spawn_replacement_master_pane(
         if provider.as_deref() == Some("claude") {
             let shared_credentials_dir =
                 revive_claude_shared_credentials_dir(&master_cwd)?.ok_or_else(|| {
-                    CcbdError::EnvironmentNotSupported {
+                    AhError::EnvironmentNotSupported {
                         details: "providers.claude.shared_credentials_dir is required for Claude master revive".into(),
                     }
                 })?;
@@ -137,10 +137,10 @@ pub(crate) fn register_revived_master_watch_and_prepare_readiness(
     master_cmd: String,
     master_sandbox_home: &Path,
     monitor_key: String,
-) -> Result<ReviveMasterReadinessCheck, CcbdError> {
+) -> Result<ReviveMasterReadinessCheck, AhError> {
     let pidfd = crate::monitor::pidfd_open(new_pid as i32)?;
     let task_fd = pidfd.try_clone().map_err(|err| {
-        CcbdError::PtyIoError(format!("failed to clone revived master pidfd: {err}"))
+        AhError::PtyIoError(format!("failed to clone revived master pidfd: {err}"))
     })?;
     crate::monitor::register(monitor_key, pidfd);
     let readiness_check =
@@ -221,7 +221,7 @@ pub(crate) fn prepare_revive_master_readiness_check(
     session_id: &str,
     master_cmd: &str,
     master_sandbox_home: &Path,
-) -> Result<ReviveMasterReadinessCheck, CcbdError> {
+) -> Result<ReviveMasterReadinessCheck, AhError> {
     let provider = revive_master_provider(master_cmd);
 
     #[cfg(not(test))]
@@ -259,13 +259,13 @@ pub(crate) fn prepare_revive_master_readiness_check(
 
     let log_root =
         crate::completion::log_layout::provider_log_root_in_home(&provider, master_sandbox_home)
-            .ok_or_else(|| CcbdError::EnvironmentNotSupported {
+            .ok_or_else(|| AhError::EnvironmentNotSupported {
                 details: format!(
                     "provider '{provider}' has no transcript root for master revive readiness"
                 ),
             })?;
     let cursors = collect_provider_log_cursors(&provider, &log_root).map_err(|err| {
-        CcbdError::PtyIoError(format!(
+        AhError::PtyIoError(format!(
             "collect {provider} revive readiness transcript cursors: {err}"
         ))
     })?;
@@ -308,14 +308,14 @@ fn revive_master_seat_env(project_root: &Path) -> HashMap<String, String> {
     }
 }
 
-fn revive_claude_shared_credentials_dir(project_root: &Path) -> Result<Option<PathBuf>, CcbdError> {
+fn revive_claude_shared_credentials_dir(project_root: &Path) -> Result<Option<PathBuf>, AhError> {
     let config_path = crate::cli::config::find_config(project_root).map_err(|err| {
-        CcbdError::EnvironmentNotSupported {
+        AhError::EnvironmentNotSupported {
             details: format!("load Claude shared credentials config: {err}"),
         }
     })?;
     let config = crate::cli::config::load_project_config(&config_path).map_err(|err| {
-        CcbdError::EnvironmentNotSupported {
+        AhError::EnvironmentNotSupported {
             details: format!("load Claude shared credentials config: {err}"),
         }
     })?;
@@ -516,7 +516,7 @@ fn query_session_master_runtime_for_generation(
     db: &Db,
     session_id: &str,
     generation: i64,
-) -> Result<Option<(i64, Option<String>)>, CcbdError> {
+) -> Result<Option<(i64, Option<String>)>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT master_pid, master_pane_id FROM sessions
@@ -526,7 +526,7 @@ fn query_session_master_runtime_for_generation(
     )
     .optional()
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("query claimed revived master runtime: {err}"))
+        AhError::DbConstraintViolation(format!("query claimed revived master runtime: {err}"))
     })
 }
 
@@ -534,7 +534,7 @@ fn sigkill_failed_revive_master_process(
     session_id: &str,
     master_pid: i64,
     generation: i64,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     if record_failed_revive_master_reap_event(
         session_id,
         FailedReviveMasterReapEvent::Sigkill {
@@ -551,12 +551,12 @@ fn sigkill_failed_revive_master_process(
     }
 
     let pid = i32::try_from(master_pid).map_err(|_| {
-        CcbdError::PtyIoError(format!("invalid failed revived master pid: {master_pid}"))
+        AhError::PtyIoError(format!("invalid failed revived master pid: {master_pid}"))
     })?;
     #[cfg(windows)]
     {
         let _ = pid;
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: "Windows failed revive master cleanup requires the M1 Job Object reaper"
                 .to_string(),
         });
@@ -572,7 +572,7 @@ fn sigkill_failed_revive_master_process(
         if err.raw_os_error() == Some(libc::ESRCH) {
             return Ok(());
         }
-        Err(CcbdError::PtyIoError(format!(
+        Err(AhError::PtyIoError(format!(
             "kill({pid}, SIGKILL) failed: {err}"
         )))
     }
@@ -681,7 +681,7 @@ pub(crate) async fn reprovision_declared_workers_after_master_revive(
     state_dir: PathBuf,
     env_state: EnvState,
     daemon_unit: Option<String>,
-) -> Result<Vec<crate::db::recovery::AgentRecoveryIntent>, CcbdError> {
+) -> Result<Vec<crate::db::recovery::AgentRecoveryIntent>, AhError> {
     let stored_specs = {
         let conn = db.conn();
         crate::db::recovery::query_agent_spawn_specs_for_session_sync(&conn, session_id)?
@@ -691,7 +691,7 @@ pub(crate) async fn reprovision_declared_workers_after_master_revive(
     }
     let session = query_session_by_id(db.clone(), session_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
     let project_root = PathBuf::from(&session.absolute_path);
     let claude_shared_credentials_dir = if stored_specs
         .iter()
@@ -773,7 +773,7 @@ async fn revive_reprovision_one_worker(
     agent: &RealignAgentParams,
     expected_hash: &str,
     captured_intent: Option<crate::db::recovery::AgentRecoveryIntent>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     // ISSUE-13 §3a: master-revive replays the stored BARE snapshot env; an empty config_env
     // re-merges to the same bare env, so the reprovisioned hash matches expected_hash.
     let config_env = std::collections::HashMap::new();
@@ -794,7 +794,7 @@ fn collect_master_revive_recovery_intents_before_reprovision<'a>(
     db: &Db,
     session_id: &str,
     agent_ids: impl IntoIterator<Item = &'a str>,
-) -> Result<Vec<crate::db::recovery::AgentRecoveryIntent>, CcbdError> {
+) -> Result<Vec<crate::db::recovery::AgentRecoveryIntent>, AhError> {
     let conn = db.conn();
     let mut intents = Vec::new();
     for agent_id in agent_ids {
@@ -822,7 +822,7 @@ fn restore_killed_worker_spawn_spec(
     db: &Db,
     session_id: &str,
     stored: &crate::db::recovery::StoredAgentSpawnSpec,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let conn = db.conn();
     let exists: Option<i64> = conn
         .query_row(
@@ -832,7 +832,7 @@ fn restore_killed_worker_spawn_spec(
         )
         .optional()
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query revive restore worker: {err}"))
+            AhError::DbConstraintViolation(format!("query revive restore worker: {err}"))
         })?;
     if exists.is_none() {
         crate::db::agents::insert_agent_sync(
@@ -896,10 +896,10 @@ pub(crate) async fn inject_master_continue_instruction_best_effort<F, Fut>(
     pane: &crate::tmux::TmuxPaneId,
     redispatch_marker_path: Option<&Path>,
     writer: F,
-) -> Result<(), CcbdError>
+) -> Result<(), AhError>
 where
     F: FnOnce(&TmuxServer, crate::tmux::TmuxPaneId, String) -> Fut,
-    Fut: std::future::Future<Output = Result<(), CcbdError>>,
+    Fut: std::future::Future<Output = Result<(), AhError>>,
 {
     tracing::info!(
         pane = %pane.0,
@@ -933,7 +933,7 @@ pub(crate) fn requeue_master_revive_interrupted_jobs_after_reprovision(
     db: &Db,
     session_id: &str,
     captured_intents: &[crate::db::recovery::AgentRecoveryIntent],
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     if captured_intents.is_empty() {
         tracing::debug!(
             session_id,

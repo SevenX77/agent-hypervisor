@@ -47,7 +47,7 @@ pub fn parse_systemctl_scope_units(_output: &str) -> Vec<ScopeUnit> {
     Vec::new()
 }
 
-pub fn is_own_ccbd_scope(_scope: &ScopeUnit, _daemon_marker: &str) -> bool {
+pub fn is_own_ah_scope(_scope: &ScopeUnit, _daemon_marker: &str) -> bool {
     false
 }
 
@@ -64,7 +64,7 @@ pub fn wrap_in_scope(base_cmd: &str, base_args: &[&str], _policy: &ScopePolicy) 
 pub fn unit_name_for_socket(socket_name: &str) -> String {
     let suffix = socket_name
         .strip_prefix("ahd-")
-        .or_else(|| socket_name.strip_prefix("ccbd-"))
+        .or_else(|| socket_name.strip_prefix("ah-"))
         .unwrap_or(socket_name);
     format!("ahd-tmux-{}", &suffix[..suffix.len().min(8)])
 }

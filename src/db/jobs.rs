@@ -2,7 +2,7 @@ use crate::db::Db;
 use crate::db::common::{is_unique_constraint_error, map_db_error, spawn_db};
 use crate::db::schema::Job;
 use crate::db::state_machine::{STATE_IDLE, transit_agent_state_conn_sync};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use serde_json::{Map, Value};
 #[cfg(test)]
@@ -64,19 +64,19 @@ pub(crate) fn record_job_transition_conn_sync(
     kind: &str,
     changed_fields: &[&str],
     reason: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     #[cfg(test)]
     if FAIL_NEXT_JOB_TRANSITION_FOR_TEST.swap(false, Ordering::SeqCst) {
-        return Err(CcbdError::DbConstraintViolation(
+        return Err(AhError::DbConstraintViolation(
             "forced job transition failure for test".to_string(),
         ));
     }
 
     let job = query_job_sync(conn, job_id)?.ok_or_else(|| {
-        CcbdError::DbConstraintViolation(format!("job {job_id} missing after mutation"))
+        AhError::DbConstraintViolation(format!("job {job_id} missing after mutation"))
     })?;
     let changed_json = serde_json::to_string(changed_fields).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("serialize job transition fields: {err}"))
+        AhError::DbConstraintViolation(format!("serialize job transition fields: {err}"))
     })?;
     conn.execute(
         "INSERT INTO job_transitions (
@@ -120,7 +120,7 @@ pub(crate) fn insert_job_sync(
     agent_id: &str,
     request_id: Option<&str>,
     prompt_text: &str,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let result = conn.execute(
         "INSERT INTO jobs (id, agent_id, request_id, prompt_text, status) VALUES (?, ?, ?, ?, 'QUEUED')",
         params![id, agent_id, request_id, prompt_text],
@@ -158,7 +158,7 @@ pub(crate) fn insert_recovered_queued_job_sync(
     requires_physical_evidence: bool,
     requires_test_evidence: bool,
     error_reason: &str,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let result = conn.execute(
         "INSERT INTO jobs (
              id, agent_id, request_id, prompt_text, status, error_reason,
@@ -199,7 +199,7 @@ pub(crate) fn insert_recovered_queued_job_sync(
     }
 }
 
-pub(crate) fn query_job_sync(conn: &Connection, job_id: &str) -> Result<Option<Job>, CcbdError> {
+pub(crate) fn query_job_sync(conn: &Connection, job_id: &str) -> Result<Option<Job>, AhError> {
     conn.query_row(
         "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE id = ?",
         params![job_id],
@@ -213,7 +213,7 @@ pub(crate) fn query_job_by_request_id_sync(
     conn: &Connection,
     agent_id: &str,
     request_id: &str,
-) -> Result<Option<Job>, CcbdError> {
+) -> Result<Option<Job>, AhError> {
     conn.query_row(
         "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE agent_id = ? AND request_id = ? LIMIT 1",
         params![agent_id, request_id],
@@ -223,7 +223,7 @@ pub(crate) fn query_job_by_request_id_sync(
     .map_err(|err| map_db_error("query job by request_id", err))
 }
 
-pub(crate) fn has_queued_job_sync(conn: &Connection, agent_id: &str) -> Result<bool, CcbdError> {
+pub(crate) fn has_queued_job_sync(conn: &Connection, agent_id: &str) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT 1 FROM jobs WHERE agent_id = ? AND status = 'QUEUED' ORDER BY created_at ASC, rowid ASC LIMIT 1",
         params![agent_id],
@@ -236,7 +236,7 @@ pub(crate) fn has_queued_job_sync(conn: &Connection, agent_id: &str) -> Result<b
 
 pub(crate) fn query_agent_ids_with_queued_jobs_sync(
     conn: &Connection,
-) -> Result<Vec<String>, CcbdError> {
+) -> Result<Vec<String>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT agent_id
@@ -253,7 +253,7 @@ pub(crate) fn query_agent_ids_with_queued_jobs_sync(
     Ok(ids)
 }
 
-pub(crate) fn claim_next_job_sync(db: &Db, agent_id: &str) -> Result<Option<Job>, CcbdError> {
+pub(crate) fn claim_next_job_sync(db: &Db, agent_id: &str) -> Result<Option<Job>, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -380,7 +380,7 @@ pub fn dispatch_job_to_agent_sync(
     new_state: &str,
     event_kind: &str,
     event_payload: &Value,
-) -> Result<Option<DispatchedJob>, CcbdError> {
+) -> Result<Option<DispatchedJob>, AhError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| map_db_error("begin dispatch job to agent", err))?;
@@ -394,7 +394,7 @@ pub fn dispatch_job_to_agent_sync(
         .optional()
         .map_err(|err| map_db_error("query agent state before dispatch", err))?;
     let Some(current_state) = current_state else {
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
     if !expected_from_state.is_empty() && !expected_from_state.contains(&current_state.as_str()) {
         tracing::info!(
@@ -405,7 +405,7 @@ pub fn dispatch_job_to_agent_sync(
             impact = "queued jobs remain queued and dispatch is blocked",
             "dispatch job to agent rejected"
         );
-        return Err(CcbdError::AgentWrongState { current_state });
+        return Err(AhError::AgentWrongState { current_state });
     }
 
     let candidate_id = tx
@@ -494,7 +494,7 @@ fn dispatch_event_payload(base: &Value, job: &Job) -> Value {
         .entry("env".to_string())
         .or_insert_with(|| Value::Object(Map::new()));
     if let Value::Object(env) = env {
-        env.entry("CCB_JOB_ID".to_string())
+        env.entry("AH_JOB_ID".to_string())
             .or_insert_with(|| Value::String(job.id.clone()));
     }
     Value::Object(payload)
@@ -504,7 +504,7 @@ pub(crate) fn mark_job_completed_sync(
     db: &Db,
     job_id: &str,
     reply_text: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -519,7 +519,7 @@ pub(crate) fn mark_job_completed_conn_sync(
     conn: &Connection,
     job_id: &str,
     reply_text: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let changes = conn
         .execute(
             "UPDATE jobs SET reply_text = ? WHERE id = ? AND status = 'DISPATCHED'",
@@ -538,7 +538,7 @@ pub(crate) fn mark_job_completed_conn_sync(
     Ok(changes)
 }
 
-pub(crate) fn mark_queued_job_cancelled_sync(db: &Db, job_id: &str) -> Result<usize, CcbdError> {
+pub(crate) fn mark_queued_job_cancelled_sync(db: &Db, job_id: &str) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -552,7 +552,7 @@ pub(crate) fn mark_queued_job_cancelled_sync(db: &Db, job_id: &str) -> Result<us
 pub(crate) fn mark_queued_job_cancelled_conn_sync(
     conn: &Connection,
     job_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let job = query_job_sync(conn, job_id)?;
     let Some(job) = job else {
         return Ok(0);
@@ -571,10 +571,7 @@ pub(crate) fn mark_queued_job_cancelled_conn_sync(
     }
 }
 
-pub(crate) fn request_dispatched_job_cancel_sync(
-    db: &Db,
-    job_id: &str,
-) -> Result<usize, CcbdError> {
+pub(crate) fn request_dispatched_job_cancel_sync(db: &Db, job_id: &str) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -605,7 +602,7 @@ pub(crate) fn set_job_evidence_requirements_sync(
     job_id: &str,
     requires_physical_evidence: bool,
     requires_test_evidence: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     conn.execute(
         "UPDATE jobs SET requires_physical_evidence = ?, requires_test_evidence = ? WHERE id = ?",
         params![
@@ -620,7 +617,7 @@ pub(crate) fn set_job_evidence_requirements_sync(
 pub(crate) fn mark_dispatched_job_cancelled_if_agent_idle_sync(
     db: &Db,
     job_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -668,7 +665,7 @@ pub(crate) fn mark_job_cancelled_conn_sync(
     conn: &Connection,
     job_id: &str,
     reply_text: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let changes = conn
         .execute(
             "UPDATE jobs SET reply_text = ? WHERE id = ? AND status = 'DISPATCHED'",
@@ -691,7 +688,7 @@ pub(crate) fn mark_job_failed_sync(
     db: &Db,
     job_id: &str,
     error_reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -706,7 +703,7 @@ pub(crate) fn mark_job_failed_conn_sync(
     conn: &Connection,
     job_id: &str,
     error_reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let old_status_str = conn
         .query_row(
             "SELECT status FROM jobs WHERE id = ? AND status IN ('QUEUED', 'DISPATCHED')",
@@ -722,7 +719,7 @@ pub(crate) fn mark_job_failed_conn_sync(
 
     let expected_from =
         crate::db::job_state::JobStatus::from_db_str(&old_status_str).ok_or_else(|| {
-            CcbdError::DbConstraintViolation(format!("unrecognized job status: {old_status_str}"))
+            AhError::DbConstraintViolation(format!("unrecognized job status: {old_status_str}"))
         })?;
 
     let changes = conn
@@ -750,7 +747,7 @@ pub(crate) fn requeue_recovered_dispatch_io_failure_sync(
     agent_id: &str,
     next_attempt: u32,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| map_db_error("begin requeue recovered dispatch failure", err))?;
@@ -816,7 +813,7 @@ pub(crate) fn requeue_dispatched_job_before_send_sync(
     job_id: &str,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|err| map_db_error("begin requeue pre-send dispatch", err))?;
@@ -872,7 +869,7 @@ pub(crate) fn requeue_dispatched_job_before_send_sync(
 pub(crate) fn clear_recovered_dispatch_marker_sync(
     db: &Db,
     job_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let conn = db.conn();
     conn.execute(
         "UPDATE jobs
@@ -890,7 +887,7 @@ pub(crate) fn mark_dispatched_jobs_failed_for_agent_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let (changes, _) = mark_dispatched_jobs_failed_for_agent_collect_sync(db, agent_id, reason)?;
     Ok(changes)
 }
@@ -899,7 +896,7 @@ pub(crate) fn mark_dispatched_jobs_failed_for_agent_collect_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<(usize, Vec<String>), CcbdError> {
+) -> Result<(usize, Vec<String>), AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -914,7 +911,7 @@ pub(crate) fn mark_dispatched_jobs_failed_for_agent_conn_sync(
     conn: &Connection,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let (changes, _) =
         mark_dispatched_jobs_failed_for_agent_conn_collect_sync(conn, agent_id, reason)?;
     Ok(changes)
@@ -924,7 +921,7 @@ pub(crate) fn mark_dispatched_jobs_failed_for_agent_conn_collect_sync(
     conn: &Connection,
     agent_id: &str,
     reason: &str,
-) -> Result<(usize, Vec<String>), CcbdError> {
+) -> Result<(usize, Vec<String>), AhError> {
     let affected = query_dispatched_job_ids_for_agent_sync(conn, agent_id)?;
     let mut changes = 0;
     for job_id in &affected {
@@ -951,7 +948,7 @@ pub(crate) fn mark_dispatched_jobs_failed_for_agent_conn_collect_sync(
 pub(crate) fn query_dispatched_job_ids_for_agent_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Vec<String>, CcbdError> {
+) -> Result<Vec<String>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT id FROM jobs WHERE agent_id = ? AND status = 'DISPATCHED' ORDER BY dispatched_at ASC, id ASC",
@@ -966,7 +963,7 @@ pub(crate) fn query_dispatched_job_ids_for_agent_sync(
 pub(crate) fn query_dispatched_job_for_agent_sync(
     conn: &Connection,
     agent_id: &str,
-) -> Result<Option<Job>, CcbdError> {
+) -> Result<Option<Job>, AhError> {
     conn.query_row(
         "SELECT id, agent_id, request_id, prompt_text, reply_text, status, error_reason, created_at, dispatched_at, dispatched_at_seq_id, completed_at, cancel_requested, requires_physical_evidence, requires_test_evidence FROM jobs WHERE agent_id = ? AND status = 'DISPATCHED' ORDER BY dispatched_at ASC, id ASC LIMIT 1",
         params![agent_id],
@@ -979,7 +976,7 @@ pub(crate) fn query_dispatched_job_for_agent_sync(
 pub(crate) fn query_starved_queued_jobs_sync(
     conn: &Connection,
     starvation_threshold_secs: i64,
-) -> Result<Vec<Job>, CcbdError> {
+) -> Result<Vec<Job>, AhError> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
@@ -1008,7 +1005,7 @@ pub(crate) fn update_dispatched_seq_id_sync(
     conn: &Connection,
     job_id: &str,
     seq_id: i64,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     conn.execute(
         "UPDATE jobs SET dispatched_at_seq_id = ? WHERE id = ? AND status = 'DISPATCHED'",
         params![seq_id, job_id],
@@ -1021,7 +1018,7 @@ pub(crate) fn collect_reply_for_dispatched_job_sync(
     agent_id: &str,
     dispatched_at_seq_id: Option<i64>,
     prompt_text: &str,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let Some(dispatched_at_seq_id) = dispatched_at_seq_id else {
         tracing::warn!(
             agent_id,
@@ -1047,7 +1044,7 @@ pub(crate) fn collect_reply_for_dispatched_job_sync(
     for payload in rows {
         let payload = payload.map_err(|err| map_db_error("collect job reply payload", err))?;
         let value: Value = serde_json::from_str(&payload).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("parse output_chunk payload: {err}"))
+            AhError::DbConstraintViolation(format!("parse output_chunk payload: {err}"))
         })?;
         if let Some(text) = value.get("text").and_then(Value::as_str) {
             chunk_count += 1;
@@ -1277,7 +1274,7 @@ pub async fn insert_job(
     agent_id: String,
     request_id: Option<String>,
     prompt_text: String,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     spawn_db("jobs::insert_job", move || {
         let mut conn = db.conn();
         let tx = conn
@@ -1292,7 +1289,7 @@ pub async fn insert_job(
     .inspect(|_| notify_runtime_job_changed())
 }
 
-pub async fn query_job(db: Db, job_id: String) -> Result<Option<Job>, CcbdError> {
+pub async fn query_job(db: Db, job_id: String) -> Result<Option<Job>, AhError> {
     spawn_db("jobs::query_job", move || {
         let conn = db.conn();
         query_job_sync(&conn, &job_id)
@@ -1304,7 +1301,7 @@ pub async fn query_job_by_request_id(
     db: Db,
     agent_id: String,
     request_id: String,
-) -> Result<Option<Job>, CcbdError> {
+) -> Result<Option<Job>, AhError> {
     spawn_db("jobs::query_job_by_request_id", move || {
         let conn = db.conn();
         query_job_by_request_id_sync(&conn, &agent_id, &request_id)
@@ -1312,7 +1309,7 @@ pub async fn query_job_by_request_id(
     .await
 }
 
-pub async fn claim_next_job(db: Db, agent_id: String) -> Result<Option<Job>, CcbdError> {
+pub async fn claim_next_job(db: Db, agent_id: String) -> Result<Option<Job>, AhError> {
     spawn_db("jobs::claim_next_job", move || {
         claim_next_job_sync(&db, &agent_id)
     })
@@ -1324,7 +1321,7 @@ pub async fn claim_next_job(db: Db, agent_id: String) -> Result<Option<Job>, Ccb
     })
 }
 
-pub async fn has_queued_job(db: Db, agent_id: String) -> Result<bool, CcbdError> {
+pub async fn has_queued_job(db: Db, agent_id: String) -> Result<bool, AhError> {
     spawn_db("jobs::has_queued_job", move || {
         let conn = db.conn();
         has_queued_job_sync(&conn, &agent_id)
@@ -1332,7 +1329,7 @@ pub async fn has_queued_job(db: Db, agent_id: String) -> Result<bool, CcbdError>
     .await
 }
 
-pub(crate) async fn query_agent_ids_with_queued_jobs(db: Db) -> Result<Vec<String>, CcbdError> {
+pub(crate) async fn query_agent_ids_with_queued_jobs(db: Db) -> Result<Vec<String>, AhError> {
     spawn_db("jobs::query_agent_ids_with_queued_jobs", move || {
         let conn = db.conn();
         query_agent_ids_with_queued_jobs_sync(&conn)
@@ -1347,7 +1344,7 @@ pub async fn dispatch_job_to_agent(
     new_state: String,
     event_kind: String,
     event_payload: Value,
-) -> Result<Option<DispatchedJob>, CcbdError> {
+) -> Result<Option<DispatchedJob>, AhError> {
     spawn_db("jobs::dispatch_job_to_agent", move || {
         let mut fresh_conn;
         let mut locked_conn;
@@ -1383,7 +1380,7 @@ pub async fn mark_job_completed(
     db: Db,
     job_id: String,
     reply_text: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::mark_job_completed", move || {
         mark_job_completed_sync(&db, &job_id, &reply_text)
@@ -1396,7 +1393,7 @@ pub async fn mark_job_completed(
     })
 }
 
-pub async fn mark_queued_job_cancelled(db: Db, job_id: String) -> Result<usize, CcbdError> {
+pub async fn mark_queued_job_cancelled(db: Db, job_id: String) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::mark_queued_job_cancelled", move || {
         mark_queued_job_cancelled_sync(&db, &job_id)
@@ -1410,7 +1407,7 @@ pub async fn mark_queued_job_cancelled(db: Db, job_id: String) -> Result<usize, 
     })
 }
 
-pub async fn request_dispatched_job_cancel(db: Db, job_id: String) -> Result<usize, CcbdError> {
+pub async fn request_dispatched_job_cancel(db: Db, job_id: String) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::request_dispatched_job_cancel", move || {
         request_dispatched_job_cancel_sync(&db, &job_id)
@@ -1427,7 +1424,7 @@ pub async fn request_dispatched_job_cancel(db: Db, job_id: String) -> Result<usi
 pub async fn mark_dispatched_job_cancelled_if_agent_idle(
     db: Db,
     job_id: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db(
         "jobs::mark_dispatched_job_cancelled_if_agent_idle",
@@ -1446,7 +1443,7 @@ pub async fn mark_job_failed(
     db: Db,
     job_id: String,
     error_reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::mark_job_failed", move || {
         mark_job_failed_sync(&db, &job_id, &error_reason)
@@ -1465,7 +1462,7 @@ pub(crate) async fn requeue_recovered_dispatch_io_failure(
     agent_id: String,
     next_attempt: u32,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::requeue_recovered_dispatch_io_failure", move || {
         let mut fresh_conn;
@@ -1493,7 +1490,7 @@ pub(crate) async fn requeue_dispatched_job_before_send(
     job_id: String,
     agent_id: String,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let notify_job_id = job_id.clone();
     spawn_db("jobs::requeue_dispatched_job_before_send", move || {
         let mut fresh_conn;
@@ -1519,7 +1516,7 @@ pub(crate) async fn requeue_dispatched_job_before_send(
 pub(crate) async fn clear_recovered_dispatch_marker(
     db: Db,
     job_id: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("jobs::clear_recovered_dispatch_marker", move || {
         clear_recovered_dispatch_marker_sync(&db, &job_id)
     })
@@ -1530,7 +1527,7 @@ pub async fn mark_dispatched_jobs_failed_for_agent(
     db: Db,
     agent_id: String,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let (changes, affected_jobs) =
         spawn_db("jobs::mark_dispatched_jobs_failed_for_agent", move || {
             mark_dispatched_jobs_failed_for_agent_collect_sync(&db, &agent_id, &reason)
@@ -1548,7 +1545,7 @@ pub async fn mark_dispatched_jobs_failed_for_agent(
 pub async fn query_dispatched_job_for_agent(
     db: Db,
     agent_id: String,
-) -> Result<Option<Job>, CcbdError> {
+) -> Result<Option<Job>, AhError> {
     spawn_db("jobs::query_dispatched_job_for_agent", move || {
         let conn = db.conn();
         query_dispatched_job_for_agent_sync(&conn, &agent_id)
@@ -1559,7 +1556,7 @@ pub async fn query_dispatched_job_for_agent(
 pub async fn query_starved_queued_jobs(
     db: Db,
     starvation_threshold_secs: i64,
-) -> Result<Vec<Job>, CcbdError> {
+) -> Result<Vec<Job>, AhError> {
     spawn_db("jobs::query_starved_queued_jobs", move || {
         let conn = db.conn();
         query_starved_queued_jobs_sync(&conn, starvation_threshold_secs)
@@ -1571,7 +1568,7 @@ pub async fn update_dispatched_seq_id(
     db: Db,
     job_id: String,
     seq_id: i64,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("jobs::update_dispatched_seq_id", move || {
         let conn = db.conn();
         update_dispatched_seq_id_sync(&conn, &job_id, seq_id)
@@ -1584,7 +1581,7 @@ pub async fn collect_reply_for_dispatched_job(
     agent_id: String,
     dispatched_at_seq_id: Option<i64>,
     prompt_text: String,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     spawn_db("jobs::collect_reply_for_dispatched_job", move || {
         let conn = db.conn();
         collect_reply_for_dispatched_job_sync(&conn, &agent_id, dispatched_at_seq_id, &prompt_text)
@@ -1597,7 +1594,7 @@ pub async fn set_job_evidence_requirements(
     job_id: String,
     requires_physical_evidence: bool,
     requires_test_evidence: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("jobs::set_job_evidence_requirements", move || {
         let conn = db.conn();
         set_job_evidence_requirements_sync(
@@ -1627,7 +1624,7 @@ mod tests {
         STATE_BUSY, STATE_IDLE, STATE_PROMPT_PENDING, STATE_WAITING_FOR_ACK,
     };
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use tokio::sync::broadcast;
     use tokio::time::{Duration, timeout};
 
@@ -1807,14 +1804,14 @@ mod tests {
     #[test]
     fn test_strip_ansi_escapes_real_codex_status_bar() {
         let raw = "Use /skills to list available skills\n\
-                   \u{1b}]0;⠴ ccbd-rust•Working(0s • esc to interrupt)\u{07}\
+                   \u{1b}]0;⠴ agent-hypervisor•Working(0s • esc to interrupt)\u{07}\
                    › echo from a1\n\
-                   \u{1b}]0;⠦ ccbd-rust\u{1b}\\clean reply";
+                   \u{1b}]0;⠦ agent-hypervisor\u{1b}\\clean reply";
 
         let stripped = strip_ansi_csi(raw);
 
         assert!(!stripped.contains("]0;"));
-        assert!(!stripped.contains("ccbd-rust•Working"));
+        assert!(!stripped.contains("agent-hypervisor•Working"));
         assert!(stripped.contains("Use /skills to list available skills"));
         assert!(stripped.contains("› echo from a1"));
         assert!(stripped.contains("clean reply"));
@@ -2057,7 +2054,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+            assert!(matches!(err, AhError::AgentWrongState { .. }));
             assert_eq!(agent_state, STATE_BUSY);
             assert_eq!(job_status, "QUEUED");
             assert_eq!(event_count, 0);
@@ -2099,7 +2096,7 @@ mod tests {
                 )
                 .unwrap();
 
-            assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+            assert!(matches!(err, AhError::AgentWrongState { .. }));
             assert_eq!(agent_state, STATE_PROMPT_PENDING);
             assert_eq!(job_status, "QUEUED");
             assert_eq!(event_count, 0);
@@ -2120,7 +2117,7 @@ mod tests {
             )
             .unwrap_err();
 
-            assert!(matches!(err, CcbdError::AgentNotFound(agent) if agent == "missing"));
+            assert!(matches!(err, AhError::AgentNotFound(agent) if agent == "missing"));
         });
     }
 

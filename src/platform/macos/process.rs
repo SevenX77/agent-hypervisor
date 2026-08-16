@@ -1,6 +1,6 @@
 //! macOS kqueue process watcher and registry.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::collections::HashMap;
 use std::mem;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
@@ -50,13 +50,13 @@ pub(crate) enum RegisteredWatchIdentity {
     Mismatches,
 }
 
-pub fn pidfd_open(pid: i32) -> Result<OwnedFd, CcbdError> {
+pub fn pidfd_open(pid: i32) -> Result<OwnedFd, AhError> {
     let identity = capture_identity(pid)?;
     open_kqueue_for_identity(identity)
 }
 
-pub fn pidfd_send_sigkill(_pidfd: BorrowedFd<'_>) -> Result<(), CcbdError> {
-    Err(CcbdError::EnvironmentNotSupported {
+pub fn pidfd_send_sigkill(_pidfd: BorrowedFd<'_>) -> Result<(), AhError> {
+    Err(AhError::EnvironmentNotSupported {
         details: "macOS: pidfd_send_signal is unsupported until PR-4 process reaper".to_string(),
     })
 }
@@ -178,8 +178,8 @@ pub(crate) fn registered_watch_identity(
     }
 }
 
-fn capture_identity(pid: i32) -> Result<MacProcessIdentity, CcbdError> {
-    let info = process_info(pid).ok_or_else(|| CcbdError::AgentUnexpectedExit {
+fn capture_identity(pid: i32) -> Result<MacProcessIdentity, AhError> {
+    let info = process_info(pid).ok_or_else(|| AhError::AgentUnexpectedExit {
         details: format!("pid {pid} is not alive"),
     })?;
 
@@ -194,9 +194,9 @@ fn identity_from_process_info(info: MacProcessInfo) -> MacProcessIdentity {
     }
 }
 
-fn open_kqueue_for_identity(identity: MacProcessIdentity) -> Result<OwnedFd, CcbdError> {
+fn open_kqueue_for_identity(identity: MacProcessIdentity) -> Result<OwnedFd, AhError> {
     if !identity_matches_current_process(&identity) {
-        return Err(CcbdError::AgentUnexpectedExit {
+        return Err(AhError::AgentUnexpectedExit {
             details: format!(
                 "pid {} identity changed before watch registration",
                 identity.pid
@@ -207,19 +207,19 @@ fn open_kqueue_for_identity(identity: MacProcessIdentity) -> Result<OwnedFd, Ccb
     open_kqueue_for_identity_unchecked(identity)
 }
 
-fn open_kqueue_for_identity_unchecked(identity: MacProcessIdentity) -> Result<OwnedFd, CcbdError> {
+fn open_kqueue_for_identity_unchecked(identity: MacProcessIdentity) -> Result<OwnedFd, AhError> {
     let fd = open_proc_exit_kqueue(identity, "primary")?;
     let probe_fd = open_proc_exit_kqueue(identity, "probe")?;
     register_identity(fd.as_raw_fd(), identity, probe_fd);
     Ok(fd)
 }
 
-fn open_proc_exit_kqueue(identity: MacProcessIdentity, label: &str) -> Result<OwnedFd, CcbdError> {
+fn open_proc_exit_kqueue(identity: MacProcessIdentity, label: &str) -> Result<OwnedFd, AhError> {
     // SAFETY: kqueue returns a new file descriptor on success, or -1 with errno.
     let raw = unsafe { libc::kqueue() };
     if raw < 0 {
         let err = std::io::Error::last_os_error();
-        return Err(CcbdError::SandboxMountFailed {
+        return Err(AhError::SandboxMountFailed {
             details: format!("kqueue({label}) failed for pid {}: {err}", identity.pid),
         });
     }
@@ -237,11 +237,11 @@ fn open_proc_exit_kqueue(identity: MacProcessIdentity, label: &str) -> Result<Ow
             libc::close(raw);
         }
         if errno == Some(libc::ESRCH) {
-            return Err(CcbdError::AgentUnexpectedExit {
+            return Err(AhError::AgentUnexpectedExit {
                 details: format!("pid {} is not alive", identity.pid),
             });
         }
-        return Err(CcbdError::SandboxMountFailed {
+        return Err(AhError::SandboxMountFailed {
             details: format!(
                 "kevent(EVFILT_PROC NOTE_EXIT {label}) failed for pid {}: {err}",
                 identity.pid
@@ -311,7 +311,7 @@ fn zeroed_kevent() -> libc::kevent {
 }
 
 #[cfg(all(test, target_os = "macos"))]
-fn pidfd_open_with_identity_for_test(identity: MacProcessIdentity) -> Result<OwnedFd, CcbdError> {
+fn pidfd_open_with_identity_for_test(identity: MacProcessIdentity) -> Result<OwnedFd, AhError> {
     open_kqueue_for_identity_unchecked(identity)
 }
 

@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::{MarkerMatcher, MatchResult, parser_registry, registry};
 use crate::pane_diff::is_meaningful_diff;
 use rusqlite::OptionalExtension;
@@ -316,7 +316,7 @@ pub async fn ack_mark_busy_or_resolve(
     db: crate::db::Db,
     agent_id: &str,
     reason: &str,
-) -> Result<AckBusyOutcome, CcbdError> {
+) -> Result<AckBusyOutcome, AhError> {
     let agent_id = agent_id.to_string();
     let reason = reason.to_string();
     for attempt in 0..ACK_BUSY_RETRY_ATTEMPTS {
@@ -336,7 +336,7 @@ async fn ack_mark_busy_or_resolve_once(
     db: crate::db::Db,
     agent_id: &str,
     reason: &str,
-) -> Result<AckBusyOutcome, CcbdError> {
+) -> Result<AckBusyOutcome, AhError> {
     let agent_id = agent_id.to_string();
     let reason = reason.to_string();
     crate::db::common::spawn_db("handlers::ack_mark_busy_or_resolve_once", move || {
@@ -408,7 +408,7 @@ async fn emit_ack_busy_deferred(
     db: crate::db::Db,
     agent_id: &str,
     reason: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     crate::db::events::insert_event(
         db,
         agent_id.to_string(),
@@ -429,7 +429,7 @@ pub async fn fallback_ack_to_stuck(
     db: crate::db::Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let agent_id = agent_id.to_string();
     let reason = reason.to_string();
     crate::db::common::spawn_db("handlers::fallback_ack_to_stuck", move || {
@@ -581,7 +581,7 @@ pub async fn fallback_ack_to_crashed(
     db: crate::db::Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let state = crate::db::agents::query_agent_state(db.clone(), agent_id.to_string()).await?;
     if state
         .as_ref()

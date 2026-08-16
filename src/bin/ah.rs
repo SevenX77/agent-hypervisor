@@ -206,7 +206,7 @@ enum ConfigCmd {
         #[arg(long)]
         config: PathBuf,
     },
-    /// Print migration guidance for legacy .ccb/ccb.config.
+    /// Print migration guidance for legacy .ah/ah.config.
     Migrate,
 }
 
@@ -361,7 +361,7 @@ async fn dispatch(cli: Cli) -> Result<(), CliError> {
             return cmd_doctor(&client, config.as_deref()).await;
         }
         // Hook notifications carry their socket explicitly (--socket or
-        // CCB_SOCKET); a hook firing from a sandbox must not depend on the
+        // AH_SOCKET); a hook firing from a sandbox must not depend on the
         // sandbox's directory resolving to a project.
         Some(Cmd::Agent {
             cmd:
@@ -787,7 +787,7 @@ fn ensure_daemon_running(socket: &Path) -> Result<(), CliError> {
         ))
     })?;
 
-    if std::env::var("CCB_ENV").as_deref() == Ok("dev") {
+    if std::env::var("AH_ENV").as_deref() == Ok("dev") {
         for ext in ["", "-wal", "-shm"] {
             let p = state_dir.join(format!("ahd.sqlite{ext}"));
             let _ = std::fs::remove_file(&p);
@@ -925,7 +925,7 @@ fn detect_nesting(tmux_env: Option<&str>, cgroup_data: &str) -> Option<String> {
     {
         return Some("via TMUX env".to_string());
     }
-    if cgroup_data.contains("/ccb-") || cgroup_data.contains("ahd-agent-") {
+    if cgroup_data.contains("/ah-") || cgroup_data.contains("ahd-agent-") {
         return Some("via cgroup".to_string());
     }
     None
@@ -1317,20 +1317,16 @@ async fn cmd_attach(
     } else {
         None
     };
-    let session_name = match resolve_attach_session_name(
-        target,
-        subject,
-        session_id,
-        sessions.as_ref(),
-    ) {
-        Ok(name) => name,
-        // Nothing ACTIVE, no explicit session: the runtime may still be holding a
-        // remain-on-exit master pane for post-mortem. tmux is the authority on that.
-        Err(err) if target == "master" && session_id.is_none() => {
-            pick_forensic_master_session(&list_tmux_session_names(&socket)).map_err(|_| err)?
-        }
-        Err(err) => return Err(err),
-    };
+    let session_name =
+        match resolve_attach_session_name(target, subject, session_id, sessions.as_ref()) {
+            Ok(name) => name,
+            // Nothing ACTIVE, no explicit session: the runtime may still be holding a
+            // remain-on-exit master pane for post-mortem. tmux is the authority on that.
+            Err(err) if target == "master" && session_id.is_none() => {
+                pick_forensic_master_session(&list_tmux_session_names(&socket)).map_err(|_| err)?
+            }
+            Err(err) => return Err(err),
+        };
     exec_tmux_attach(socket, session_name)
 }
 
@@ -1342,7 +1338,7 @@ async fn cmd_stop(client: &UnixRpcClient) -> Result<(), CliError> {
     if let Some(state_dir) = client.socket().parent() {
         crate::teardown_ahd_unit(state_dir);
     }
-    eprintln!("ccbd shutting down.");
+    eprintln!("ah shutting down.");
     Ok(())
 }
 
@@ -1918,8 +1914,7 @@ mod tests {
         Cli, Cmd, MasterCmd, attach_session_name, bottom_contains_tell_body, cmd_agent_notify,
         contains_paste_expand_guard, detect_nesting, format_agent_notify_output,
         pick_forensic_master_session, prepare_attach_command, resolve_attach_session_name,
-        resolve_start_config_path,
-        runtime_subscribe_params, status_snapshot_json,
+        resolve_start_config_path, runtime_subscribe_params, status_snapshot_json,
     };
     use ah::cli::rpc_client::{RpcClient, RpcFuture, UnixRpcClient};
     use clap::Parser;
@@ -1988,7 +1983,7 @@ provider = "bash"
     #[serial_test::serial(global_env)]
     async fn start_without_config_errors_before_daemon_socket() {
         let dir = tempfile::TempDir::new().unwrap();
-        let socket = dir.path().join("state").join("ccbd.sock");
+        let socket = dir.path().join("state").join("ah.sock");
         let _cwd = CurrentDirGuard::enter(dir.path());
         let client = UnixRpcClient::new(socket.clone());
 
@@ -2323,7 +2318,7 @@ provider = "bash"
             "sessions": [
                 {
                     "id": "s1",
-                    "project_id": "ccbd-rust",
+                    "project_id": "agent-hypervisor",
                     "status": "ACTIVE",
                     "master_pane_id": "%42"
                 }
@@ -2333,7 +2328,7 @@ provider = "bash"
         let session_name =
             resolve_attach_session_name("master", None, None, Some(&sessions)).unwrap();
 
-        assert_eq!(session_name, "master_ccbd-rust");
+        assert_eq!(session_name, "master_agent-hypervisor");
     }
 
     #[test]
@@ -2367,7 +2362,10 @@ provider = "bash"
 
         let err = pick_forensic_master_session(&names).unwrap_err();
 
-        assert!(err.to_string().contains("--session"), "unexpected error: {err}");
+        assert!(
+            err.to_string().contains("--session"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -2383,7 +2381,7 @@ provider = "bash"
             "sessions": [
                 {
                     "id": "s1",
-                    "project_id": "ccbd-rust",
+                    "project_id": "agent-hypervisor",
                     "status": "ACTIVE"
                 }
             ]
@@ -2421,7 +2419,7 @@ provider = "bash"
 
     #[test]
     fn test_check_nested_environment_detects_cgroup() {
-        let reason = detect_nesting(None, "0::/user.slice/ccb-project-ahd-agents.slice\n");
+        let reason = detect_nesting(None, "0::/user.slice/ah-project-ahd-agents.slice\n");
 
         assert!(reason.unwrap().contains("cgroup"));
     }

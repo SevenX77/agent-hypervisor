@@ -39,22 +39,36 @@ pub struct LoginCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AuthStoreStatus {
-    Healthy { path: PathBuf },
+    Healthy {
+        path: PathBuf,
+    },
     /// No store at all: the environment has never logged in.
-    Missing { path: PathBuf },
+    Missing {
+        path: PathBuf,
+    },
     /// The provider wrote an explicit logged-out marker (claude writes an
     /// `expiresAt: 0` stub on logout).
-    LoggedOut { path: PathBuf },
+    LoggedOut {
+        path: PathBuf,
+    },
     /// The store exists but is not a parseable credential file.
-    Unreadable { path: PathBuf, details: String },
+    Unreadable {
+        path: PathBuf,
+        details: String,
+    },
     /// The store reaches into a different environment: a symlink whose target
     /// crosses the WSL/Windows interop boundary, or a file living on a
     /// Windows-mounted filesystem. Sharing a chain across that boundary is
     /// how logins die (decision 0006).
-    ForeignEnvironment { path: PathBuf, target: PathBuf },
+    ForeignEnvironment {
+        path: PathBuf,
+        target: PathBuf,
+    },
     /// Nothing to check on this OS (unmanaged, or inspectable only through
     /// the provider's own tooling).
-    NotCheckable { reason: &'static str },
+    NotCheckable {
+        reason: &'static str,
+    },
 }
 
 impl AuthStoreStatus {
@@ -294,16 +308,21 @@ mod tests {
             auth_store_spec("claude", "macos"),
             AuthStoreSpec::OsCredentialService { .. }
         ),);
-        assert_eq!(auth_store_spec("claude", "windows"), AuthStoreSpec::Unmanaged);
-        assert_eq!(auth_store_spec("codex", "windows"), AuthStoreSpec::Unmanaged);
+        assert_eq!(
+            auth_store_spec("claude", "windows"),
+            AuthStoreSpec::Unmanaged
+        );
+        assert_eq!(
+            auth_store_spec("codex", "windows"),
+            AuthStoreSpec::Unmanaged
+        );
     }
 
     #[test]
     fn a_missing_store_asks_for_a_first_login() {
         let home = tempfile::TempDir::new().unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::Missing { .. }));
         assert!(!status.is_healthy());
@@ -319,8 +338,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(status.is_healthy(), "got {status:?}");
     }
@@ -335,8 +353,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::LoggedOut { .. }));
     }
@@ -353,8 +370,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &no_boundary);
 
         assert!(status.is_healthy(), "got {status:?}");
     }
@@ -372,8 +388,7 @@ mod tests {
         )
         .unwrap();
 
-        let status =
-            check_auth_store_for_os("claude", home.path(), None, "linux", &mnt_boundary);
+        let status = check_auth_store_for_os("claude", home.path(), None, "linux", &mnt_boundary);
 
         assert!(
             matches!(status, AuthStoreStatus::ForeignEnvironment { .. }),
@@ -414,8 +429,7 @@ mod tests {
         fs::create_dir_all(home.path().join(".codex")).unwrap();
         fs::write(home.path().join(".codex/auth.json"), "not json").unwrap();
 
-        let status =
-            check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
+        let status = check_auth_store_for_os("codex", home.path(), None, "linux", &no_boundary);
 
         assert!(matches!(status, AuthStoreStatus::Unreadable { .. }));
     }

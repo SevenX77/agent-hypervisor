@@ -9,5 +9,8 @@ fn agent_session_name_is_public_and_consistent() {
 #[test]
 fn master_session_name_is_public_and_consistent() {
     assert_eq!(master_session_name("project_xyz"), "master_project_xyz");
-    assert_eq!(master_session_name("ccbd-rust"), "master_ccbd-rust");
+    assert_eq!(
+        master_session_name("agent-hypervisor"),
+        "master_agent-hypervisor"
+    );
 }

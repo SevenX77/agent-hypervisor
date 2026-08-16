@@ -5,7 +5,7 @@ use crate::db::system::{
     MasterDeathSessionActivity, cascade_kill_session_agents, clean_worker_runtime_resources_sync,
     snapshot_master_death_session_activity,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::master_revival::{
     MasterDeathDecision, MasterReviveAttemptDecision, MasterTransitionOutcome,
     begin_master_recovery_readiness_wait_for_master_watch,
@@ -60,7 +60,7 @@ pub async fn handle_master_death_detected(
     expected_generation: i64,
     master_cmd: String,
     source: MasterDeathSource,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let spawn_lock = master_spawn_lock(&session_id);
     let _spawn_guard = spawn_lock.lock().await;
     match classify_master_death(&ctx.db, &session_id, expected_pid, expected_generation)? {
@@ -104,7 +104,7 @@ pub async fn handle_master_death_detected(
     }
 }
 
-pub async fn rearm_active_master_watches_on_startup(ctx: &Ctx) -> Result<usize, CcbdError> {
+pub async fn rearm_active_master_watches_on_startup(ctx: &Ctx) -> Result<usize, AhError> {
     let rows = query_active_master_watch_rows(&ctx.db)?;
     let mut armed_or_detected = 0;
     for row in rows {
@@ -115,7 +115,7 @@ pub async fn rearm_active_master_watches_on_startup(ctx: &Ctx) -> Result<usize, 
     Ok(armed_or_detected)
 }
 
-pub(crate) async fn patrol_active_masters_once(ctx: &Ctx) -> Result<usize, CcbdError> {
+pub(crate) async fn patrol_active_masters_once(ctx: &Ctx) -> Result<usize, AhError> {
     let rows = query_active_master_watch_rows(&ctx.db)?;
     let mut detected = 0;
     for row in rows {
@@ -157,7 +157,7 @@ async fn arm_or_route_master_watch(
     ctx: &Ctx,
     row: ActiveMasterWatchRow,
     dead_source: MasterDeathSource,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     if row.master_pid <= 0 {
         tracing::warn!(
             session_id = %row.session_id,
@@ -172,10 +172,10 @@ async fn arm_or_route_master_watch(
     }
     let master_cmd = resolve_master_cmd_for_watch(&row);
     let pid = i32::try_from(row.master_pid)
-        .map_err(|_| CcbdError::PtyIoError(format!("invalid master pid: {}", row.master_pid)))?;
+        .map_err(|_| AhError::PtyIoError(format!("invalid master pid: {}", row.master_pid)))?;
     let pidfd = match crate::monitor::pidfd_open(pid) {
         Ok(pidfd) => pidfd,
-        Err(CcbdError::AgentUnexpectedExit { .. }) => {
+        Err(AhError::AgentUnexpectedExit { .. }) => {
             handle_master_death_detected(
                 ctx,
                 row.session_id,
@@ -213,7 +213,7 @@ async fn arm_or_route_master_watch(
 
     let task_fd = pidfd
         .try_clone()
-        .map_err(|err| CcbdError::PtyIoError(format!("clone master pidfd for watcher: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("clone master pidfd for watcher: {err}")))?;
     crate::monitor::register(key, pidfd);
     spawn_master_pidfd_watch_task(
         row.session_id.clone(),
@@ -315,7 +315,7 @@ async fn stored_master_pane_still_matches(ctx: &Ctx, row: &ActiveMasterWatchRow)
     }
 }
 
-fn query_active_master_watch_rows(db: &Db) -> Result<Vec<ActiveMasterWatchRow>, CcbdError> {
+fn query_active_master_watch_rows(db: &Db) -> Result<Vec<ActiveMasterWatchRow>, AhError> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
@@ -327,7 +327,7 @@ fn query_active_master_watch_rows(db: &Db) -> Result<Vec<ActiveMasterWatchRow>, 
              ORDER BY sessions.created_at ASC, sessions.id ASC",
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("prepare active master watches: {err}"))
+            AhError::DbConstraintViolation(format!("prepare active master watches: {err}"))
         })?;
     let rows = stmt
         .query_map([], |row| {
@@ -341,17 +341,17 @@ fn query_active_master_watch_rows(db: &Db) -> Result<Vec<ActiveMasterWatchRow>, 
             })
         })
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query active master watches: {err}"))
+            AhError::DbConstraintViolation(format!("query active master watches: {err}"))
         })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("collect active master watches: {err}"))
+        AhError::DbConstraintViolation(format!("collect active master watches: {err}"))
     })
 }
 
 fn master_sandbox_home_for_watch_row(
     ctx: &Ctx,
     row: &ActiveMasterWatchRow,
-) -> Result<PathBuf, CcbdError> {
+) -> Result<PathBuf, AhError> {
     if ctx.env_state.unsafe_no_sandbox {
         return Ok(PathBuf::from(&row.absolute_path));
     }
@@ -508,7 +508,7 @@ async fn revive_master_after_exit(
     state_dir: PathBuf,
     env_state: EnvState,
     daemon_unit: Option<String>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let spawn_lock = master_spawn_lock(&session_id);
     let _spawn_guard = spawn_lock.lock().await;
     revive_master_after_exit_locked(
@@ -535,7 +535,7 @@ async fn revive_master_after_exit_locked(
     state_dir: PathBuf,
     env_state: EnvState,
     daemon_unit: Option<String>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let result = revive_master_after_exit_windowed(
         session_id.clone(),
         expected_pid,
@@ -585,7 +585,7 @@ async fn revive_master_after_exit_windowed(
     state_dir: PathBuf,
     env_state: EnvState,
     daemon_unit: Option<String>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let snapshot = snapshot_master_death_session_activity(&db, &session_id)?;
     begin_master_recovery_window_for_snapshot(
         &db,
@@ -786,7 +786,7 @@ fn clean_workers_after_master_death(
     classification: MasterDeathSessionActivity,
     tmux_server: &TmuxServer,
     env_state: &EnvState,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let daemon_marker = env_state
         .systemd_run_available
         .then(|| tmux_server.socket_name().to_string());
@@ -816,7 +816,7 @@ fn close_idle_master_death_without_revive(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     mark_session_closed_after_idle_master_death(db, session_id)?;
     mark_master_recovery_phase(db, session_id, expected_generation, "FAILED", unixepoch())?;
     tracing::info!(
@@ -833,7 +833,7 @@ async fn wait_for_master_revive_retry_backoff(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let now = unixepoch();
     if let Some(next_retry_at) =
         query_master_revive_next_retry_at(db, session_id, expected_pid, expected_generation)?
@@ -876,7 +876,7 @@ fn claim_master_revive_generation(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<Option<i64>, CcbdError> {
+) -> Result<Option<i64>, AhError> {
     match try_claim_master_transition(db, session_id, expected_pid, expected_generation)? {
         MasterTransitionOutcome::Claimed => Ok(Some(expected_generation + 1)),
         MasterTransitionOutcome::Stale | MasterTransitionOutcome::NoChange => {
@@ -898,7 +898,7 @@ fn record_master_revive_spawn_attempt(
     expected_pid: i64,
     expected_generation: i64,
     claimed_generation: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     match record_master_revive_attempt(
         db,
         session_id,
@@ -991,7 +991,7 @@ async fn resume_master_recovery_readiness(
     pane: &TmuxPaneId,
     begin_readiness_token: Option<String>,
     readiness_check: ReviveMasterReadinessCheck,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     if let Some(readiness_token) = begin_readiness_token.as_deref() {
         begin_master_recovery_readiness_wait_for_master_watch(
             &ctx.db,
@@ -1140,7 +1140,7 @@ async fn fail_readiness_then_cascade_and_reap(
     expected_pid: i64,
     runtime_expected_generation: i64,
     pane: &TmuxPaneId,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     fail_master_recovery_readiness_for_master_watch(
         &ctx.db,
         session_id,
@@ -1171,7 +1171,7 @@ async fn recovered_worker_gate_ready(
     ctx: &Ctx,
     session_id: &str,
     recovered_worker_ids: &[String],
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let worker_timeout_secs = master_recovery_effective_readiness_timeout(
         &ctx.db,
         session_id,
@@ -1198,7 +1198,7 @@ async fn revive_master_readiness_ready(
     expected_pid: i64,
     expected_generation: i64,
     timeout: Duration,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     match check {
         ReviveMasterReadinessCheck::Ack {
             provider,
@@ -1225,8 +1225,10 @@ async fn revive_master_readiness_ready(
             if let Some(ready) = revive_master_readiness_ack_override(session_id) {
                 return Ok(ready);
             }
-            Ok(master_runtime_matches(db, session_id, expected_pid, expected_generation)?
-                && master_process_is_alive(expected_pid))
+            Ok(
+                master_runtime_matches(db, session_id, expected_pid, expected_generation)?
+                    && master_process_is_alive(expected_pid),
+            )
         }
     }
 }
@@ -1241,7 +1243,7 @@ async fn revive_master_readiness_ack(
     log_root: &Path,
     cursors: &LogCursorMap,
     timeout: Duration,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     #[cfg(test)]
     if let Some(ready) = revive_master_readiness_ack_override(session_id) {
         return Ok(ready);
@@ -1257,7 +1259,7 @@ async fn revive_master_readiness_ack(
         }
         if read_provider_assistant_progress_after_cursors(provider, log_root, cursors).map_err(
             |err| {
-                CcbdError::PtyIoError(format!(
+                AhError::PtyIoError(format!(
                     "read {provider} revive readiness transcript: {err}"
                 ))
             },
@@ -1373,7 +1375,7 @@ async fn wait_for_recovered_workers_ready(
     db: &Db,
     agent_ids: &[String],
     timeout: Duration,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     if agent_ids.is_empty() {
         return Ok(true);
     }
@@ -1422,7 +1424,7 @@ mod tests {
         MasterDeathSessionActivity, cascade_kill_session_agents_sync,
         clean_worker_runtime_resources_sync, snapshot_master_death_session_activity,
     };
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::monitor::master_reaper::{
         FailedReviveMasterReapEvent, FailedReviveMasterReapTarget,
         MASTER_REVIVE_CONTINUE_INSTRUCTION, ReviveMasterReadinessCheck,
@@ -2633,8 +2635,8 @@ provider = "bash"
         let temp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir_all(temp.path().join(".codex/sessions")).unwrap();
 
-        let check = prepare_revive_master_readiness_check("s_ack_mode", "codex", temp.path())
-            .unwrap();
+        let check =
+            prepare_revive_master_readiness_check("s_ack_mode", "codex", temp.path()).unwrap();
 
         assert_eq!(check.mode_name(), "ack");
         assert_eq!(check.strength(), "semantic");
@@ -3505,7 +3507,7 @@ provider = "bash"
     #[tokio::test(flavor = "multi_thread")]
     async fn master_revive_stale_inflight_dispatch_failure_does_not_overwrite_requeued_job() {
         let _global_env_guard = GLOBAL_ENV_TEST_LOCK.lock().await;
-        let enter_delay = EnvVarGuard::set("CCB_TMUX_ENTER_DELAY", "2.0");
+        let enter_delay = EnvVarGuard::set("AH_TMUX_ENTER_DELAY", "2.0");
         let file = tempfile::NamedTempFile::new().unwrap();
         let state_dir = tempfile::TempDir::new().unwrap().keep();
         let project_dir = tempfile::TempDir::new().unwrap();
@@ -3942,9 +3944,13 @@ provider = "bash"
             .unwrap();
         }
 
-        let master_sandbox_dir =
-            crate::sandbox::path::resolve_sandbox_dir(&state_dir, &session_id, "master", &state_dir)
-                .unwrap();
+        let master_sandbox_dir = crate::sandbox::path::resolve_sandbox_dir(
+            &state_dir,
+            &session_id,
+            "master",
+            &state_dir,
+        )
+        .unwrap();
         let expected_home =
             crate::provider::home_layout::sandbox_home_for_sandbox_dir(&master_sandbox_dir)
                 .unwrap();
@@ -3955,7 +3961,7 @@ provider = "bash"
         std::fs::write(
             &claude_script,
             format!(
-                "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$AH_STATE_DIR\" \"$CCB_SOCKET\" \"$AH_MASTER_ROLE\" \"$AH_REDISPATCH_MARKER\" \"$HOME\" \"$CLAUDE_CONFIG_DIR\" \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" \"${{CLAUDE_CODE_USE_GATEWAY:-}}\" \"${{ANTHROPIC_AUTH_TOKEN:-}}\" \"$AH_ROLE\" \"$AH_SESSION_ID\" \"${{AH_AGENT_ID:-}}\" > {}\nsleep 5\n",
+                "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n%s\\n' \"$AH_STATE_DIR\" \"$AH_SOCKET\" \"$AH_MASTER_ROLE\" \"$AH_REDISPATCH_MARKER\" \"$HOME\" \"$CLAUDE_CONFIG_DIR\" \"$CLAUDE_SECURESTORAGE_CONFIG_DIR\" \"${{CLAUDE_CODE_USE_GATEWAY:-}}\" \"${{ANTHROPIC_AUTH_TOKEN:-}}\" \"$AH_ROLE\" \"$AH_SESSION_ID\" \"${{AH_AGENT_ID:-}}\" > {}\nsleep 5\n",
                 env_capture.display()
             ),
         )
@@ -4084,7 +4090,7 @@ provider = "bash"
             Some(&marker),
             |_, _, text| async move {
                 assert_eq!(text, MASTER_REVIVE_CONTINUE_INSTRUCTION);
-                Err(CcbdError::PtyIoError("synthetic tmux write failure".into()))
+                Err(AhError::PtyIoError("synthetic tmux write failure".into()))
             },
         )
         .await;
@@ -4953,7 +4959,7 @@ provider = "bash"
         let mut master_env_vars = HashMap::new();
         master_env_vars.insert("AH_STATE_DIR".to_string(), "/tmp/state".to_string());
         crate::process_identity::inject_master_identity(&mut master_env_vars, "test-session-123");
-        master_env_vars.insert("CCB_SOCKET".to_string(), "/tmp/state/ahd.sock".to_string());
+        master_env_vars.insert("AH_SOCKET".to_string(), "/tmp/state/ahd.sock".to_string());
         master_env_vars.insert("AH_MASTER_ROLE".to_string(), "managed".to_string());
 
         let env_state = EnvState {

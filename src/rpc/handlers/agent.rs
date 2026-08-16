@@ -9,7 +9,7 @@ use crate::db::events_progress::record_send_progress;
 use crate::db::sessions::{apply_master_notify_event, query_session_by_id};
 use crate::db::state_machine::{mark_agent_idle_hook_event, mark_agent_waiting_for_ack};
 use crate::db::system::remove_agent_sandbox_dir_sync;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::{
     MarkerMatcher, PromptTimerScanContext, TimerKind, parser_registry, registry,
     spawn_marker_timer_task_with_prompt,
@@ -19,7 +19,7 @@ use crate::monitor::agent_watch::spawn_agent_pidfd_watch_task;
 use crate::provider::bundles::{BundleRole, resolve_bundles_for_provider};
 use crate::provider::fingerprint::{ConfigFingerprintInput, ConfigRole, compute_config_hash};
 use crate::provider::home_layout::{
-    HomeLayoutRole, HookPushContext, is_ccb_sandbox_home,
+    HomeLayoutRole, HookPushContext, is_ah_sandbox_home,
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
 use crate::provider::manifest::compute_recovery_args;
@@ -38,7 +38,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-pub async fn handle_agent_spawn(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_spawn(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     handle_agent_spawn_with_recovery(params, ctx, false).await
 }
 
@@ -54,7 +54,7 @@ fn persist_agent_spawn_snapshot_after_success(
     db: &crate::db::Db,
     spec: crate::db::recovery::AgentSpawnSpec,
     config_hash: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     match crate::db::recovery::persist_agent_spawn_spec_sync(&conn, &spec, config_hash) {
         Ok(()) => Ok(true),
@@ -73,7 +73,7 @@ pub(super) async fn handle_agent_spawn_with_recovery(
     params: Value,
     ctx: &Ctx,
     is_recovery: bool,
-) -> Result<Value, CcbdError> {
+) -> Result<Value, AhError> {
     handle_agent_spawn_with_db_action(params, ctx, is_recovery, AgentSpawnDbAction::InsertDefault)
         .await
 }
@@ -83,11 +83,11 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     ctx: &Ctx,
     is_recovery: bool,
     db_action: AgentSpawnDbAction,
-) -> Result<Value, CcbdError> {
+) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?;
     let agent_id = required_str(&params, "agent_id")?;
     if agent_id.starts_with("master:") {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "agent_id prefix 'master:' is reserved for master hook sentinels".to_string(),
         ));
     }
@@ -95,11 +95,8 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     let manifest = crate::provider::manifest::try_get_manifest(provider)?;
     let extensions = extension_config_from_params(&params)?;
     let extra_env_vars = match params.get("extra_env_vars") {
-        Some(value) => {
-            serde_json::from_value::<HashMap<String, String>>(value.clone()).map_err(|err| {
-                CcbdError::IpcInvalidRequest(format!("invalid extra_env_vars: {err}"))
-            })?
-        }
+        Some(value) => serde_json::from_value::<HashMap<String, String>>(value.clone())
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid extra_env_vars: {err}")))?,
         None => HashMap::new(),
     };
     // ISSUE-13 §3a: the project-level `[env]` (config_env) is carried raw and merged
@@ -107,7 +104,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     // same helper. Clients no longer pre-merge (which is what let the two sides diverge).
     let config_env = match params.get("config_env") {
         Some(value) => serde_json::from_value::<HashMap<String, String>>(value.clone())
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid config_env: {err}")))?,
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid config_env: {err}")))?,
         None => HashMap::new(),
     };
     let mut claude_shared_credentials_dir =
@@ -115,7 +112,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     let sandbox_overrides = match params.get("sandbox_overrides") {
         Some(value) => {
             serde_json::from_value::<SandboxOverrides>(value.clone()).map_err(|err| {
-                CcbdError::IpcInvalidRequest(format!("invalid sandbox_overrides: {err}"))
+                AhError::IpcInvalidRequest(format!("invalid sandbox_overrides: {err}"))
             })?
         }
         None => SandboxOverrides::default(),
@@ -123,13 +120,13 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     if let Some(existing) = query_agent(ctx.db.clone(), agent_id.to_string()).await?
         && existing.state != "KILLED"
     {
-        return Err(CcbdError::AgentAlreadyExists(agent_id.to_string()));
+        return Err(AhError::AgentAlreadyExists(agent_id.to_string()));
     }
 
     let session = query_session_by_id(ctx.db.clone(), session_id.to_string())
         .await?
         .ok_or_else(|| {
-            CcbdError::DbConstraintViolation(format!("session not found: {session_id}"))
+            AhError::DbConstraintViolation(format!("session not found: {session_id}"))
         })?;
     let agent_cwd: std::path::PathBuf = session.absolute_path.clone().into();
     if manifest.provider_name == "claude" && claude_shared_credentials_dir.is_none() {
@@ -155,7 +152,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     };
     // ISSUE-13 §3b: capture the bare declared env (config_env ⊕ agent.env) BEFORE any
     // runtime injection. This clone is what feeds the config fingerprint; the injected
-    // vars (CCB_SOCKET/AH_*/HOME/IS_SANDBOX) are added strictly after this point, so they
+    // vars (AH_SOCKET/AH_*/HOME/IS_SANDBOX) are added strictly after this point, so they
     // can never leak into the hash. `spawn_env_vars` remains the real (injected) process env.
     let bare_env = bare_config_env(&config_env, &extra_env_vars);
     let mut spawn_env_vars = build_agent_spawn_env_vars_for_hook_push(
@@ -222,7 +219,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     #[cfg(windows)]
     {
         let _ = (cmd, sandbox_guard);
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: "Windows agent spawn requires the M2 ConPTY stream path".to_string(),
         });
     }
@@ -231,7 +228,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
     {
         let fifo_dir = ctx.state_dir.join("pipes");
         if let Err(err) = fs::create_dir_all(&fifo_dir) {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!("create fifo dir {}: {err}", fifo_dir.display()),
             });
         }
@@ -241,7 +238,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
             let fifo_path = fifo_path.clone();
             move || {
                 nix::unistd::mkfifo(&fifo_path, Mode::S_IRUSR | Mode::S_IWUSR).map_err(|err| {
-                    CcbdError::TmuxCommandFailed {
+                    AhError::TmuxCommandFailed {
                         cmd: format!("mkfifo {}", fifo_path.display()),
                         stderr: err.to_string(),
                         exit: -1,
@@ -259,7 +256,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
             Ok(file) => file,
             Err(err) => {
                 let _ = fs::remove_file(&fifo_path);
-                return Err(CcbdError::EnvironmentNotSupported {
+                return Err(AhError::EnvironmentNotSupported {
                     details: format!("open fifo {}: {err}", fifo_path.display()),
                 });
             }
@@ -322,7 +319,7 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
             Err(err) => {
                 cleanup_spawn_resources(&tmux, Some(pane_id.clone()), Some(fifo_file), &fifo_path)
                     .await;
-                return Err(CcbdError::EnvironmentNotSupported {
+                return Err(AhError::EnvironmentNotSupported {
                     details: format!("clone agent pidfd for {agent_id}: {err}"),
                 });
             }
@@ -468,14 +465,14 @@ pub(crate) async fn handle_agent_spawn_with_db_action(
 
 fn load_claude_shared_credentials_dir(
     project_root: &Path,
-) -> Result<Option<std::path::PathBuf>, CcbdError> {
+) -> Result<Option<std::path::PathBuf>, AhError> {
     let config_path = crate::cli::config::find_config(project_root).map_err(|err| {
-        CcbdError::EnvironmentNotSupported {
+        AhError::EnvironmentNotSupported {
             details: format!("load Claude shared credentials config: {err}"),
         }
     })?;
     let config = crate::cli::config::load_project_config(&config_path).map_err(|err| {
-        CcbdError::EnvironmentNotSupported {
+        AhError::EnvironmentNotSupported {
             details: format!("load Claude shared credentials config: {err}"),
         }
     })?;
@@ -492,7 +489,7 @@ pub(crate) fn hook_push_enabled_from_spawn_params(params: &Value) -> bool {
 /// ISSUE-13 §3a: the fingerprinted "bare" env = exactly the user-declared config —
 /// the project-level `[env]` (`config_env`) with the agent's own `[agents.X.env]`
 /// (`agent_env`) overlaid (agent overrides project). It deliberately excludes every
-/// runtime-injected/derived var (CCB_SOCKET, AH_ROLE/SESSION/AGENT, HOME, IS_SANDBOX…),
+/// runtime-injected/derived var (AH_SOCKET, AH_ROLE/SESSION/AGENT, HOME, IS_SANDBOX…),
 /// which are added only after this point. Both the spawn side and the realign side build
 /// their fingerprint env through this one helper, so the two can never diverge — the exact
 /// asymmetry that forced every agent to DRIFT on the first `ah up`.
@@ -512,7 +509,7 @@ pub(crate) fn build_agent_spawn_env_vars_for_hook_push(
     mut extra_env_vars: HashMap<String, String>,
 ) -> HashMap<String, String> {
     extra_env_vars.insert(
-        "CCB_SOCKET".to_string(),
+        "AH_SOCKET".to_string(),
         state_dir.join("ahd.sock").display().to_string(),
     );
     crate::process_identity::inject_worker_identity(&mut extra_env_vars, session_id, agent_id);
@@ -528,7 +525,7 @@ pub(crate) fn should_inject_is_sandbox(
         && command
             .iter()
             .any(|arg| *arg == "--dangerously-skip-permissions")
-        && is_ccb_sandbox_home(home_root)
+        && is_ah_sandbox_home(home_root)
 }
 
 pub(crate) fn inject_is_sandbox_env_if_needed(
@@ -635,7 +632,7 @@ mod ra2_tests {
     }
 
     #[test]
-    fn hook_push_worker_spawn_env_injects_deterministic_ccb_socket() {
+    fn hook_push_worker_spawn_env_injects_deterministic_ah_socket() {
         let state_dir = tempfile::tempdir().unwrap();
         let env = super::build_agent_spawn_env_vars_for_hook_push(
             state_dir.path(),
@@ -643,7 +640,7 @@ mod ra2_tests {
             "a1",
             HashMap::from([
                 (
-                    "CCB_SOCKET".to_string(),
+                    "AH_SOCKET".to_string(),
                     "/tmp/stale-host-socket.sock".to_string(),
                 ),
                 ("AH_ROLE".to_string(), "master".to_string()),
@@ -654,9 +651,9 @@ mod ra2_tests {
         );
 
         assert_eq!(
-            env.get("CCB_SOCKET").map(String::as_str),
+            env.get("AH_SOCKET").map(String::as_str),
             Some(state_dir.path().join("ahd.sock").to_str().unwrap()),
-            "worker spawn must inject deterministic daemon socket, not inherit host CCB_SOCKET"
+            "worker spawn must inject deterministic daemon socket, not inherit host AH_SOCKET"
         );
         assert_eq!(env.get("AH_ROLE").map(String::as_str), Some("worker"));
         assert_eq!(env.get("AH_SESSION_ID").map(String::as_str), Some("s1"));
@@ -820,11 +817,11 @@ mod ra2_tests {
     }
 }
 
-pub async fn handle_agent_kill(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_kill(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?;
     let agent = query_agent(ctx.db.clone(), agent_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
 
     let changes = mark_agent_killed(
         ctx.db.clone(),
@@ -863,7 +860,7 @@ pub async fn handle_agent_kill(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     Ok(json!({ "state": "KILLED" }))
 }
 
-pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?.to_string();
     let event = normalize_hook_event(required_str(&params, "event")?);
     let provider = params
@@ -891,11 +888,11 @@ pub async fn handle_agent_notify(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
 
     let agent = query_agent(ctx.db.clone(), agent_id.clone())
         .await?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.clone()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.clone()))?;
     if let Some(provider) = provider.as_deref()
         && provider != agent.provider
     {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "provider mismatch for agent {agent_id}: expected {}, got {provider}",
             agent.provider
         )));
@@ -981,22 +978,22 @@ fn normalize_hook_event(event: &str) -> String {
     event.to_ascii_lowercase()
 }
 
-fn parse_master_agent_id(agent_id: &str) -> Result<Option<(String, i64)>, CcbdError> {
+fn parse_master_agent_id(agent_id: &str) -> Result<Option<(String, i64)>, AhError> {
     let Some(rest) = agent_id.strip_prefix("master:") else {
         return Ok(None);
     };
     let Some((session_id, generation)) = rest.rsplit_once(':') else {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "invalid master agent_id sentinel: {agent_id}"
         )));
     };
     if session_id.is_empty() {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "invalid master agent_id sentinel: {agent_id}"
         )));
     }
     let generation = generation.parse::<i64>().map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!(
+        AhError::IpcInvalidRequest(format!(
             "invalid master generation in agent_id {agent_id}: {err}"
         ))
     })?;
@@ -1011,12 +1008,12 @@ async fn handle_master_notify(
     provider: Option<String>,
     event_id: Option<String>,
     ctx: &Ctx,
-) -> Result<Value, CcbdError> {
+) -> Result<Value, AhError> {
     let (new_state, clear_pending_request) = match event.as_str() {
         "userpromptsubmit" => ("BUSY", false),
         "stop" => ("IDLE", true),
         _ => {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "unsupported event for master agent.notify: {event}"
             )));
         }
@@ -1043,9 +1040,7 @@ async fn handle_master_notify(
         clear_pending_request,
     )
     .await?
-    .ok_or_else(|| {
-        CcbdError::IpcInvalidRequest(format!("active session not found: {session_id}"))
-    })?;
+    .ok_or_else(|| AhError::IpcInvalidRequest(format!("active session not found: {session_id}")))?;
     let ignored_stale = transition.current_generation != master_generation;
 
     tracing::info!(
@@ -1083,7 +1078,7 @@ async fn handle_master_notify(
     }))
 }
 
-pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?;
     let text = required_str(&params, "text")?;
     let request_id = params.get("request_id").and_then(Value::as_str);
@@ -1094,7 +1089,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
                 .await?;
         if let Some(existing) = existing {
             let payload: Value = serde_json::from_str(&existing.payload).map_err(|err| {
-                CcbdError::IpcInvalidRequest(format!(
+                AhError::IpcInvalidRequest(format!(
                     "invalid command_received payload for seq_id={}: {err}",
                     existing.seq_id
                 ))
@@ -1106,17 +1101,17 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
             let state = query_agent_state(ctx.db.clone(), agent_id.to_string())
                 .await?
                 .map(|(state, _)| state)
-                .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+                .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
             return match status {
                 "SENT" | "PENDING" => Ok(json!({
                     "state": state,
                     "seq_id": existing.seq_id,
                 })),
-                "FAILED" => Err(CcbdError::PtyIoError(format!(
+                "FAILED" => Err(AhError::PtyIoError(format!(
                     "previous attempt seq_id={} failed; retry with new request_id",
                     existing.seq_id
                 ))),
-                other => Err(CcbdError::IpcInvalidRequest(format!(
+                other => Err(AhError::IpcInvalidRequest(format!(
                     "unknown command_received status: {other}"
                 ))),
             };
@@ -1125,7 +1120,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
 
     let agent = query_agent(ctx.db.clone(), agent_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
     let state = agent.state.clone();
     let cas_ok =
         mark_agent_waiting_for_ack(ctx.db.clone(), agent_id.to_string(), agent.state_version)
@@ -1135,7 +1130,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
             .await?
             .map(|(state, _)| state)
             .unwrap_or_else(|| state.clone());
-        return Err(CcbdError::AgentWrongState { current_state });
+        return Err(AhError::AgentWrongState { current_state });
     }
     crate::agent_io::set_idle_scan_enabled(agent_id, false);
     let manifest = crate::provider::manifest::get_manifest(&agent.provider);
@@ -1144,7 +1139,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     let pane_id = if let Some(pane_id) = crate::agent_io::pane_id(agent_id) {
         pane_id
     } else {
-        return Err(CcbdError::PtyIoError(format!(
+        return Err(AhError::PtyIoError(format!(
             "tmux pane not registered for {agent_id}"
         )));
     };
@@ -1161,9 +1156,9 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
         .await
         {
             Ok(seq_id) => seq_id,
-            Err(CcbdError::DuplicateRequest { existing_seq_id }) => {
+            Err(AhError::DuplicateRequest { existing_seq_id }) => {
                 let request_id = request_id.ok_or_else(|| {
-                    CcbdError::IpcInvalidRequest("duplicate request without request_id".into())
+                    AhError::IpcInvalidRequest("duplicate request without request_id".into())
                 })?;
                 let existing = query_event_by_request_id(
                     ctx.db.clone(),
@@ -1172,12 +1167,12 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
                 )
                 .await?
                 .ok_or_else(|| {
-                    CcbdError::DbConstraintViolation(format!(
+                    AhError::DbConstraintViolation(format!(
                         "duplicate event seq_id={existing_seq_id} not found"
                     ))
                 })?;
                 let payload: Value = serde_json::from_str(&existing.payload).map_err(|err| {
-                    CcbdError::IpcInvalidRequest(format!(
+                    AhError::IpcInvalidRequest(format!(
                         "invalid command_received payload for seq_id={existing_seq_id}: {err}"
                     ))
                 })?;
@@ -1190,10 +1185,10 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
                         "state": state,
                         "seq_id": existing.seq_id,
                     })),
-                    "FAILED" => Err(CcbdError::PtyIoError(format!(
+                    "FAILED" => Err(AhError::PtyIoError(format!(
                         "previous attempt seq_id={existing_seq_id} failed; retry with new request_id"
                     ))),
-                    other => Err(CcbdError::IpcInvalidRequest(format!(
+                    other => Err(AhError::IpcInvalidRequest(format!(
                         "unknown command_received status: {other}"
                     ))),
                 };
@@ -1229,11 +1224,11 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     .await?;
 
     if let Some(write_error) = write_error {
-        return Err(CcbdError::PtyIoError(write_error));
+        return Err(AhError::PtyIoError(write_error));
     }
 
     let parser_handle = parser_registry::get(agent_id).ok_or_else(|| {
-        CcbdError::PtyIoError(format!("parser not in PARSER_REGISTRY for {agent_id}"))
+        AhError::PtyIoError(format!("parser not in PARSER_REGISTRY for {agent_id}"))
     })?;
     let marker_handle = spawn_marker_timer_task_with_prompt(
         agent_id.to_string(),
@@ -1266,7 +1261,7 @@ pub async fn handle_agent_send(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     }))
 }
 
-pub async fn handle_agent_read(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_read(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?;
     let since_event_id = required_i64(&params, "since_event_id")?;
 
@@ -1274,7 +1269,7 @@ pub async fn handle_agent_read(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
         .await?
         .is_none()
     {
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     }
 
     let events = query_events_since(ctx.db.clone(), agent_id.to_string(), since_event_id).await?;
@@ -1282,7 +1277,7 @@ pub async fn handle_agent_read(params: Value, ctx: &Ctx) -> Result<Value, CcbdEr
     Ok(json!({ "events": format_events(events), "is_truncated": false }))
 }
 
-pub async fn handle_agent_watch(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_watch(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?.to_string();
     let since_event_id = required_i64(&params, "since_event_id")?;
     let timeout_secs = params.get("timeout").and_then(Value::as_u64).unwrap_or(30);
@@ -1292,7 +1287,7 @@ pub async fn handle_agent_watch(params: Value, ctx: &Ctx) -> Result<Value, CcbdE
         .await?
         .is_none()
     {
-        return Err(CcbdError::AgentNotFound(agent_id));
+        return Err(AhError::AgentNotFound(agent_id));
     }
 
     let events = query_events_since(ctx.db.clone(), agent_id.clone(), since_event_id).await?;
@@ -1327,7 +1322,7 @@ pub async fn handle_agent_watch(params: Value, ctx: &Ctx) -> Result<Value, CcbdE
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                    return Err(CcbdError::IpcInvalidRequest(
+                    return Err(AhError::IpcInvalidRequest(
                         "agent output subscription closed".into(),
                     ));
                 }

@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::extensions::{
     ExtensionConfig, HookGroup, HookItem, McpServerConfig, McpTransport,
 };
@@ -79,7 +79,7 @@ pub fn resolve_bundles_for_provider(
     provider: &str,
     role: BundleRole,
     base: &ExtensionConfig,
-) -> Result<ResolvedBundles, CcbdError> {
+) -> Result<ResolvedBundles, AhError> {
     if base.bundle.is_empty() {
         return Ok(ResolvedBundles {
             extensions: base.clone(),
@@ -109,7 +109,7 @@ pub fn digest_for_bundles(
     project_root: &Path,
     role: BundleRole,
     bundle_names: &[String],
-) -> Result<Option<BundleDigest>, CcbdError> {
+) -> Result<Option<BundleDigest>, AhError> {
     if bundle_names.is_empty() {
         return Ok(None);
     }
@@ -122,11 +122,11 @@ pub fn digest_for_bundles(
                 digest: bundle.digest,
             })
         })
-        .collect::<Result<Vec<_>, CcbdError>>()?;
+        .collect::<Result<Vec<_>, AhError>>()?;
     Ok(Some(BundleDigest { bundles: entries }))
 }
 
-pub fn list_bundle_names(project_root: &Path) -> Result<Vec<String>, CcbdError> {
+pub fn list_bundle_names(project_root: &Path) -> Result<Vec<String>, AhError> {
     let bundles_root = project_root.join(".ah/bundles");
     if !bundles_root.exists() {
         return Ok(Vec::new());
@@ -153,12 +153,12 @@ pub fn list_bundle_names(project_root: &Path) -> Result<Vec<String>, CcbdError> 
             }
             Some(Ok(entry.file_name().to_string_lossy().to_string()))
         })
-        .collect::<Result<Vec<_>, CcbdError>>()?;
+        .collect::<Result<Vec<_>, AhError>>()?;
     names.sort();
     Ok(names)
 }
 
-pub fn inspect_bundle(project_root: &Path, name: &str) -> Result<BundleInspection, CcbdError> {
+pub fn inspect_bundle(project_root: &Path, name: &str) -> Result<BundleInspection, AhError> {
     let worker = resolve_bundle(project_root, name, BundleRole::Worker)?;
     let master = resolve_bundle(project_root, name, BundleRole::Master)?;
     Ok(BundleInspection {
@@ -180,7 +180,7 @@ fn resolve_bundle(
     project_root: &Path,
     name: &str,
     role: BundleRole,
-) -> Result<BundleContribution, CcbdError> {
+) -> Result<BundleContribution, AhError> {
     validate_bundle_name(name)?;
     let bundles_root = project_root.join(".ah/bundles");
     let bundle_root = bundles_root.join(name);
@@ -241,7 +241,7 @@ fn validate_bundle_capabilities(
     provider: &str,
     role: BundleRole,
     contributions: &[BundleContribution],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     if provider == "claude" {
         return Ok(());
     }
@@ -289,7 +289,7 @@ fn validate_bundle_capabilities(
 fn merge_contributions(
     extensions: &mut ExtensionConfig,
     contributions: &[BundleContribution],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let mut skills_by_name = extensions
         .skills
         .iter()
@@ -370,7 +370,7 @@ enum SkillSource {
 fn resolve_bundle_skills(
     bundle_root: &Path,
     manifest: &BundleManifest,
-) -> Result<Vec<ResolvedSkill>, CcbdError> {
+) -> Result<Vec<ResolvedSkill>, AhError> {
     let skills_root = bundle_root.join("skills");
     if !skills_root.exists() {
         return Ok(Vec::new());
@@ -382,7 +382,7 @@ fn resolve_bundle_skills(
                 let entry = entry.map_err(|err| bundle_err(format!("read bundle skill: {err}")))?;
                 Ok(entry.file_name().to_string_lossy().to_string())
             })
-            .collect::<Result<Vec<_>, CcbdError>>()?;
+            .collect::<Result<Vec<_>, AhError>>()?;
         names.sort();
         names
     } else {
@@ -418,7 +418,7 @@ fn resolve_bundle_skills(
 fn resolve_bundle_hooks(
     bundle_root: &Path,
     hooks: &HashMap<String, Vec<HookGroup>>,
-) -> Result<HashMap<String, Vec<HookGroup>>, CcbdError> {
+) -> Result<HashMap<String, Vec<HookGroup>>, AhError> {
     let mut resolved = HashMap::new();
     for (event, groups) in hooks {
         let mut resolved_groups = Vec::new();
@@ -436,7 +436,7 @@ fn resolve_bundle_hooks(
     Ok(resolved)
 }
 
-fn resolved_hook_command(bundle_root: &Path, item: &HookItem) -> Result<PathBuf, CcbdError> {
+fn resolved_hook_command(bundle_root: &Path, item: &HookItem) -> Result<PathBuf, AhError> {
     if item.hook_type != "command" {
         return Err(bundle_err(format!(
             "bundle hook type {:?} is unsupported in PR-1",
@@ -457,7 +457,7 @@ fn resolve_bundle_rules(
     bundle_root: &Path,
     rules: &BundleRulesManifest,
     role: BundleRole,
-) -> Result<Vec<String>, CcbdError> {
+) -> Result<Vec<String>, AhError> {
     let path = match role {
         BundleRole::Master => rules.master.as_deref(),
         BundleRole::Worker => rules.worker.as_deref(),
@@ -471,7 +471,7 @@ fn resolve_bundle_rules(
     Ok(vec![content])
 }
 
-fn resolve_bundle_mcp(manifest: &BundleMcpManifest) -> Result<Vec<McpServerConfig>, CcbdError> {
+fn resolve_bundle_mcp(manifest: &BundleMcpManifest) -> Result<Vec<McpServerConfig>, AhError> {
     let mut servers = Vec::new();
     for server in &manifest.servers {
         validate_mcp_name(&server.name)?;
@@ -513,7 +513,7 @@ fn resolve_bundle_mcp(manifest: &BundleMcpManifest) -> Result<Vec<McpServerConfi
     Ok(servers)
 }
 
-fn validate_mcp_name(name: &str) -> Result<(), CcbdError> {
+fn validate_mcp_name(name: &str) -> Result<(), AhError> {
     if name.is_empty()
         || !name
             .chars()
@@ -526,7 +526,7 @@ fn validate_mcp_name(name: &str) -> Result<(), CcbdError> {
     Ok(())
 }
 
-fn validate_placeholders(value: &str) -> Result<(), CcbdError> {
+fn validate_placeholders(value: &str) -> Result<(), AhError> {
     let mut rest = value;
     while let Some(start) = rest.find("${") {
         let after = &rest[start + 2..];
@@ -557,7 +557,7 @@ fn compute_bundle_digest(
     skills: &[ResolvedSkill],
     hooks: &HashMap<String, Vec<HookGroup>>,
     rules: &[String],
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let mut parts = Vec::<(String, String)>::new();
     digest_file(bundle_root, manifest_path, &mut parts)?;
     for skill in skills {
@@ -582,7 +582,7 @@ fn digest_tree(
     bundle_root: &Path,
     root: &Path,
     parts: &mut Vec<(String, String)>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let mut stack = vec![root.to_path_buf()];
     while let Some(path) = stack.pop() {
         for entry in fs::read_dir(&path)
@@ -608,7 +608,7 @@ fn digest_file(
     bundle_root: &Path,
     path: &Path,
     parts: &mut Vec<(String, String)>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let canonical = path
         .canonicalize()
         .map_err(|err| bundle_err(format!("resolve bundle file {}: {err}", path.display())))?;
@@ -629,7 +629,7 @@ fn digest_file(
     Ok(())
 }
 
-fn confined_path(bundle_root: &Path, raw: &str) -> Result<PathBuf, CcbdError> {
+fn confined_path(bundle_root: &Path, raw: &str) -> Result<PathBuf, AhError> {
     let path = Path::new(raw);
     if path.is_absolute() {
         return Err(bundle_err(format!("bundle path {raw:?} must be relative")));
@@ -656,7 +656,7 @@ fn confined_path(bundle_root: &Path, raw: &str) -> Result<PathBuf, CcbdError> {
     Ok(canonical)
 }
 
-fn validate_bundle_name(name: &str) -> Result<(), CcbdError> {
+fn validate_bundle_name(name: &str) -> Result<(), AhError> {
     if name.is_empty()
         || name.contains('\\')
         || !Path::new(name)
@@ -676,8 +676,8 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{digest:x}")
 }
 
-fn bundle_err(details: impl Into<String>) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn bundle_err(details: impl Into<String>) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: details.into(),
     }
 }

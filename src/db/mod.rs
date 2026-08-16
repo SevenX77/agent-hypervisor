@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::Connection;
 use std::path::Path;
 use std::path::PathBuf;
@@ -38,25 +38,25 @@ impl Db {
             .expect("database connection mutex poisoned")
     }
 
-    pub(crate) fn try_conn(&self) -> Result<Option<MutexGuard<'_, Connection>>, CcbdError> {
+    pub(crate) fn try_conn(&self) -> Result<Option<MutexGuard<'_, Connection>>, AhError> {
         match self.conn.try_lock() {
             Ok(conn) => Ok(Some(conn)),
             Err(TryLockError::WouldBlock) => Ok(None),
-            Err(TryLockError::Poisoned(_)) => Err(CcbdError::DatabaseRuntimePanic {
+            Err(TryLockError::Poisoned(_)) => Err(AhError::DatabaseRuntimePanic {
                 details: "database connection mutex poisoned".to_string(),
             }),
         }
     }
 
-    pub(crate) fn fresh_conn(&self) -> Result<Connection, CcbdError> {
+    pub(crate) fn fresh_conn(&self) -> Result<Connection, AhError> {
         open_configured_connection(&self.path)
     }
 }
 
-pub fn init(db_path: &Path) -> Result<Db, CcbdError> {
+pub fn init(db_path: &Path) -> Result<Db, AhError> {
     let conn = open_configured_connection(db_path)?;
     conn.execute_batch(schema::SCHEMA_DDL)
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("initialize schema: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("initialize schema: {err}")))?;
     migrate_sub_state(&conn)?;
     migrate_jobs_cancel_requested(&conn)?;
     migrate_sessions_status(&conn)?;
@@ -80,10 +80,10 @@ pub fn init(db_path: &Path) -> Result<Db, CcbdError> {
     })
 }
 
-fn migrate_master_recovery_windows(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_master_recovery_windows(conn: &Connection) -> Result<(), AhError> {
     conn.execute_batch(master_recovery::MASTER_RECOVERY_WINDOWS_DDL)
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("migrate master_recovery_windows: {err}"))
+            AhError::DbConstraintViolation(format!("migrate master_recovery_windows: {err}"))
         })?;
     add_column_if_missing(
         conn,
@@ -112,7 +112,7 @@ fn migrate_master_recovery_windows(conn: &Connection) -> Result<(), CcbdError> {
     migrate_master_recovery_windows_phase_check(conn)
 }
 
-fn migrate_master_recovery_windows_phase_check(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_master_recovery_windows_phase_check(conn: &Connection) -> Result<(), AhError> {
     let create_sql: String = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='master_recovery_windows'",
@@ -120,7 +120,7 @@ fn migrate_master_recovery_windows_phase_check(conn: &Connection) -> Result<(), 
             |row| row.get(0),
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query master_recovery_windows schema: {err}"))
+            AhError::DbConstraintViolation(format!("query master_recovery_windows schema: {err}"))
         })?;
     if create_sql.contains("'MASTER_VERIFYING'") {
         return Ok(());
@@ -159,15 +159,15 @@ fn migrate_master_recovery_windows_phase_check(conn: &Connection) -> Result<(), 
         "#,
     )
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "migrate master_recovery_windows phase check: {err}"
         ))
     })
 }
 
-fn open_configured_connection(db_path: &Path) -> Result<Connection, CcbdError> {
+fn open_configured_connection(db_path: &Path) -> Result<Connection, AhError> {
     let conn = Connection::open(db_path).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("open {}: {err}", db_path.display()))
+        AhError::DbConstraintViolation(format!("open {}: {err}", db_path.display()))
     })?;
 
     conn.execute_batch(
@@ -182,15 +182,13 @@ fn open_configured_connection(db_path: &Path) -> Result<Connection, CcbdError> {
         PRAGMA auto_vacuum = INCREMENTAL;
         "#,
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("initialize pragmas: {err}")))?;
+    .map_err(|err| AhError::DbConstraintViolation(format!("initialize pragmas: {err}")))?;
     Ok(conn)
 }
 
-fn migrate_master_cutovers(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_master_cutovers(conn: &Connection) -> Result<(), AhError> {
     conn.execute_batch(master_cutovers::MASTER_CUTOVERS_DDL)
-        .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("migrate master_cutovers: {err}"))
-        })?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("migrate master_cutovers: {err}")))?;
     add_column_if_missing(
         conn,
         "master_cutovers",
@@ -205,7 +203,7 @@ fn migrate_master_cutovers(conn: &Connection) -> Result<(), CcbdError> {
     )
 }
 
-fn migrate_sessions_master_pane_id(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_master_pane_id(conn: &Connection) -> Result<(), AhError> {
     match conn.execute("ALTER TABLE sessions ADD COLUMN master_pane_id TEXT", []) {
         Ok(_) => Ok(()),
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
@@ -213,13 +211,13 @@ fn migrate_sessions_master_pane_id(conn: &Connection) -> Result<(), CcbdError> {
         {
             Ok(())
         }
-        Err(err) => Err(CcbdError::DbConstraintViolation(format!(
+        Err(err) => Err(AhError::DbConstraintViolation(format!(
             "migrate sessions.master_pane_id: {err}"
         ))),
     }
 }
 
-fn migrate_sessions_config_hash(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_config_hash(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "sessions",
@@ -228,7 +226,7 @@ fn migrate_sessions_config_hash(conn: &Connection) -> Result<(), CcbdError> {
     )
 }
 
-fn migrate_sessions_master_cmd(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_master_cmd(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "sessions",
@@ -237,7 +235,7 @@ fn migrate_sessions_master_cmd(conn: &Connection) -> Result<(), CcbdError> {
     )
 }
 
-fn migrate_sessions_master_revive_columns(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_master_revive_columns(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "sessions",
@@ -264,7 +262,7 @@ fn migrate_sessions_master_revive_columns(conn: &Connection) -> Result<(), CcbdE
     )
 }
 
-fn migrate_sessions_failed_idle_to_closed(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_failed_idle_to_closed(conn: &Connection) -> Result<(), AhError> {
     conn.execute(
         "UPDATE sessions
          SET status = 'CLOSED'
@@ -273,13 +271,13 @@ fn migrate_sessions_failed_idle_to_closed(conn: &Connection) -> Result<(), CcbdE
     )
     .map(|_| ())
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "migrate sessions failed idle exits to closed: {err}"
         ))
     })
 }
 
-fn migrate_sessions_master_state(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_master_state(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "sessions",
@@ -288,7 +286,7 @@ fn migrate_sessions_master_state(conn: &Connection) -> Result<(), CcbdError> {
     )
 }
 
-fn migrate_sessions_master_pending_tell_request(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_master_pending_tell_request(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "sessions",
@@ -297,7 +295,7 @@ fn migrate_sessions_master_pending_tell_request(conn: &Connection) -> Result<(),
     )
 }
 
-fn migrate_agents_config_hash(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_agents_config_hash(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "agents",
@@ -306,14 +304,14 @@ fn migrate_agents_config_hash(conn: &Connection) -> Result<(), CcbdError> {
     )
 }
 
-fn migrate_agent_spawn_specs(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_agent_spawn_specs(conn: &Connection) -> Result<(), AhError> {
     conn.execute_batch(recovery::AGENT_SPAWN_SPECS_DDL)
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("migrate agent_spawn_specs: {err}"))
+            AhError::DbConstraintViolation(format!("migrate agent_spawn_specs: {err}"))
         })?;
     conn.execute_batch(recovery::AGENT_RECOVERY_INTENTS_DDL)
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("migrate agent_recovery_intents: {err}"))
+            AhError::DbConstraintViolation(format!("migrate agent_recovery_intents: {err}"))
         })?;
     for (column, statement) in [
         (
@@ -350,7 +348,7 @@ fn migrate_agent_spawn_specs(conn: &Connection) -> Result<(), CcbdError> {
     Ok(())
 }
 
-fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), AhError> {
     let create_sql: String = conn
         .query_row(
             "SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_recovery_intents'",
@@ -358,7 +356,7 @@ fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), 
             |row| row.get(0),
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query agent_recovery_intents schema: {err}"))
+            AhError::DbConstraintViolation(format!("query agent_recovery_intents schema: {err}"))
         })?;
     if create_sql.contains("'REVIVE_IDLE'") {
         return Ok(());
@@ -406,13 +404,13 @@ fn migrate_agent_recovery_intents_action_check(conn: &Connection) -> Result<(), 
         "#,
     )
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "migrate agent_recovery_intents action check: {err}"
         ))
     })
 }
 
-fn migrate_evidence_record_columns(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_evidence_record_columns(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "evidence",
@@ -443,10 +441,10 @@ fn migrate_evidence_record_columns(conn: &Connection) -> Result<(), CcbdError> {
         CREATE INDEX IF NOT EXISTS idx_evidence_agent_type_path ON evidence(agent_id, evidence_type, subject_path);
         "#,
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("migrate evidence indexes: {err}")))
+    .map_err(|err| AhError::DbConstraintViolation(format!("migrate evidence indexes: {err}")))
 }
 
-fn migrate_jobs_evidence_requirements(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_jobs_evidence_requirements(conn: &Connection) -> Result<(), AhError> {
     add_column_if_missing(
         conn,
         "jobs",
@@ -466,7 +464,7 @@ fn add_column_if_missing(
     table: &str,
     column: &str,
     statement: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     match conn.execute(statement, []) {
         Ok(_) => Ok(()),
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
@@ -474,13 +472,13 @@ fn add_column_if_missing(
         {
             Ok(())
         }
-        Err(err) => Err(CcbdError::DbConstraintViolation(format!(
+        Err(err) => Err(AhError::DbConstraintViolation(format!(
             "migrate {table}.{column}: {err}"
         ))),
     }
 }
 
-fn migrate_sessions_status(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sessions_status(conn: &Connection) -> Result<(), AhError> {
     match conn.execute(
         "ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'",
         [],
@@ -491,13 +489,13 @@ fn migrate_sessions_status(conn: &Connection) -> Result<(), CcbdError> {
         {
             Ok(())
         }
-        Err(err) => Err(CcbdError::DbConstraintViolation(format!(
+        Err(err) => Err(AhError::DbConstraintViolation(format!(
             "migrate sessions.status: {err}"
         ))),
     }
 }
 
-fn migrate_jobs_cancel_requested(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_jobs_cancel_requested(conn: &Connection) -> Result<(), AhError> {
     match conn.execute(
         "ALTER TABLE jobs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0",
         [],
@@ -508,13 +506,13 @@ fn migrate_jobs_cancel_requested(conn: &Connection) -> Result<(), CcbdError> {
         {
             Ok(())
         }
-        Err(err) => Err(CcbdError::DbConstraintViolation(format!(
+        Err(err) => Err(AhError::DbConstraintViolation(format!(
             "migrate jobs.cancel_requested: {err}"
         ))),
     }
 }
 
-fn migrate_sub_state(conn: &Connection) -> Result<(), CcbdError> {
+fn migrate_sub_state(conn: &Connection) -> Result<(), AhError> {
     match conn.execute("ALTER TABLE agents ADD COLUMN sub_state TEXT", []) {
         Ok(_) => Ok(()),
         Err(rusqlite::Error::SqliteFailure(_, Some(message)))
@@ -522,7 +520,7 @@ fn migrate_sub_state(conn: &Connection) -> Result<(), CcbdError> {
         {
             Ok(())
         }
-        Err(err) => Err(CcbdError::DbConstraintViolation(format!(
+        Err(err) => Err(AhError::DbConstraintViolation(format!(
             "migrate agents.sub_state: {err}"
         ))),
     }

@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::prompt_handler::schema::PromptAction;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
@@ -19,12 +19,12 @@ impl LearnedRuleCategory {
         }
     }
 
-    pub fn parse(value: &str) -> Result<Self, CcbdError> {
+    pub fn parse(value: &str) -> Result<Self, AhError> {
         match value {
             "StartupReadiness" => Ok(Self::StartupReadiness),
             "RuntimeMarker" => Ok(Self::RuntimeMarker),
             "ReplyExtraction" => Ok(Self::ReplyExtraction),
-            _ => Err(CcbdError::IpcInvalidRequest(format!(
+            _ => Err(AhError::IpcInvalidRequest(format!(
                 "invalid learned rule category: {value}"
             ))),
         }
@@ -85,7 +85,7 @@ pub struct LearnedRule {
     pub enabled: bool,
 }
 
-pub fn insert_learned_rule_sync(db: &crate::db::Db, rule: &LearnedRule) -> Result<(), CcbdError> {
+pub fn insert_learned_rule_sync(db: &crate::db::Db, rule: &LearnedRule) -> Result<(), AhError> {
     let regex_flags_json = to_json("regex_flags", &rule.regex_flags)?;
     let positive_examples_json = to_json("positive_examples", &rule.positive_examples)?;
     let action_json = rule
@@ -143,7 +143,7 @@ pub fn lookup_learned_rules_sync(
     db: &crate::db::Db,
     provider: &str,
     category: LearnedRuleCategory,
-) -> Result<Vec<LearnedRule>, CcbdError> {
+) -> Result<Vec<LearnedRule>, AhError> {
     let conn = db.conn();
     let mut stmt = conn
         .prepare(
@@ -172,14 +172,14 @@ pub fn lookup_learned_rules_sync(
         .map_err(|err| crate::db::common::map_db_error("collect learned rules", err))
 }
 
-pub fn validate_learn_rule(pattern: &str, positive_examples: &[String]) -> Result<(), CcbdError> {
+pub fn validate_learn_rule(pattern: &str, positive_examples: &[String]) -> Result<(), AhError> {
     if positive_examples.is_empty() {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "positive_examples must contain at least one positive example".to_string(),
         ));
     }
     if positive_examples.len() > 10 {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "positive_examples must contain at most 10 examples".to_string(),
         ));
     }
@@ -187,24 +187,24 @@ pub fn validate_learn_rule(pattern: &str, positive_examples: &[String]) -> Resul
         .iter()
         .any(|example| example.len() > 16 * 1024)
     {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "positive_examples examples must be at most 16 KiB each".to_string(),
         ));
     }
 
     let regex = regex::Regex::new(pattern).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("invalid regex pattern for learned rule: {err}"))
+        AhError::IpcInvalidRequest(format!("invalid regex pattern for learned rule: {err}"))
     })?;
     for positive in positive_examples {
         if !regex.is_match(positive) {
-            return Err(CcbdError::IpcInvalidRequest(
+            return Err(AhError::IpcInvalidRequest(
                 "regex must match every positive example".to_string(),
             ));
         }
     }
     for negative in ["", "\n", "hello", "Working", "Thinking..."] {
         if regex.is_match(negative) {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "regex too wide: matches trivial negative {negative:?}"
             )));
         }
@@ -212,59 +212,59 @@ pub fn validate_learn_rule(pattern: &str, positive_examples: &[String]) -> Resul
     Ok(())
 }
 
-fn to_json<T: Serialize>(field: &str, value: &T) -> Result<String, CcbdError> {
+fn to_json<T: Serialize>(field: &str, value: &T) -> Result<String, AhError> {
     serde_json::to_string(value)
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("serialize {field}: {err}")))
+        .map_err(|err| AhError::IpcInvalidRequest(format!("serialize {field}: {err}")))
 }
 
-fn from_json<T: for<'de> Deserialize<'de>>(field: &str, value: &str) -> Result<T, CcbdError> {
+fn from_json<T: for<'de> Deserialize<'de>>(field: &str, value: &str) -> Result<T, AhError> {
     serde_json::from_str(value)
-        .map_err(|err| CcbdError::IpcInvalidRequest(format!("deserialize {field}: {err}")))
+        .map_err(|err| AhError::IpcInvalidRequest(format!("deserialize {field}: {err}")))
 }
 
 fn optional_json<T: for<'de> Deserialize<'de>>(
     field: &str,
     value: Option<String>,
-) -> Result<Option<T>, CcbdError> {
+) -> Result<Option<T>, AhError> {
     value
         .as_deref()
         .map(|json| from_json(field, json))
         .transpose()
 }
 
-fn row_to_learned_rule(row: &rusqlite::Row<'_>) -> Result<LearnedRule, CcbdError> {
+fn row_to_learned_rule(row: &rusqlite::Row<'_>) -> Result<LearnedRule, AhError> {
     let category = LearnedRuleCategory::parse(&row.get::<_, String>(2).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("read learned rule category: {err}"))
+        AhError::DbConstraintViolation(format!("read learned rule category: {err}"))
     })?)?;
     let fingerprint_type: String = row.get(3).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("read learned rule fingerprint_type: {err}"))
+        AhError::DbConstraintViolation(format!("read learned rule fingerprint_type: {err}"))
     })?;
     let fingerprint_value: String = row.get(4).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("read learned rule fingerprint_value: {err}"))
+        AhError::DbConstraintViolation(format!("read learned rule fingerprint_value: {err}"))
     })?;
     let fingerprint = match fingerprint_type.as_str() {
         "regex" => RuleFingerprint::Regex {
             pattern: fingerprint_value,
         },
         _ => {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "invalid learned rule fingerprint type: {fingerprint_type}"
             )));
         }
     };
 
     let regex_flags_json: String = row.get(5).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("read learned rule regex_flags: {err}"))
+        AhError::DbConstraintViolation(format!("read learned rule regex_flags: {err}"))
     })?;
     let positive_examples_json: String = row.get(6).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("read learned rule positive_examples: {err}"))
+        AhError::DbConstraintViolation(format!("read learned rule positive_examples: {err}"))
     })?;
     Ok(LearnedRule {
         id: row.get(0).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("read learned rule id: {err}"))
+            AhError::DbConstraintViolation(format!("read learned rule id: {err}"))
         })?,
         provider: row.get(1).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("read learned rule provider: {err}"))
+            AhError::DbConstraintViolation(format!("read learned rule provider: {err}"))
         })?,
         category,
         fingerprint,
@@ -273,28 +273,26 @@ fn row_to_learned_rule(row: &rusqlite::Row<'_>) -> Result<LearnedRule, CcbdError
         action: optional_json(
             "action",
             row.get(7).map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("read learned rule action: {err}"))
+                AhError::DbConstraintViolation(format!("read learned rule action: {err}"))
             })?,
         )?,
         extraction: optional_json(
             "extraction",
             row.get(8).map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("read learned rule extraction: {err}"))
+                AhError::DbConstraintViolation(format!("read learned rule extraction: {err}"))
             })?,
         )?,
         cursor_anchor: optional_json(
             "cursor_anchor",
             row.get(9).map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("read learned rule cursor_anchor: {err}"))
+                AhError::DbConstraintViolation(format!("read learned rule cursor_anchor: {err}"))
             })?,
         )?,
         source_event_seq_id: row.get(10).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!(
-                "read learned rule source_event_seq_id: {err}"
-            ))
+            AhError::DbConstraintViolation(format!("read learned rule source_event_seq_id: {err}"))
         })?,
         enabled: row.get(11).map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("read learned rule enabled: {err}"))
+            AhError::DbConstraintViolation(format!("read learned rule enabled: {err}"))
         })?,
     })
 }
