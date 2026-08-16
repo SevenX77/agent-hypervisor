@@ -26,7 +26,7 @@ collide.
 ## Install
 
 1. Install the binaries:
-   `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SevenX77/ah/releases/latest/download/ah-installer.sh | sh`.
+   `curl --proto '=https' --tlsv1.2 -LsSf https://github.com/SevenX77/agent-hypervisor/releases/latest/download/ah-installer.sh | sh`.
 2. Copy this directory's `ah.toml` and `.ah/` into your project root.
 3. Edit `ah.toml` and each slot file for your provider accounts and project
    rules. The master provider is determined by `[master] cmd` in `ah.toml`, not

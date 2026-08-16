@@ -11,7 +11,7 @@ Stop the project cleanly, run the normal installer, then start it again:
 ```bash
 ah stop
 curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/SevenX77/ah/releases/latest/download/ah-installer.sh | sh
+  https://github.com/SevenX77/agent-hypervisor/releases/latest/download/ah-installer.sh | sh
 ah start --wait
 ```
 

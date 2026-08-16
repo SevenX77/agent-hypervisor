@@ -6,6 +6,11 @@ All notable changes to `ah` are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+- Rename the canonical public repository to `SevenX77/agent-hypervisor` and
+  update source, release, installer, and WSL guidance URLs while preserving the
+  compatible `ah`/`ahd` command and package names.
+
 ### Fixed
 - Preserve the existing AH provider launch flags, explicit
   `CCBD_UNSAFE_NO_SANDBOX=1` fallback, and best-effort master revival behavior;
@@ -623,9 +628,9 @@ Antigravity, or an explicit shell provider — in isolated tmux-backed
 workspaces. The daemon owns state, sessions, workers, recovery, and event
 streams; the CLI drives it over JSON-RPC on a Unix socket.
 
-[1.3.1]: https://github.com/SevenX77/ah/releases/tag/v1.3.1
-[1.15.0]: https://github.com/SevenX77/ah/releases/tag/v1.15.0
-[1.3.0]: https://github.com/SevenX77/ah/releases/tag/v1.3.0
-[1.2.0]: https://github.com/SevenX77/ah/releases/tag/v1.2.0
-[1.1.0]: https://github.com/SevenX77/ah/releases/tag/v1.1.0
-[1.0.0]: https://github.com/SevenX77/ah/releases/tag/v1.0.0
+[1.3.1]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.3.1
+[1.15.0]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.15.0
+[1.3.0]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.3.0
+[1.2.0]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.2.0
+[1.1.0]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.1.0
+[1.0.0]: https://github.com/SevenX77/agent-hypervisor/releases/tag/v1.0.0

@@ -1,11 +1,11 @@
 use crate::cli::doctor::{DoctorCheck, DoctorStatus};
 use std::process::Command;
 
-pub const WSL_README_URL: &str = "https://github.com/SevenX77/ah#windows-wsl2";
+pub const WSL_README_URL: &str = "https://github.com/SevenX77/agent-hypervisor#windows-wsl2";
 
-pub const SYSTEMD_GUIDANCE: &str = "WSL detected, but the systemd user session is not available. ah needs systemd user services/scopes. Enable systemd in WSL: add [boot]\nsystemd=true to /etc/wsl.conf, then run \"wsl --shutdown\" in PowerShell and reopen your distro. Verify: systemctl --user is-system-running. See: https://github.com/SevenX77/ah#windows-wsl2";
+pub const SYSTEMD_GUIDANCE: &str = "WSL detected, but the systemd user session is not available. ah needs systemd user services/scopes. Enable systemd in WSL: add [boot]\nsystemd=true to /etc/wsl.conf, then run \"wsl --shutdown\" in PowerShell and reopen your distro. Verify: systemctl --user is-system-running. See: https://github.com/SevenX77/agent-hypervisor#windows-wsl2";
 
-pub const TMUX_GUIDANCE: &str = "WSL detected, but tmux is not installed or not on PATH. ah runs every agent in tmux. Install it inside WSL, e.g.: sudo apt update && sudo apt install -y tmux. Verify: tmux -V. See: https://github.com/SevenX77/ah#windows-wsl2";
+pub const TMUX_GUIDANCE: &str = "WSL detected, but tmux is not installed or not on PATH. ah runs every agent in tmux. Install it inside WSL, e.g.: sudo apt update && sudo apt install -y tmux. Verify: tmux -V. See: https://github.com/SevenX77/agent-hypervisor#windows-wsl2";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WslProbeInputs<'a> {
