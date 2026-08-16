@@ -11,6 +11,9 @@ All notable changes to `ah` are documented here. The format is based on
   `CCBD_UNSAFE_NO_SANDBOX=1` fallback, and best-effort master revival behavior;
   Zeroth governance remains an additive binding, lifecycle, observation, and
   handoff layer instead of replacing established execution behavior.
+- Preserve AH's line-oriented paste/Enter delivery for the Bash adapter, whose
+  submitted command history cannot be distinguished from an active composer
+  using TUI-style terminal markers while the command is running.
 - Make the Windows WSL2 provisioning entry point invocable by removing
   case-insensitive parameter/alias collisions, and route non-elevated optional
   feature probes through the existing UAC feature-enable child when `-Fix` is

@@ -8,7 +8,7 @@ use super::guarded_action::{
     ActionAssessment, GuardedActionError, GuardedActionOutcome, run_guarded_action,
 };
 use crate::error::CcbdError;
-use crate::provider::ProviderTerminalControlSpec;
+use crate::provider::{ProviderPromptKind, ProviderTerminalControlSpec};
 use crate::tmux::{TmuxPaneId, TmuxServer};
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,15 +31,18 @@ pub async fn deliver_prompt(
     text: String,
     press_enter_after_paste: bool,
 ) -> Result<PromptDeliveryReceipt, CcbdError> {
-    let terminal_spec = crate::provider::adapter(provider)
-        .ok_or_else(|| CcbdError::EnvironmentNotSupported {
+    let adapter =
+        crate::provider::adapter(provider).ok_or_else(|| CcbdError::EnvironmentNotSupported {
             details: format!("unknown provider {provider:?}"),
-        })?
-        .terminal_control_spec();
+        })?;
+    let terminal_spec = adapter.terminal_control_spec();
     if text.trim().is_empty() {
         return Err(CcbdError::PtyIoError(
             "refused to deliver an empty provider prompt".to_string(),
         ));
+    }
+    if adapter.prompt_kind() == ProviderPromptKind::ShellCommand {
+        return deliver_shell_command(tmux, agent_id, pane, text, press_enter_after_paste).await;
     }
     if is_single_line_slash_command(&text) {
         return deliver_slash_command(tmux, pane, &text, terminal_spec).await;
@@ -123,6 +126,69 @@ pub async fn deliver_prompt(
     Ok(PromptDeliveryReceipt {
         paste_observations: paste.observations_examined,
         submit_observations: Some(submit.observations_examined),
+        submit_attempts,
+    })
+}
+
+/// Bash is a line-oriented shell rather than a provider-owned TUI. While a
+/// command is running, tmux retains the submitted `$ command` line and exposes
+/// no active-composer marker that distinguishes it from history. Preserve
+/// AH's established paste/Enter behavior for this adapter; lifecycle and turn
+/// state are still governed by the Bash process/terminal observations.
+async fn deliver_shell_command(
+    tmux: Arc<TmuxServer>,
+    agent_id: &str,
+    pane: TmuxPaneId,
+    text: String,
+    press_enter_after_paste: bool,
+) -> Result<PromptDeliveryReceipt, CcbdError> {
+    if is_single_line_slash_command(&text) {
+        for ch in text.chars() {
+            tmux.send_keys_literal(pane.clone(), ch.to_string()).await?;
+        }
+        if press_enter_after_paste {
+            tmux.send_enter(pane).await?;
+        }
+        return Ok(PromptDeliveryReceipt {
+            paste_observations: 0,
+            submit_observations: press_enter_after_paste.then_some(0),
+            submit_attempts: u8::from(press_enter_after_paste),
+        });
+    }
+
+    let buffer_name = format!("ccbd-buf-{}", sanitize_buffer_name(agent_id));
+    tmux.load_buffer(buffer_name.clone(), text).await?;
+    let paste_result = tmux.paste_buffer(pane.clone(), buffer_name.clone()).await;
+    if let Err(err) = tmux.delete_buffer(buffer_name).await {
+        tracing::warn!(agent_id, error = %err, "failed to delete tmux paste buffer");
+    }
+    paste_result?;
+
+    if !press_enter_after_paste {
+        return Ok(PromptDeliveryReceipt {
+            paste_observations: 0,
+            submit_observations: None,
+            submit_attempts: 0,
+        });
+    }
+
+    let enter_delay_s = env_float("CCB_TMUX_ENTER_DELAY", 0.5);
+    if enter_delay_s > 0.0 {
+        tokio::time::sleep(Duration::from_secs_f64(enter_delay_s)).await;
+    }
+    tmux.send_enter(pane.clone()).await?;
+
+    let second_enter_delay_s = env_float("CCB_TMUX_SECOND_ENTER_DELAY", 0.0);
+    let mut submit_attempts = 1;
+    if second_enter_delay_s > 0.0 {
+        tokio::time::sleep(Duration::from_secs_f64(second_enter_delay_s)).await;
+        tmux.send_enter(pane).await?;
+        submit_attempts = 2;
+    }
+
+    Ok(PromptDeliveryReceipt {
+        paste_observations: 0,
+        submit_observations: Some(0),
         submit_attempts,
     })
 }
@@ -379,6 +445,13 @@ fn env_duration_ms(key: &str, default: Duration) -> Duration {
         .unwrap_or(default)
 }
 
+fn env_float(key: &str, default: f64) -> f64 {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<f64>().ok())
+        .unwrap_or(default)
+}
+
 fn is_single_line_slash_command(text: &str) -> bool {
     text.starts_with('/') && !text.contains('\n') && !text.contains('\r') && !text.trim().is_empty()
 }
@@ -487,5 +560,19 @@ mod tests {
                 .unwrap()
                 .terminal_control_spec()
         ));
+    }
+
+    #[test]
+    fn shell_commands_use_the_legacy_line_oriented_delivery_contract() {
+        assert_eq!(
+            crate::provider::adapter("bash").unwrap().prompt_kind(),
+            ProviderPromptKind::ShellCommand
+        );
+        for provider in ["codex", "claude", "antigravity"] {
+            assert_eq!(
+                crate::provider::adapter(provider).unwrap().prompt_kind(),
+                ProviderPromptKind::NaturalLanguage
+            );
+        }
     }
 }

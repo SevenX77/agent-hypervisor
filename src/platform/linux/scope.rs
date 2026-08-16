@@ -318,7 +318,7 @@ pub fn master_command_with_env(
     sandbox_overrides: &SandboxOverrides,
 ) -> Vec<String> {
     if env_state.unsafe_no_sandbox || !env_state.systemd_run_available {
-        return master_shell_command_with_env_prefix(cmd, extra_env_vars);
+        return shell_command_with_env_prefix(cmd, extra_env_vars);
     }
 
     let mut command = vec![
@@ -488,6 +488,29 @@ fn claude_gateway_bridge_shell_with_ah_resolver(
 
 fn shell_quote(input: &str) -> String {
     format!("'{}'", input.replace('\'', "'\\''"))
+}
+
+fn shell_command_with_env_prefix(
+    shell_cmd: &str,
+    extra_env_vars: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut cmd = Vec::new();
+    let is_master = extra_env_vars.get("AH_ROLE").map(|s| s.as_str()) == Some("master");
+    if !extra_env_vars.is_empty() || is_master {
+        cmd.push("env".to_string());
+        if is_master {
+            cmd.push("-u".to_string());
+            cmd.push("AH_AGENT_ID".to_string());
+        }
+        let mut env_entries = extra_env_vars
+            .iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .collect::<Vec<_>>();
+        env_entries.sort();
+        cmd.extend(env_entries);
+    }
+    cmd.extend(["sh".to_string(), "-lc".to_string(), shell_cmd.to_string()]);
+    cmd
 }
 
 fn master_shell_command_with_env_prefix(
