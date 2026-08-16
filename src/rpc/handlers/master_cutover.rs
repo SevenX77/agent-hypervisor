@@ -10,7 +10,7 @@ use crate::db::master_cutovers::{
 };
 use crate::db::sessions::{create_session, master_tell_begin, master_tell_failed};
 use crate::db::system::{remove_agent_sandbox_dir_sync, session_agent_ids};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::master_cutover::{
     HandoffBundleInput, seed_claude_project_conversation, write_handoff_bundle,
 };
@@ -33,7 +33,7 @@ pub(super) async fn rollback_master_cutover_scope(
     ctx: &Ctx,
     cutover_id: &str,
     session_id: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let cutover = match get_master_cutover(&ctx.db, cutover_id) {
         Ok(cutover) => cutover,
         Err(err) => {
@@ -171,14 +171,14 @@ pub(super) const MASTER_READINESS_MODE: &str = "ack";
 
 /// Fails when the master's provider cannot report readiness, naming the missing
 /// capability instead of falling back to a guess.
-fn ensure_master_can_ack_readiness(provider: Option<&str>, cmd: &str) -> Result<(), CcbdError> {
+fn ensure_master_can_ack_readiness(provider: Option<&str>, cmd: &str) -> Result<(), AhError> {
     let provider = crate::cli::config::resolve_master_provider(provider, cmd);
     let can_ack = crate::provider::manifest::provider_capabilities(&provider)
         .is_some_and(|capabilities| capabilities.readiness_ack);
     if can_ack {
         return Ok(());
     }
-    Err(CcbdError::EnvironmentNotSupported {
+    Err(AhError::EnvironmentNotSupported {
         details: format!(
             "master cutover needs readiness reported by the master seat, but provider \
              '{provider}' does not declare the 'readiness_ack' capability"
@@ -194,14 +194,14 @@ pub(super) async fn wait_for_master_readiness(
     ctx: &Ctx,
     cutover_id: &str,
     timeout: Duration,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         let cutover = get_master_cutover(&ctx.db, cutover_id)?.ok_or_else(|| {
-            CcbdError::IpcInvalidRequest(format!("master cutover not found: {cutover_id}"))
+            AhError::IpcInvalidRequest(format!("master cutover not found: {cutover_id}"))
         })?;
         if cutover.state != "VERIFYING" {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "master cutover {cutover_id} left VERIFYING before readiness"
             )));
         }
@@ -214,12 +214,12 @@ pub(super) async fn wait_for_master_readiness(
             .new_master_pid
             .is_some_and(|pid| !master_process_is_alive(pid))
         {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "master cutover {cutover_id} master process exited before readiness"
             )));
         }
         if tokio::time::Instant::now() >= deadline {
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "master cutover {cutover_id} readiness timed out"
             )));
         }
@@ -246,11 +246,11 @@ pub(super) struct MasterCutoverRequest {
 }
 
 type SpawnMasterFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<SpawnMasterPaneOutcome, CcbdError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<SpawnMasterPaneOutcome, AhError>> + Send + 'a>>;
 
-pub async fn handle_session_master_cutover(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_session_master_cutover(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let request: MasterCutoverRequest = serde_json::from_value(params).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("invalid master cutover params: {err}"))
+        AhError::IpcInvalidRequest(format!("invalid master cutover params: {err}"))
     })?;
     run_master_cutover_with_spawn(ctx, request, |ctx, params, plan| {
         Box::pin(spawn_prepared_master_pane(ctx, params, plan, false))
@@ -258,7 +258,7 @@ pub async fn handle_session_master_cutover(params: Value, ctx: &Ctx) -> Result<V
     .await
 }
 
-pub async fn handle_master_ack_ready(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_master_ack_ready(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let cutover_id = required_str(&params, "cutover_id")?;
     match mark_master_cutover_ack_ready(&ctx.db, cutover_id, "ack")? {
         MasterCutoverUpdate::Updated => Ok(json!({
@@ -266,7 +266,7 @@ pub async fn handle_master_ack_ready(params: Value, ctx: &Ctx) -> Result<Value, 
             "readiness_mode": "ack",
             "ack_ready": true,
         })),
-        MasterCutoverUpdate::Stale => Err(CcbdError::IpcInvalidRequest(format!(
+        MasterCutoverUpdate::Stale => Err(AhError::IpcInvalidRequest(format!(
             "master cutover {cutover_id} not in VERIFYING"
         ))),
     }
@@ -276,7 +276,7 @@ pub(super) async fn run_master_cutover_with_spawn<S>(
     ctx: &Ctx,
     request: MasterCutoverRequest,
     spawn: S,
-) -> Result<Value, CcbdError>
+) -> Result<Value, AhError>
 where
     S: for<'a> Fn(&'a Ctx, SpawnMasterPaneParams, MasterPanePlan) -> SpawnMasterFuture<'a>,
 {
@@ -316,7 +316,7 @@ where
         }
         MasterCutoverClaim::AlreadyActive => {
             tracing::warn!(%session_id, %cutover_id, "master cutover rejected; active cutover already exists");
-            return Err(CcbdError::IpcInvalidRequest(format!(
+            return Err(AhError::IpcInvalidRequest(format!(
                 "active master cutover already exists for session {session_id}"
             )));
         }
@@ -327,7 +327,7 @@ where
         let mut extra_env = HashMap::from([
             ("AH_STATE_DIR".to_string(), state_dir.display().to_string()),
             (
-                "CCB_SOCKET".to_string(),
+                "AH_SOCKET".to_string(),
                 request.ah_socket_path.display().to_string(),
             ),
             ("AH_CUTOVER_ID".to_string(), cutover_id.clone()),
@@ -360,7 +360,7 @@ where
         };
         let plan = prepare_master_pane_plan(ctx, &spawn_params).await?;
         let master_home = plan.home_root.clone().ok_or_else(|| {
-            CcbdError::EnvironmentNotSupported {
+            AhError::EnvironmentNotSupported {
                 details: "master cutover requires sandboxed master home".to_string(),
             }
         })?;
@@ -419,18 +419,18 @@ where
             != MasterCutoverUpdate::Updated
         {
             tracing::warn!(%session_id, %cutover_id, "master cutover PREPARING->SPAWNING CAS stale");
-            return Err(CcbdError::IpcInvalidRequest("master cutover stale before spawn".into()));
+            return Err(AhError::IpcInvalidRequest("master cutover stale before spawn".into()));
         }
         current_state = "SPAWNING";
         tracing::info!(%session_id, %cutover_id, "master cutover spawning managed master");
         let outcome = spawn(ctx, spawn_params, plan).await?;
         let new_pid = outcome.new_pid.ok_or_else(|| {
-            CcbdError::EnvironmentNotSupported {
+            AhError::EnvironmentNotSupported {
                 details: "master cutover spawn did not report new master pid".to_string(),
             }
         })?;
         let generation = outcome.generation.ok_or_else(|| {
-            CcbdError::EnvironmentNotSupported {
+            AhError::EnvironmentNotSupported {
                 details: "master cutover spawn did not report new master generation".to_string(),
             }
         })?;
@@ -445,7 +445,7 @@ where
         )? != MasterCutoverUpdate::Updated
         {
             tracing::warn!(%session_id, %cutover_id, "master cutover SPAWNING->VERIFYING CAS stale");
-            return Err(CcbdError::IpcInvalidRequest("master cutover stale after spawn".into()));
+            return Err(AhError::IpcInvalidRequest("master cutover stale after spawn".into()));
         }
         current_state = "VERIFYING";
         let readiness_mode = wait_for_master_readiness(
@@ -459,7 +459,7 @@ where
             != MasterCutoverUpdate::Updated
         {
             tracing::warn!(%session_id, %cutover_id, "master cutover VERIFYING->ACTIVE CAS stale");
-            return Err(CcbdError::IpcInvalidRequest("master cutover stale before ACTIVE".into()));
+            return Err(AhError::IpcInvalidRequest("master cutover stale before ACTIVE".into()));
         }
         current_state = "ACTIVE";
         if let Err(err) =
@@ -499,13 +499,13 @@ where
     }
     result
 }
-pub async fn handle_master_tell_begin(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_master_tell_begin(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?.to_string();
     let request_id = required_str(&params, "request_id")?.to_string();
     let pane_id = required_str(&params, "pane_id")?.to_string();
     let changes = master_tell_begin(ctx.db.clone(), session_id.clone(), request_id.clone()).await?;
     if changes == 0 {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "active session not found: {session_id}"
         )));
     }
@@ -527,7 +527,7 @@ pub async fn handle_master_tell_begin(params: Value, ctx: &Ctx) -> Result<Value,
     }))
 }
 
-pub async fn handle_master_tell_failed(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_master_tell_failed(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?.to_string();
     let request_id = required_str(&params, "request_id")?.to_string();
     let pane_id = params.get("pane_id").and_then(Value::as_str).unwrap_or("");

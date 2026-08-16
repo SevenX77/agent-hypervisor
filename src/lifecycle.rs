@@ -6,7 +6,7 @@
 //! procedure before the prior phase has causal evidence.
 
 use crate::db::{self as db, Db};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::{ObservationSourceSpec, adapter};
 use crate::runtime_observation::{
     EvidenceSource, ProviderObservation, ProviderObservationKind, ProviderTurnState,
@@ -42,9 +42,9 @@ impl CliLifecycleProgress {
         self.phase
     }
 
-    pub fn confirm(&mut self, next: CliLifecyclePhase) -> Result<(), CcbdError> {
+    pub fn confirm(&mut self, next: CliLifecyclePhase) -> Result<(), AhError> {
         if !allowed_transition(self.phase, next) {
-            return Err(CcbdError::PtyIoError(format!(
+            return Err(AhError::PtyIoError(format!(
                 "unconfirmed CLI lifecycle transition {:?} -> {:?}",
                 self.phase, next
             )));
@@ -81,7 +81,7 @@ pub async fn await_task_started(
     provider: &str,
     lifecycle_id: &str,
     job_id: &str,
-) -> Result<TaskStartEvidence, CcbdError> {
+) -> Result<TaskStartEvidence, AhError> {
     let timeout = std::env::var("AH_TASK_START_CONFIRM_TIMEOUT_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -97,8 +97,8 @@ async fn await_task_started_with_timeout(
     lifecycle_id: &str,
     job_id: &str,
     timeout: Duration,
-) -> Result<TaskStartEvidence, CcbdError> {
-    let provider_adapter = adapter(provider).ok_or_else(|| CcbdError::EnvironmentNotSupported {
+) -> Result<TaskStartEvidence, AhError> {
+    let provider_adapter = adapter(provider).ok_or_else(|| AhError::EnvironmentNotSupported {
         details: format!("unknown provider {provider:?}"),
     })?;
     let spec = provider_adapter.observation_spec();
@@ -132,7 +132,7 @@ async fn await_task_started_with_timeout(
             });
         }
         if Instant::now() >= deadline {
-            return Err(CcbdError::PtyIoError(format!(
+            return Err(AhError::PtyIoError(format!(
                 "task start was not confirmed for agent {agent_id} job {job_id} provider {provider} within {timeout:?}"
             )));
         }

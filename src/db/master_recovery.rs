@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, params};
 
 pub const MASTER_RECOVERY_CASCADE_DEFER_SECS: i64 = 90;
@@ -82,7 +82,7 @@ pub fn begin_master_recovery_window_sync(
     active_work: bool,
     now: i64,
     defer_secs: i64,
-) -> Result<MasterRecoveryWindow, CcbdError> {
+) -> Result<MasterRecoveryWindow, AhError> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|err| map_master_recovery_error("begin master recovery window tx", err))?;
@@ -172,7 +172,7 @@ pub fn begin_master_recovery_window_sync(
         }
     }
     let window = query_window_in_tx(&tx, session_id)?.ok_or_else(|| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "master recovery window missing after begin for {session_id}"
         ))
     })?;
@@ -187,7 +187,7 @@ pub fn update_master_recovery_phase_sync(
     expected_generation: i64,
     new_phase: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|err| map_master_recovery_error("begin master recovery phase tx", err))?;
@@ -227,7 +227,7 @@ pub fn complete_master_recovery_window_sync(
     session_id: &str,
     expected_generation: i64,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let changes = conn
         .execute(
             "UPDATE master_recovery_windows
@@ -249,7 +249,7 @@ pub fn begin_master_recovery_readiness_wait_sync(
     readiness_mode: &str,
     readiness_token: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let changes = conn
         .execute(
             "UPDATE master_recovery_windows
@@ -280,7 +280,7 @@ pub fn mark_master_recovery_ready_sync(
     expected_generation: i64,
     ready_reason: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let changes = conn
         .execute(
             "UPDATE master_recovery_windows
@@ -302,7 +302,7 @@ pub fn fail_master_recovery_readiness_sync(
     expected_generation: i64,
     reason: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let changes = conn
         .execute(
             "UPDATE master_recovery_windows
@@ -322,7 +322,7 @@ pub fn expire_master_recovery_window_sync(
     conn: &Connection,
     session_id: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|err| map_master_recovery_error("begin expire master recovery tx", err))?;
@@ -336,7 +336,7 @@ pub fn decide_anchor_cascade_sync(
     conn: &Connection,
     session_id: &str,
     now: i64,
-) -> Result<AnchorCascadeDecision, CcbdError> {
+) -> Result<AnchorCascadeDecision, AhError> {
     let tx = conn
         .unchecked_transaction()
         .map_err(|err| map_master_recovery_error("begin anchor cascade decision tx", err))?;
@@ -350,7 +350,7 @@ fn decide_anchor_cascade_in_tx(
     conn: &Connection,
     session_id: &str,
     now: i64,
-) -> Result<AnchorCascadeDecision, CcbdError> {
+) -> Result<AnchorCascadeDecision, AhError> {
     let Some(session) = query_session_runtime(conn, session_id)? else {
         return Ok(AnchorCascadeDecision::CascadeNow {
             reason: "SESSION_NOT_ACTIVE",
@@ -397,7 +397,7 @@ fn decision_for_existing_window(
     conn: &Connection,
     window: &MasterRecoveryWindow,
     now: i64,
-) -> Result<AnchorCascadeDecision, CcbdError> {
+) -> Result<AnchorCascadeDecision, AhError> {
     match window.phase.as_str() {
         "COMPLETED" => Ok(AnchorCascadeDecision::CascadeNow {
             reason: "MASTER_RECOVERY_COMPLETED",
@@ -429,7 +429,7 @@ fn begin_master_recovery_window_in_tx(
     active_work: bool,
     now: i64,
     defer_secs: i64,
-) -> Result<MasterRecoveryWindow, CcbdError> {
+) -> Result<MasterRecoveryWindow, AhError> {
     let defer_until = capped_defer_until(now, defer_secs, now);
     conn.execute(
         "INSERT INTO master_recovery_windows (
@@ -453,7 +453,7 @@ fn begin_master_recovery_window_in_tx(
     )
     .map_err(|err| map_master_recovery_error("insert detected master recovery window", err))?;
     query_window_in_tx(conn, session_id)?.ok_or_else(|| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "master recovery window missing after detected insert for {session_id}"
         ))
     })
@@ -463,7 +463,7 @@ fn expire_master_recovery_window_in_tx(
     conn: &Connection,
     session_id: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let Some(window) = query_window_in_tx(conn, session_id)? else {
         return Ok(false);
     };
@@ -507,7 +507,7 @@ struct SessionRuntime {
 fn query_session_runtime(
     conn: &Connection,
     session_id: &str,
-) -> Result<Option<SessionRuntime>, CcbdError> {
+) -> Result<Option<SessionRuntime>, AhError> {
     conn.query_row(
         "SELECT status, master_pid, master_generation FROM sessions WHERE id = ?1",
         params![session_id],
@@ -526,7 +526,7 @@ fn query_session_runtime(
 fn query_window_in_tx(
     conn: &Connection,
     session_id: &str,
-) -> Result<Option<MasterRecoveryWindow>, CcbdError> {
+) -> Result<Option<MasterRecoveryWindow>, AhError> {
     conn.query_row(
         "SELECT session_id,
                 expected_pid,
@@ -560,7 +560,7 @@ fn query_window_in_tx(
     .map_err(|err| map_master_recovery_error("query master recovery window", err))
 }
 
-fn session_has_active_work(conn: &Connection, session_id: &str) -> Result<bool, CcbdError> {
+fn session_has_active_work(conn: &Connection, session_id: &str) -> Result<bool, AhError> {
     let has_active_worker = conn
         .query_row(
             "SELECT 1
@@ -592,7 +592,7 @@ fn session_has_active_work(conn: &Connection, session_id: &str) -> Result<bool, 
     .map_err(|err| map_master_recovery_error("query active job for master recovery", err))
 }
 
-fn master_cutover_inflight_in_tx(conn: &Connection, session_id: &str) -> Result<bool, CcbdError> {
+fn master_cutover_inflight_in_tx(conn: &Connection, session_id: &str) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT 1
          FROM master_cutovers
@@ -620,8 +620,8 @@ fn is_terminal_phase(phase: &str) -> bool {
     matches!(phase, "COMPLETED" | "FAILED" | "FUSED")
 }
 
-fn map_master_recovery_error(context: &str, err: rusqlite::Error) -> CcbdError {
-    CcbdError::DbConstraintViolation(format!("{context}: {err}"))
+fn map_master_recovery_error(context: &str, err: rusqlite::Error) -> AhError {
+    AhError::DbConstraintViolation(format!("{context}: {err}"))
 }
 
 #[cfg(test)]

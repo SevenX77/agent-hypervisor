@@ -148,7 +148,7 @@ pub fn metadata_for(id: &str) -> PrerequisiteMetadata {
             boundary: ExecutionBoundary::CurrentProcess,
             restart: RestartRequirement::None,
         },
-        "legacy repo state" | "permissions:cwd" | "permissions:.ccb" => PrerequisiteMetadata {
+        "legacy repo state" | "permissions:cwd" | "permissions:.ah" => PrerequisiteMetadata {
             owner: FixOwner::UserProject,
             fix_available: false,
             privilege: PrivilegeClass::UserOwned,

@@ -7,7 +7,7 @@
 use super::guarded_action::{
     ActionAssessment, GuardedActionError, GuardedActionOutcome, run_guarded_action,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::{ProviderPromptKind, ProviderTerminalControlSpec};
 use crate::tmux::{TmuxPaneId, TmuxServer};
 use std::sync::Arc;
@@ -30,14 +30,14 @@ pub async fn deliver_prompt(
     pane: TmuxPaneId,
     text: String,
     press_enter_after_paste: bool,
-) -> Result<PromptDeliveryReceipt, CcbdError> {
+) -> Result<PromptDeliveryReceipt, AhError> {
     let adapter =
-        crate::provider::adapter(provider).ok_or_else(|| CcbdError::EnvironmentNotSupported {
+        crate::provider::adapter(provider).ok_or_else(|| AhError::EnvironmentNotSupported {
             details: format!("unknown provider {provider:?}"),
         })?;
     let terminal_spec = adapter.terminal_control_spec();
     if text.trim().is_empty() {
-        return Err(CcbdError::PtyIoError(
+        return Err(AhError::PtyIoError(
             "refused to deliver an empty provider prompt".to_string(),
         ));
     }
@@ -50,7 +50,7 @@ pub async fn deliver_prompt(
 
     let timeout = action_timeout();
     let poll = action_poll_interval();
-    let buffer_name = format!("ccbd-buf-{}", sanitize_buffer_name(agent_id));
+    let buffer_name = format!("ah-buf-{}", sanitize_buffer_name(agent_id));
     tmux.load_buffer(buffer_name.clone(), text.clone()).await?;
 
     let paste = run_guarded_action(
@@ -141,7 +141,7 @@ async fn deliver_shell_command(
     pane: TmuxPaneId,
     text: String,
     press_enter_after_paste: bool,
-) -> Result<PromptDeliveryReceipt, CcbdError> {
+) -> Result<PromptDeliveryReceipt, AhError> {
     if is_single_line_slash_command(&text) {
         for ch in text.chars() {
             tmux.send_keys_literal(pane.clone(), ch.to_string()).await?;
@@ -156,7 +156,7 @@ async fn deliver_shell_command(
         });
     }
 
-    let buffer_name = format!("ccbd-buf-{}", sanitize_buffer_name(agent_id));
+    let buffer_name = format!("ah-buf-{}", sanitize_buffer_name(agent_id));
     tmux.load_buffer(buffer_name.clone(), text).await?;
     let paste_result = tmux.paste_buffer(pane.clone(), buffer_name.clone()).await;
     if let Err(err) = tmux.delete_buffer(buffer_name).await {
@@ -172,13 +172,13 @@ async fn deliver_shell_command(
         });
     }
 
-    let enter_delay_s = env_float("CCB_TMUX_ENTER_DELAY", 0.5);
+    let enter_delay_s = env_float("AH_TMUX_ENTER_DELAY", 0.5);
     if enter_delay_s > 0.0 {
         tokio::time::sleep(Duration::from_secs_f64(enter_delay_s)).await;
     }
     tmux.send_enter(pane.clone()).await?;
 
-    let second_enter_delay_s = env_float("CCB_TMUX_SECOND_ENTER_DELAY", 0.0);
+    let second_enter_delay_s = env_float("AH_TMUX_SECOND_ENTER_DELAY", 0.0);
     let mut submit_attempts = 1;
     if second_enter_delay_s > 0.0 {
         tokio::time::sleep(Duration::from_secs_f64(second_enter_delay_s)).await;
@@ -200,7 +200,7 @@ async fn submit_once(
     terminal_spec: &'static ProviderTerminalControlSpec,
     timeout: Duration,
     poll: Duration,
-) -> Result<GuardedActionOutcome<String>, GuardedActionError<CcbdError>> {
+) -> Result<GuardedActionOutcome<String>, GuardedActionError<AhError>> {
     run_guarded_action(
         "submit_prompt",
         timeout,
@@ -229,7 +229,7 @@ async fn safe_to_repeat_enter(
     pane: TmuxPaneId,
     text: &str,
     terminal_spec: &'static ProviderTerminalControlSpec,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let capture = tmux.capture_pane(pane).await?;
     Ok(composer_contains_prompt(&capture, text, terminal_spec)
         || contains_paste_expand_guard(&capture, terminal_spec))
@@ -240,7 +240,7 @@ async fn deliver_slash_command(
     pane: TmuxPaneId,
     slash_command: &str,
     terminal_spec: &'static ProviderTerminalControlSpec,
-) -> Result<PromptDeliveryReceipt, CcbdError> {
+) -> Result<PromptDeliveryReceipt, AhError> {
     let timeout = action_timeout();
     let poll = action_poll_interval();
     let mut typed = String::new();
@@ -425,8 +425,8 @@ fn truncate_diagnostic(value: &str, max_chars: usize) -> String {
     }
 }
 
-fn action_error(error: GuardedActionError<CcbdError>) -> CcbdError {
-    CcbdError::PtyIoError(error.to_string())
+fn action_error(error: GuardedActionError<AhError>) -> AhError {
+    AhError::PtyIoError(error.to_string())
 }
 
 fn action_timeout() -> Duration {

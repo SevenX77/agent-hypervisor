@@ -1,6 +1,6 @@
 use crate::db::Db;
 use crate::db::common::map_db_error;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::prompt_handler::schema::{PromptAction, build_regex};
 use rusqlite::{OptionalExtension, params};
 
@@ -52,9 +52,9 @@ pub trait PromptExperienceLookup {
         provider: &str,
         sanitized_text: &str,
         sanitized_hash_hex: &str,
-    ) -> Result<Option<PromptExperience>, CcbdError>;
+    ) -> Result<Option<PromptExperience>, AhError>;
 
-    fn record_prompt_experience(&self, experience: &NewPromptExperience) -> Result<(), CcbdError>;
+    fn record_prompt_experience(&self, experience: &NewPromptExperience) -> Result<(), AhError>;
 }
 
 impl PromptExperienceLookup for Db {
@@ -63,11 +63,11 @@ impl PromptExperienceLookup for Db {
         provider: &str,
         sanitized_text: &str,
         sanitized_hash_hex: &str,
-    ) -> Result<Option<PromptExperience>, CcbdError> {
+    ) -> Result<Option<PromptExperience>, AhError> {
         lookup_prompt_experience_sync(self, provider, sanitized_text, sanitized_hash_hex)
     }
 
-    fn record_prompt_experience(&self, experience: &NewPromptExperience) -> Result<(), CcbdError> {
+    fn record_prompt_experience(&self, experience: &NewPromptExperience) -> Result<(), AhError> {
         upsert_prompt_experience_sync(self, experience)
     }
 }
@@ -75,9 +75,9 @@ impl PromptExperienceLookup for Db {
 pub fn upsert_prompt_experience_sync(
     db: &Db,
     experience: &NewPromptExperience,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let action_json = serde_json::to_string(&experience.action).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize prompt experience action: {err}"))
+        AhError::IpcInvalidRequest(format!("serialize prompt experience action: {err}"))
     })?;
     let conn = db.conn();
     let changes = conn
@@ -125,7 +125,7 @@ pub fn lookup_prompt_experience_sync(
     provider: &str,
     sanitized_text: &str,
     sanitized_hash_hex: &str,
-) -> Result<Option<PromptExperience>, CcbdError> {
+) -> Result<Option<PromptExperience>, AhError> {
     if let Some(experience) = lookup_regex_prompt_experience_sync(db, provider, sanitized_text)? {
         return Ok(Some(experience));
     }
@@ -145,7 +145,7 @@ fn lookup_regex_prompt_experience_sync(
     db: &Db,
     provider: &str,
     sanitized_text: &str,
-) -> Result<Option<PromptExperience>, CcbdError> {
+) -> Result<Option<PromptExperience>, AhError> {
     let rows = {
         let conn = db.conn();
         let mut stmt = conn
@@ -185,7 +185,7 @@ fn lookup_hash_prompt_experience_sync(
     db: &Db,
     provider: &str,
     sanitized_hash_hex: &str,
-) -> Result<Option<PromptExperience>, CcbdError> {
+) -> Result<Option<PromptExperience>, AhError> {
     let row = {
         let conn = db.conn();
         conn.query_row(
@@ -230,7 +230,7 @@ fn prompt_experience_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Promp
     })
 }
 
-fn increment_used_count(db: &Db, id: &str) -> Result<(), CcbdError> {
+fn increment_used_count(db: &Db, id: &str) -> Result<(), AhError> {
     db.conn()
         .execute(
             "UPDATE prompt_experience SET used_count = used_count + 1, last_used_at = unixepoch() WHERE id = ?",

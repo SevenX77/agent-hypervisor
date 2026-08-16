@@ -6,7 +6,7 @@
 
 use super::EvidenceSource;
 use crate::db;
-use crate::error::CcbdError;
+use crate::error::AhError;
 
 #[derive(Clone)]
 pub(crate) struct WorkingObservation {
@@ -46,7 +46,7 @@ pub(crate) struct HookCompletionObservation {
 
 pub(crate) async fn observe_working(
     observation: WorkingObservation,
-) -> Result<db::state_machine::ProviderActivityOutcome, CcbdError> {
+) -> Result<db::state_machine::ProviderActivityOutcome, AhError> {
     db::state_machine::mark_agent_working_provider_event(
         observation.db,
         observation.agent_id,
@@ -62,7 +62,7 @@ pub(crate) async fn observe_working(
 
 pub(crate) async fn observe_transcript_completion(
     observation: TranscriptCompletionObservation,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     db::state_machine::mark_agent_idle_log_event(
         observation.db,
         observation.agent_id,
@@ -79,7 +79,7 @@ pub(crate) async fn observe_transcript_completion(
 
 pub(crate) async fn observe_hook_completion(
     observation: HookCompletionObservation,
-) -> Result<(usize, Option<String>), CcbdError> {
+) -> Result<(usize, Option<String>), AhError> {
     db::state_machine::mark_agent_idle_hook_event(
         observation.db,
         observation.agent_id,

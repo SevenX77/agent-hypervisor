@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::db::common::{is_unique_constraint_error, map_db_error, spawn_db};
 use crate::db::schema::Event;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::orchestrator::pubsub::EventFrame;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -13,7 +13,7 @@ pub(crate) fn query_event_by_request_id_sync(
     conn: &Connection,
     agent_id: &str,
     request_id: &str,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     conn.query_row(
         "SELECT seq_id, event_type, payload, created_at FROM events WHERE agent_id = ? AND request_id = ? LIMIT 1",
         params![agent_id, request_id],
@@ -38,7 +38,7 @@ pub(crate) fn insert_event_sync(
     request_id: Option<&str>,
     event_type: &str,
     payload: &str,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let result = conn.execute(
         "INSERT INTO events (agent_id, request_id, event_type, payload) VALUES (?, ?, ?, ?)",
         params![agent_id, request_id, event_type, payload],
@@ -57,7 +57,7 @@ pub(crate) fn insert_event_sync(
                     map_db_error("query duplicate event by request_id", select_err)
                 })?;
 
-            Err(CcbdError::DuplicateRequest { existing_seq_id })
+            Err(AhError::DuplicateRequest { existing_seq_id })
         }
         Err(err) => Err(map_db_error("insert event", err)),
     }
@@ -67,7 +67,7 @@ pub(crate) fn query_events_since_sync(
     conn: &Connection,
     agent_id: &str,
     since_seq_id: i64,
-) -> Result<Vec<Event>, CcbdError> {
+) -> Result<Vec<Event>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT seq_id, request_id, event_type, payload, created_at FROM events WHERE agent_id = ? AND seq_id > ? ORDER BY seq_id ASC",
@@ -94,7 +94,7 @@ pub(crate) fn query_last_event_of_type_sync(
     conn: &Connection,
     agent_id: &str,
     event_type: &str,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     conn.query_row(
         "SELECT seq_id, request_id, event_type, payload, created_at FROM events WHERE agent_id = ? AND event_type = ? ORDER BY seq_id DESC LIMIT 1",
         params![agent_id, event_type],
@@ -119,7 +119,7 @@ pub(crate) fn query_last_event_of_type_matching_payload_sync(
     event_type: &str,
     payload_like: &str,
     before_seq_id: Option<i64>,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     conn.query_row(
         "SELECT seq_id, request_id, event_type, payload, created_at FROM events WHERE agent_id = ?1 AND event_type = ?2 AND payload LIKE ?3 AND (?4 IS NULL OR seq_id < ?4) ORDER BY seq_id DESC LIMIT 1",
         params![agent_id, event_type, payload_like, before_seq_id],
@@ -143,7 +143,7 @@ pub(crate) fn query_events_backfill_sync(
     since_seq_id: i64,
     agent_id: Option<&str>,
     kinds: Option<&[String]>,
-) -> Result<Vec<EventFrame>, CcbdError> {
+) -> Result<Vec<EventFrame>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT e.seq_id, e.agent_id, e.event_type, e.payload, e.created_at, a.state
@@ -181,7 +181,7 @@ pub async fn query_event_by_request_id(
     db: Db,
     agent_id: String,
     request_id: String,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     spawn_db("events::query_event_by_request_id", move || {
         let conn = db.conn();
         query_event_by_request_id_sync(&conn, &agent_id, &request_id)
@@ -193,7 +193,7 @@ pub async fn has_queued_starvation_alerted(
     db: Db,
     agent_id: String,
     job_id: String,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     spawn_db("events::has_queued_starvation_alerted", move || {
         let conn = db.conn();
         let job_id_pattern = format!("%\"job_id\":\"{}\"%", job_id);
@@ -212,7 +212,7 @@ pub async fn has_prompt_pending_suppression_escalated(
     db: Db,
     agent_id: String,
     hash: String,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     spawn_db("events::has_prompt_pending_suppression_escalated", move || {
         let conn = db.conn();
         let hash_pattern = format!("%\"hash\":\"{}\"%", hash);
@@ -233,7 +233,7 @@ pub async fn insert_event(
     request_id: Option<String>,
     event_type: String,
     payload: String,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let should_try_idle_marker = event_type == "output_chunk"
         && crate::db::state_machine::extract_ah_idle_marker_job_id(
             serde_json::from_str::<serde_json::Value>(&payload)
@@ -286,7 +286,7 @@ pub async fn insert_event_and_notify(
     request_id: Option<String>,
     event_type: String,
     payload: String,
-) -> Result<EventFrame, CcbdError> {
+) -> Result<EventFrame, AhError> {
     let frame = spawn_db("events::insert_event_and_notify", move || {
         let conn = db.conn();
         let seq_id = insert_event_sync(
@@ -322,7 +322,7 @@ pub async fn query_events_since(
     db: Db,
     agent_id: String,
     since_seq_id: i64,
-) -> Result<Vec<Event>, CcbdError> {
+) -> Result<Vec<Event>, AhError> {
     spawn_db("events::query_events_since", move || {
         let conn = db.conn();
         query_events_since_sync(&conn, &agent_id, since_seq_id)
@@ -334,7 +334,7 @@ pub async fn query_last_event_of_type(
     db: Db,
     agent_id: String,
     event_type: String,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     spawn_db("events::query_last_event_of_type", move || {
         let conn = db.conn();
         query_last_event_of_type_sync(&conn, &agent_id, &event_type)
@@ -348,7 +348,7 @@ pub async fn query_last_event_of_type_matching_payload(
     event_type: String,
     payload_like: String,
     before_seq_id: Option<i64>,
-) -> Result<Option<Event>, CcbdError> {
+) -> Result<Option<Event>, AhError> {
     spawn_db(
         "events::query_last_event_of_type_matching_payload",
         move || {
@@ -370,7 +370,7 @@ pub async fn query_events_backfill(
     since_seq_id: i64,
     agent_id: Option<String>,
     kinds: Option<Vec<String>>,
-) -> Result<Vec<EventFrame>, CcbdError> {
+) -> Result<Vec<EventFrame>, AhError> {
     spawn_db("events::query_events_backfill", move || {
         let conn = db.conn();
         query_events_backfill_sync(&conn, since_seq_id, agent_id.as_deref(), kinds.as_deref())
@@ -444,7 +444,7 @@ mod tests {
     use crate::db::agents::insert_agent_sync;
     use crate::db::init;
     use crate::db::sessions::insert_session_sync;
-    use crate::error::CcbdError;
+    use crate::error::AhError;
 
     fn with_test_db<T>(test: impl FnOnce(&mut rusqlite::Connection) -> T) -> T {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -479,7 +479,7 @@ mod tests {
             )
             .unwrap_err();
             assert!(
-                matches!(err, CcbdError::DuplicateRequest { existing_seq_id } if existing_seq_id == seq_id)
+                matches!(err, AhError::DuplicateRequest { existing_seq_id } if existing_seq_id == seq_id)
             );
         });
     }

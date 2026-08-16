@@ -8,7 +8,7 @@ use crate::db::recovery::{
 use crate::db::state_machine::{
     STATE_BUSY, STATE_IDLE, STATE_PROMPT_PENDING, STATE_SPAWNING, STATE_WAITING_FOR_ACK,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{OptionalExtension, params};
 
 /// Mark one active agent as KILLED and emit a state_change event in the same transaction.
@@ -16,7 +16,7 @@ pub(crate) fn mark_agent_killed_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_killed_sync_inner(db, agent_id, reason, false)
 }
 
@@ -24,7 +24,7 @@ pub(crate) fn mark_agent_killed_for_master_death_sync(
     db: &Db,
     agent_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_killed_sync_inner(db, agent_id, reason, true)
 }
 
@@ -33,7 +33,7 @@ fn mark_agent_killed_sync_inner(
     agent_id: &str,
     reason: &str,
     capture_revive_intent: bool,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -144,7 +144,7 @@ pub(crate) fn mark_agent_crashed_with_exit_sync(
     db: &Db,
     agent_id: &str,
     exit_code: Option<i32>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     mark_agent_crashed_sync(db, agent_id, exit_code, "AGENT_UNEXPECTED_EXIT")
 }
 
@@ -153,7 +153,7 @@ fn mark_agent_crashed_sync(
     agent_id: &str,
     exit_code: Option<i32>,
     error_code: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -255,7 +255,7 @@ fn capture_recovery_intent_for_crash(
     agent_id: &str,
     previous_state: Option<&str>,
     reason: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let Some((session_id, provider, crashed_state_version)) = conn
         .query_row(
             "SELECT session_id, provider, state_version FROM agents WHERE id = ?",
@@ -377,11 +377,7 @@ fn crashed_cleanup_policy(provider: &str) -> crate::agent_io::registry::RuntimeC
     }
 }
 
-pub async fn mark_agent_killed(
-    db: Db,
-    agent_id: String,
-    reason: String,
-) -> Result<usize, CcbdError> {
+pub async fn mark_agent_killed(db: Db, agent_id: String, reason: String) -> Result<usize, AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -403,7 +399,7 @@ pub async fn mark_agent_crashed_with_exit(
     db: Db,
     agent_id: String,
     exit_code: Option<i32>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?
@@ -427,7 +423,7 @@ pub async fn mark_agent_crashed_with_reason(
     agent_id: String,
     exit_code: Option<i32>,
     reason: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let affected_job =
         crate::db::jobs::query_dispatched_job_for_agent(db.clone(), agent_id.clone())
             .await?

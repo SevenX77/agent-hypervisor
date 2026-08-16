@@ -4,7 +4,7 @@ pub mod path;
 pub mod session_archive;
 pub mod systemd;
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use serde::{Deserialize, Serialize};
 use std::process::Stdio;
 use std::time::{Duration, Instant};
@@ -40,9 +40,9 @@ pub struct EnvState {
 }
 
 /// Check whether the host can run MVP2 sandboxed agents.
-pub fn check_environment() -> Result<EnvState, CcbdError> {
+pub fn check_environment() -> Result<EnvState, AhError> {
     check_environment_with(
-        std::env::var("CCBD_UNSAFE_NO_SANDBOX").as_deref() == Ok("1"),
+        std::env::var("AH_UNSAFE_NO_SANDBOX").as_deref() == Ok("1"),
         || which::which("systemd-run").is_ok(),
         std::env::var_os("INVOCATION_ID").is_some(),
         xdg_runtime_dir_present,
@@ -56,11 +56,11 @@ fn check_environment_with(
     under_systemd: bool,
     xdg_runtime_dir_probe: impl FnOnce() -> bool,
     user_manager_reachable_probe: impl FnOnce() -> bool,
-) -> Result<EnvState, CcbdError> {
+) -> Result<EnvState, AhError> {
     let systemd_run_available = systemd_run_probe();
 
     if unsafe_no_sandbox {
-        tracing::warn!("CCBD_UNSAFE_NO_SANDBOX=1 detected; running without systemd scope wrapper");
+        tracing::warn!("AH_UNSAFE_NO_SANDBOX=1 detected; running without systemd scope wrapper");
         return Ok(EnvState {
             systemd_run_available,
             unsafe_no_sandbox,
@@ -69,19 +69,19 @@ fn check_environment_with(
     }
 
     if !systemd_run_available {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details:
-                "systemd-run not found in PATH; ccbd-rust requires Linux + systemd user session"
+                "systemd-run not found in PATH; agent-hypervisor requires Linux + systemd user session"
                     .into(),
         });
     }
     if !xdg_runtime_dir_probe() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: "systemd user manager environment is missing; XDG_RUNTIME_DIR is required for systemd-run --user --scope".into(),
         });
     }
     if !user_manager_reachable_probe() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: "systemd user manager is not reachable; systemd-run --user --scope would fail"
                 .into(),
         });
@@ -158,7 +158,7 @@ fn user_manager_probe_succeeded(output: &std::process::Output) -> bool {
 #[cfg(test)]
 mod tests {
     use super::check_environment_with;
-    use crate::error::CcbdError;
+    use crate::error::AhError;
 
     #[test]
     fn test_check_environment_bypass_allows_missing_tools() {
@@ -179,14 +179,14 @@ mod tests {
     fn test_check_environment_requires_systemd_without_bypass() {
         let err = check_environment_with(false, || false, false, || true, || true).unwrap_err();
 
-        assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
+        assert!(matches!(err, AhError::EnvironmentNotSupported { .. }));
     }
 
     #[test]
     fn test_check_environment_requires_xdg_runtime_dir_without_bypass() {
         let err = check_environment_with(false, || true, false, || false, || true).unwrap_err();
 
-        assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
+        assert!(matches!(err, AhError::EnvironmentNotSupported { .. }));
         assert!(err.to_string().contains("XDG_RUNTIME_DIR"));
     }
 
@@ -201,7 +201,7 @@ mod tests {
     fn test_check_environment_requires_reachable_user_bus_without_bypass() {
         let err = check_environment_with(false, || true, false, || true, || false).unwrap_err();
 
-        assert!(matches!(err, CcbdError::EnvironmentNotSupported { .. }));
+        assert!(matches!(err, AhError::EnvironmentNotSupported { .. }));
         assert!(err.to_string().contains("systemd user manager"));
     }
 }

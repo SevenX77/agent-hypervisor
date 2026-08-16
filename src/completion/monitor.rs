@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use crate::completion::parser::LogParseResult;
 use crate::completion::reader::{LogCursorMap, LogReadState, read_provider_log_tail_with_state};
 use crate::db;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::runtime_observation::EvidenceSource;
 use crate::runtime_observation::intake::{
     TranscriptCompletionObservation, WorkingObservation, observe_transcript_completion,
@@ -30,9 +30,9 @@ pub async fn run_log_monitor_tick(
     log_root: &Path,
     state: LogReadState,
     expected_lifecycle_id: &str,
-) -> Result<LogMonitorTickOutcome, CcbdError> {
+) -> Result<LogMonitorTickOutcome, AhError> {
     let read = read_provider_log_tail_with_state(provider, log_root, &state)
-        .map_err(|err| CcbdError::PtyIoError(format!("read provider log tail: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("read provider log tail: {err}")))?;
     let updated_cursors = read.cursors.clone();
     let updated_state = read.state.clone();
     let completion_prompt_fingerprints = read.completion_prompt_fingerprints.clone();

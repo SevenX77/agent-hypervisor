@@ -60,7 +60,7 @@ async fn daemon_check(client: &impl RpcClient) -> DoctorCheck {
     )
     .await
     {
-        Ok(Ok(_)) => pass("daemon", "ccbd responded to system.dump"),
+        Ok(Ok(_)) => pass("daemon", "ah responded to system.dump"),
         Ok(Err(err)) => fail(
             "daemon",
             err.to_string(),
@@ -142,13 +142,13 @@ fn provider_auth_check(home: &Path, manifest: &ProviderManifest) -> DoctorCheck 
 pub fn permission_checks(cwd: &Path) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(check_read_write("permissions:cwd", cwd));
-    let ccb_dir = cwd.join(".ccb");
-    if ccb_dir.exists() {
-        checks.push(check_read_write("permissions:.ccb", &ccb_dir));
+    let ah_dir = cwd.join(".ah");
+    if ah_dir.exists() {
+        checks.push(check_read_write("permissions:.ah", &ah_dir));
     } else {
         checks.push(warn(
-            "permissions:.ccb",
-            ".ccb directory not present",
+            "permissions:.ah",
+            ".ah directory not present",
             "it will be created when daemon state is initialized",
         ));
     }
@@ -206,17 +206,17 @@ fn check_legacy_repo_state(cwd: &Path) -> DoctorCheck {
         .flat_map(|entries| entries.flatten())
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            name.starts_with(".ccb-rs").then_some(name)
+            name.starts_with(".ah-rs").then_some(name)
         })
         .collect::<Vec<_>>();
 
     if legacy.is_empty() {
-        pass("legacy repo state", "0 .ccb-rs* entries")
+        pass("legacy repo state", "0 .ah-rs* entries")
     } else {
         warn(
             "legacy repo state",
             format!("found repo-local state entries: {}", legacy.join(", ")),
-            "remove stale repo-local state with rm -rf .ccb-rs*",
+            "remove stale repo-local state with rm -rf .ah-rs*",
         )
     }
 }
@@ -224,7 +224,7 @@ fn check_legacy_repo_state(cwd: &Path) -> DoctorCheck {
 pub fn legacy_shared_session_check_from_sessions(
     socket_sessions: &[(String, Vec<String>)],
 ) -> DoctorCheck {
-    const LEGACY_SHARED_SESSION: &str = "ccbd-agents";
+    const LEGACY_SHARED_SESSION: &str = "ah-agents";
     let legacy_sockets = socket_sessions
         .iter()
         .filter_map(|(socket_name, sessions)| {
@@ -236,18 +236,15 @@ pub fn legacy_shared_session_check_from_sessions(
         .collect::<Vec<_>>();
 
     if legacy_sockets.is_empty() {
-        pass(
-            "tmux legacy shared session",
-            "0 legacy ccbd-agents sessions",
-        )
+        pass("tmux legacy shared session", "0 legacy ah-agents sessions")
     } else {
         warn(
             "tmux legacy shared session",
             format!(
-                "found legacy ccbd-agents session on socket(s): {}",
+                "found legacy ah-agents session on socket(s): {}",
                 legacy_sockets.join(", ")
             ),
-            format!("tmux -L {} kill-session -t ccbd-agents", legacy_sockets[0]),
+            format!("tmux -L {} kill-session -t ah-agents", legacy_sockets[0]),
         )
     }
 }
@@ -267,7 +264,7 @@ fn ahd_tmux_socket_names() -> Vec<String> {
             .flatten()
             .filter_map(|entry| {
                 let name = entry.file_name().to_string_lossy().to_string();
-                (name.starts_with("ahd-") || name.starts_with("ccbd-")).then_some(name)
+                (name.starts_with("ahd-") || name.starts_with("ah-")).then_some(name)
             })
             .collect()
     }
@@ -374,7 +371,7 @@ fn check_read_write(name: &'static str, path: &Path) -> DoctorCheck {
         );
     }
     let readable = std::fs::read_dir(path).is_ok();
-    let probe = path.join(".ccb-doctor-write-test");
+    let probe = path.join(".ah-doctor-write-test");
     let writable = std::fs::write(&probe, b"ok")
         .and_then(|_| std::fs::remove_file(&probe))
         .is_ok();
@@ -470,7 +467,7 @@ mod tests {
     #[test]
     fn test_permission_checks_current_tempdir_passes() {
         let tmp = tempfile::TempDir::new().unwrap();
-        std::fs::create_dir(tmp.path().join(".ccb")).unwrap();
+        std::fs::create_dir(tmp.path().join(".ah")).unwrap();
         let checks = permission_checks(tmp.path());
         assert!(
             checks
@@ -493,7 +490,7 @@ mod tests {
         let checks = super::run_doctor(&FailingClient, None).await.unwrap();
 
         assert!(!checks.iter().any(|check| check.name == "permissions:cwd"));
-        assert!(!checks.iter().any(|check| check.name == "permissions:.ccb"));
+        assert!(!checks.iter().any(|check| check.name == "permissions:.ah"));
     }
 
     #[test]
@@ -503,49 +500,49 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_shared_session_check_warns_when_ccbd_agents_exists() {
+    fn test_legacy_shared_session_check_warns_when_ah_agents_exists() {
         let socket_sessions = vec![(
-            "ccbd-test".to_string(),
-            vec!["agent_a1".to_string(), "ccbd-agents".to_string()],
+            "ah-test".to_string(),
+            vec!["agent_a1".to_string(), "ah-agents".to_string()],
         )];
         let check = legacy_shared_session_check_from_sessions(&socket_sessions);
 
         assert_eq!(check.status, DoctorStatus::Warn);
-        assert!(check.detail.contains("ccbd-test"));
+        assert!(check.detail.contains("ah-test"));
         assert_eq!(
             check.suggestion.as_deref(),
-            Some("tmux -L ccbd-test kill-session -t ccbd-agents")
+            Some("tmux -L ah-test kill-session -t ah-agents")
         );
     }
 
     #[test]
-    fn test_legacy_shared_session_check_passes_without_ccbd_agents() {
-        let socket_sessions = vec![("ccbd-test".to_string(), vec!["agent_a1".to_string()])];
+    fn test_legacy_shared_session_check_passes_without_ah_agents() {
+        let socket_sessions = vec![("ah-test".to_string(), vec!["agent_a1".to_string()])];
         let check = legacy_shared_session_check_from_sessions(&socket_sessions);
 
         assert_eq!(check.status, DoctorStatus::Pass);
     }
 
     #[test]
-    fn test_legacy_repo_state_warns_only_for_old_ccb_rs_entries() {
+    fn test_legacy_repo_state_warns_only_for_old_ah_rs_entries() {
         let tmp = tempfile::TempDir::new().unwrap();
         std::fs::create_dir(tmp.path().join(".ah")).unwrap();
-        std::fs::create_dir(tmp.path().join(".ccb-rs.aborted-123")).unwrap();
+        std::fs::create_dir(tmp.path().join(".ah-rs.aborted-123")).unwrap();
 
         let check = check_legacy_repo_state(tmp.path());
 
         assert_eq!(check.status, DoctorStatus::Warn);
-        assert!(check.detail.contains(".ccb-rs.aborted-123"));
+        assert!(check.detail.contains(".ah-rs.aborted-123"));
         assert!(!check.detail.contains(".ah"));
         assert_eq!(
             check.suggestion.as_deref(),
-            Some("remove stale repo-local state with rm -rf .ccb-rs*")
+            Some("remove stale repo-local state with rm -rf .ah-rs*")
         );
     }
 
     #[test]
     fn test_parse_tmux_session_names() {
-        let names = parse_tmux_session_names(b"ccbd-agents\nagent_a1\n\n");
-        assert_eq!(names, vec!["ccbd-agents", "agent_a1"]);
+        let names = parse_tmux_session_names(b"ah-agents\nagent_a1\n\n");
+        assert_eq!(names, vec!["ah-agents", "agent_a1"]);
     }
 }

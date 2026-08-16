@@ -46,14 +46,12 @@ impl std::fmt::Display for StateLayoutError {
 /// state dir. That fallback let unrelated projects collide in one database
 /// (#46), and hashing a bare `--config ah.toml`'s empty parent sent every such
 /// invocation to one directory (#43). Environment overrides keep their
-/// priority; `CCB_ENV=dev` keeps the in-repo dev state dir (decision 0005).
+/// priority; `AH_ENV=dev` keeps the in-repo dev state dir (decision 0005).
 pub fn resolve_cli_state_layout(
     cwd: &Path,
     config_path: Option<&Path>,
 ) -> Result<StateLayout, StateLayoutError> {
-    if let Some(dir) =
-        non_empty_env_path("AH_STATE_DIR").or_else(|| non_empty_env_path("CCBD_STATE_DIR"))
-    {
+    if let Some(dir) = non_empty_env_path("AH_STATE_DIR") {
         return Ok(StateLayout {
             state_dir: dir,
             project_id: None,
@@ -61,7 +59,7 @@ pub fn resolve_cli_state_layout(
     }
     if let Some(dir) = non_empty_env_path("XDG_STATE_HOME") {
         return Ok(StateLayout {
-            state_dir: dir.join("ccbd"),
+            state_dir: dir.join("ah"),
             project_id: None,
         });
     }
@@ -102,7 +100,7 @@ pub fn resolve_cli_state_layout(
         return Ok(project_layout_for_dir(&canonical));
     }
 
-    if std::env::var("CCB_ENV").as_deref() == Ok("dev") {
+    if std::env::var("AH_ENV").as_deref() == Ok("dev") {
         return Ok(StateLayout {
             state_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("target")
@@ -121,9 +119,7 @@ pub fn resolve_cli_state_layout(
 }
 
 pub fn resolve_state_layout(request: &StateLayoutRequest) -> StateLayout {
-    if let Some(dir) =
-        non_empty_env_path("AH_STATE_DIR").or_else(|| non_empty_env_path("CCBD_STATE_DIR"))
-    {
+    if let Some(dir) = non_empty_env_path("AH_STATE_DIR") {
         return StateLayout {
             state_dir: dir,
             project_id: None,
@@ -132,7 +128,7 @@ pub fn resolve_state_layout(request: &StateLayoutRequest) -> StateLayout {
 
     if let Some(dir) = non_empty_env_path("XDG_STATE_HOME") {
         return StateLayout {
-            state_dir: dir.join("ccbd"),
+            state_dir: dir.join("ah"),
             project_id: None,
         };
     }
@@ -141,7 +137,7 @@ pub fn resolve_state_layout(request: &StateLayoutRequest) -> StateLayout {
         return project_layout_for_dir(&config_dir);
     }
 
-    if std::env::var("CCB_ENV").as_deref() == Ok("dev") {
+    if std::env::var("AH_ENV").as_deref() == Ok("dev") {
         return StateLayout {
             state_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("target")
@@ -165,9 +161,7 @@ pub fn resolve_state_layout(request: &StateLayoutRequest) -> StateLayout {
 }
 
 pub fn resolve_neutral_state_layout() -> StateLayout {
-    if let Some(dir) =
-        non_empty_env_path("AH_STATE_DIR").or_else(|| non_empty_env_path("CCBD_STATE_DIR"))
-    {
+    if let Some(dir) = non_empty_env_path("AH_STATE_DIR") {
         return StateLayout {
             state_dir: dir,
             project_id: None,
@@ -176,12 +170,12 @@ pub fn resolve_neutral_state_layout() -> StateLayout {
 
     if let Some(dir) = non_empty_env_path("XDG_STATE_HOME") {
         return StateLayout {
-            state_dir: dir.join("ccbd"),
+            state_dir: dir.join("ah"),
             project_id: None,
         };
     }
 
-    if std::env::var("CCB_ENV").as_deref() == Ok("dev") {
+    if std::env::var("AH_ENV").as_deref() == Ok("dev") {
         return StateLayout {
             state_dir: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .join("target")
@@ -346,16 +340,15 @@ mod tests {
         let config_path = project.path().join("ah.toml");
         std::fs::write(&config_path, "version = \"1\"\n").unwrap();
         let _ah_guard = EnvGuard::remove("AH_STATE_DIR");
-        let _ccbd_guard = EnvGuard::remove("CCBD_STATE_DIR");
         let _xdg_guard = EnvGuard::set("XDG_STATE_HOME", xdg_state.path());
-        let _dev_guard = EnvGuard::set_str("CCB_ENV", "dev");
+        let _dev_guard = EnvGuard::set_str("AH_ENV", "dev");
 
         let layout = resolve_state_layout(&StateLayoutRequest {
             cwd: project.path().to_path_buf(),
             config_path: Some(config_path),
         });
 
-        assert_eq!(layout.state_dir, xdg_state.path().join("ccbd"));
+        assert_eq!(layout.state_dir, xdg_state.path().join("ah"));
         assert!(layout.project_id.is_none());
     }
 
@@ -365,9 +358,8 @@ mod tests {
         let project = tempfile::tempdir().unwrap();
         std::fs::write(project.path().join("ah.toml"), "version = \"1\"\n").unwrap();
         let _ah_guard = EnvGuard::remove("AH_STATE_DIR");
-        let _ccbd_guard = EnvGuard::remove("CCBD_STATE_DIR");
         let _xdg_guard = EnvGuard::remove("XDG_STATE_HOME");
-        let _dev_guard = EnvGuard::set_str("CCB_ENV", "dev");
+        let _dev_guard = EnvGuard::set_str("AH_ENV", "dev");
 
         let layout = resolve_state_layout(&StateLayoutRequest {
             cwd: project.path().to_path_buf(),

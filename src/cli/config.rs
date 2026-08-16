@@ -280,7 +280,7 @@ pub fn warn_config_diagnostics(config: &ProjectConfig) {
 }
 
 pub fn find_config(start_dir: &Path) -> Result<PathBuf, CliError> {
-    find_config_with_env(start_dir, std::env::var_os("CCB_CONFIG_PATH"))
+    find_config_with_env(start_dir, std::env::var_os("AH_CONFIG_PATH"))
 }
 
 pub fn validate_project_config(config: &ProjectConfig) -> Vec<Diagnostic> {
@@ -502,7 +502,7 @@ pub(crate) fn find_config_with_env(
             return Ok(path);
         }
         return Err(CliError::Config(format!(
-            "CCB_CONFIG_PATH points to missing config: {}",
+            "AH_CONFIG_PATH points to missing config: {}",
             path.display()
         )));
     }
@@ -526,7 +526,7 @@ pub(crate) fn find_config_with_env(
     }
 
     Err(CliError::Config(format!(
-        "could not find ah.toml from {}; create one or set CCB_CONFIG_PATH",
+        "could not find ah.toml from {}; create one or set AH_CONFIG_PATH",
         start_dir.display()
     )))
 }

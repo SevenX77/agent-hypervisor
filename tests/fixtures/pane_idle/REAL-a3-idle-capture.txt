@@ -3,7 +3,7 @@ Running scope as unit: run-r00000000000000000000000000000000.scope
       ▄▀▀▄        Antigravity CLI 1.0.10
      ▀▀▀▀▀▀       user000000@gmail.com (Google AI Ultra)
     ▀▀▀▀▀▀▀▀      Gemini 3.5 Flash (High)
-   ▄▀▀    ▀▀▄     /home/user00/coding/ccbd-rust
+   ▄▀▀    ▀▀▄     /home/user00/coding/agent-hypervisor
   ▄▀▀      ▀▀▄
 
 ────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@
 //! place a raw `agents.state` write is permitted; the CI grep rule enforces that.
 
 use crate::db::common::map_db_error;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, params};
 
 /// The single arbitration entry point for `agents.state`.
@@ -28,7 +28,7 @@ pub(crate) fn transit_agent_perception_state_sync(
     to_state: &str,
     reason: &str,
     expected_version: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     // 1. Query current state and state_version
     let current: Option<(String, i64)> = conn
         .query_row(

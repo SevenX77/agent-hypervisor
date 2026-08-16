@@ -150,7 +150,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -163,10 +163,10 @@ mod tests {
         assert!(argv.contains(&"--user".to_string()));
         assert!(argv.contains(&"--scope".to_string()));
         assert_collect_after_scope_before_separator(&argv);
-        assert!(argv.contains(&"--slice=ccb-p1-ccbd-agents.slice".to_string()));
+        assert!(argv.contains(&"--slice=ah-p1-agents.slice".to_string()));
         assert!(argv.contains(&"--property=BindsTo=ahd.service".to_string()));
         assert!(argv.contains(&"--property=PartOf=ahd.service".to_string()));
-        assert!(argv.contains(&"--description=ccbd-agent-ag_1@ccbd-test".to_string()));
+        assert!(argv.contains(&"--description=ah-agent-ag_1@ah-test".to_string()));
         assert!(!argv.contains(&"bwrap".to_string()));
         assert!(argv.contains(&"bash".to_string()));
         let separator = argv.iter().position(|arg| arg == "--").unwrap();
@@ -187,7 +187,7 @@ mod tests {
         let cmd = wrap_command_with_recovery_and_sandbox_overrides(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             super::RecoverySpawn {
                 is_recovery: false,
@@ -213,7 +213,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-1234567890abcdef",
+            "ah-1234567890abcdef",
             &env_state_with_systemd(false),
             false,
             Some("ahd.service"),
@@ -221,7 +221,7 @@ mod tests {
             &extra_env(),
         );
 
-        assert!(cmd.contains(&"--description=ccbd-agent-ag_1@ccbd-1234567890abcdef".to_string()));
+        assert!(cmd.contains(&"--description=ah-agent-ag_1@ah-1234567890abcdef".to_string()));
     }
 
     #[test]
@@ -229,7 +229,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -249,7 +249,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -257,8 +257,8 @@ mod tests {
             &extra_env(),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-agents.slice".to_string()));
-        assert!(!cmd.contains(&"--slice=ccbd-agents.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-agents.slice".to_string()));
+        assert!(!cmd.contains(&"--slice=ah-agents.slice".to_string()));
     }
 
     #[test]
@@ -275,7 +275,7 @@ mod tests {
         assert!(cmd.contains(&"--scope".to_string()));
         assert_collect_after_scope_before_separator(&cmd);
         assert!(!cmd.contains(&"--property=OOMScoreAdjust=500".to_string()));
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-workspace.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-workspace.slice".to_string()));
         assert!(cmd.contains(&"--property=BindsTo=ahd.service".to_string()));
         assert!(cmd.contains(&"--property=PartOf=ahd.service".to_string()));
         assert!(
@@ -380,11 +380,11 @@ mod tests {
     }
 
     #[test]
-    fn cutover_master_env_contains_ccb_socket_and_ah_state_dir() {
+    fn cutover_master_env_contains_ah_socket_and_ah_state_dir() {
         let mut extra_env = HashMap::new();
         extra_env.insert("AH_STATE_DIR".to_string(), "/tmp/ah-state".to_string());
         extra_env.insert(
-            "CCB_SOCKET".to_string(),
+            "AH_SOCKET".to_string(),
             "/tmp/ah-state/ahd.sock".to_string(),
         );
         extra_env.insert("AH_CUTOVER_ID".to_string(), "cutover-sess_1".to_string());
@@ -403,7 +403,7 @@ mod tests {
             &Default::default(),
         );
 
-        assert!(cmd.contains(&"CCB_SOCKET=/tmp/ah-state/ahd.sock".to_string()));
+        assert!(cmd.contains(&"AH_SOCKET=/tmp/ah-state/ahd.sock".to_string()));
         assert!(cmd.contains(&"AH_STATE_DIR=/tmp/ah-state".to_string()));
         assert!(cmd.contains(&"AH_MASTER_ROLE=managed".to_string()));
         assert!(cmd.contains(&"AH_CUTOVER_ID=cutover-sess_1".to_string()));
@@ -426,7 +426,7 @@ mod tests {
             "AH_CUTOVER_ID=",
             "AH_MASTER_HANDOFF=",
             "AH_MASTER_ROLE=",
-            "CCB_SOCKET=",
+            "AH_SOCKET=",
             "AH_STATE_DIR=",
         ] {
             assert!(
@@ -452,7 +452,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state_with_systemd(true),
             false,
             Some("ahd.service"),
@@ -460,7 +460,7 @@ mod tests {
             &extra_env(),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-agents.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-agents.slice".to_string()));
         assert!(cmd.contains(&"--property=BindsTo=ahd.service".to_string()));
         assert!(cmd.contains(&"--property=PartOf=ahd.service".to_string()));
     }
@@ -470,7 +470,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state_with_systemd(true),
             false,
             Some("ah-p1.service"),
@@ -478,7 +478,7 @@ mod tests {
             &extra_env(),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-agents.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-agents.slice".to_string()));
         assert!(cmd.contains(&"--property=BindsTo=ah-p1.service".to_string()));
         assert!(cmd.contains(&"--property=PartOf=ah-p1.service".to_string()));
         assert!(
@@ -492,7 +492,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state_with_systemd(true),
             false,
             None,
@@ -500,7 +500,7 @@ mod tests {
             &extra_env(),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-agents.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-agents.slice".to_string()));
         assert!(!cmd.iter().any(|arg| arg.starts_with("--property=BindsTo=")));
         assert!(!cmd.iter().any(|arg| arg.starts_with("--property=PartOf=")));
     }
@@ -510,7 +510,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state_with_systemd(false),
             false,
             Some("ahd.service"),
@@ -535,7 +535,7 @@ mod tests {
             Some("ahd.service"),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-workspace.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-workspace.slice".to_string()));
         assert!(cmd.contains(&"--property=BindsTo=ahd.service".to_string()));
         assert!(cmd.contains(&"--property=PartOf=ahd.service".to_string()));
     }
@@ -549,7 +549,7 @@ mod tests {
             Some("ah-p1.service"),
         );
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-workspace.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-workspace.slice".to_string()));
         assert!(cmd.contains(&"--property=BindsTo=ah-p1.service".to_string()));
         assert!(cmd.contains(&"--property=PartOf=ah-p1.service".to_string()));
         assert!(
@@ -562,7 +562,7 @@ mod tests {
     fn test_master_command_no_detected_daemon_unit_omits_dependencies() {
         let cmd = master_command("p1", "claude", &env_state_with_systemd(true), None);
 
-        assert!(cmd.contains(&"--slice=ccb-p1-ccbd-workspace.slice".to_string()));
+        assert!(cmd.contains(&"--slice=ah-p1-workspace.slice".to_string()));
         assert!(!cmd.iter().any(|arg| arg.starts_with("--property=BindsTo=")));
         assert!(!cmd.iter().any(|arg| arg.starts_with("--property=PartOf=")));
     }
@@ -590,7 +590,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(true),
             false,
             Some("ahd.service"),
@@ -610,13 +610,13 @@ mod tests {
     #[test]
     fn test_wrap_command_appends_extra_env_after_manifest_env() {
         let mut extra = std::collections::HashMap::new();
-        extra.insert("CCB_GLOBAL".to_string(), "1".to_string());
+        extra.insert("AH_GLOBAL".to_string(), "1".to_string());
         extra.insert("PS1".to_string(), "override> ".to_string());
 
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -624,7 +624,7 @@ mod tests {
             &extra,
         );
 
-        assert!(cmd.contains(&"CCB_GLOBAL=1".to_string()));
+        assert!(cmd.contains(&"AH_GLOBAL=1".to_string()));
         assert!(cmd.contains(&"PS1=override> ".to_string()));
     }
 
@@ -633,7 +633,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -650,7 +650,7 @@ mod tests {
         let claude_recovery = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             true,
             Some("ahd.service"),
@@ -664,7 +664,7 @@ mod tests {
         let claude_new = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -677,7 +677,7 @@ mod tests {
             let cmd = wrap_command(
                 "ag_1",
                 "p1",
-                "ccbd-test",
+                "ah-test",
                 &env_state(false),
                 true,
                 Some("ahd.service"),
@@ -700,7 +700,7 @@ mod tests {
         let cmd = wrap_command(
             "ag_1",
             "p1",
-            "ccbd-test",
+            "ah-test",
             &env_state(false),
             false,
             Some("ahd.service"),
@@ -717,6 +717,6 @@ mod tests {
             !cmd.contains(&"ANTHROPIC_API_KEY=host-anthropic".to_string()),
             "host Anthropic API key must not leak into sandbox command: {cmd:?}"
         );
-        assert!(cmd.contains(&"CCB_CLAUDE_MD_MODE=route".to_string()));
+        assert!(cmd.contains(&"AH_CLAUDE_MD_MODE=route".to_string()));
     }
 }

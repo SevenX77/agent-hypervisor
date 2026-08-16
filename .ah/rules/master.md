@@ -1,4 +1,4 @@
-# master · ccbd-rust/ah 项目场景层(双泳道 g/m/o 拓扑,2026-07-10 定案)
+# master · agent-hypervisor/ah 项目场景层(双泳道 g/m/o 拓扑,2026-07-10 定案)
 
 > ah 自动拼接固定 master 内核在前,这里只写本项目场景层。
 

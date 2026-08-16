@@ -71,9 +71,8 @@ worker = "../escape.md"
 fn ah_command(project: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ah"));
     cmd.current_dir(project)
-        .env_remove("CCB_SOCKET")
+        .env_remove("AH_SOCKET")
         .env_remove("AH_STATE_DIR")
-        .env_remove("CCBD_STATE_DIR")
         .env_remove("XDG_STATE_HOME");
     cmd
 }
@@ -82,9 +81,8 @@ fn ah_command(project: &Path) -> Command {
 fn bundle_cli_subcommands_parse() {
     let output = Command::new(env!("CARGO_BIN_EXE_ah"))
         .args(["bundle", "--help"])
-        .env_remove("CCB_SOCKET")
+        .env_remove("AH_SOCKET")
         .env_remove("AH_STATE_DIR")
-        .env_remove("CCBD_STATE_DIR")
         .env_remove("XDG_STATE_HOME")
         .output()
         .unwrap();

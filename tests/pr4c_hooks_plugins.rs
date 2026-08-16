@@ -129,7 +129,7 @@ fn hook_push_disabled_context_does_not_inject_ah_hook() {
 }
 
 #[test]
-fn hook_push_command_bakes_agent_id_socket_and_ccb_socket() {
+fn hook_push_command_bakes_agent_id_socket_and_ah_socket() {
     let socket = PathBuf::from("/tmp/ah-hook-push/ahd.sock");
     let hook_ctx = HookPushContext {
         agent_id: "ag_cmd".to_string(),
@@ -145,7 +145,7 @@ fn hook_push_command_bakes_agent_id_socket_and_ccb_socket() {
     assert_eq!(item.timeout, Some(5));
     assert!(
         item.command
-            .contains(&format!("CCB_SOCKET={}", socket.display()))
+            .contains(&format!("AH_SOCKET={}", socket.display()))
     );
     assert!(item.command.contains("agent notify --agent-id"));
     assert!(item.command.contains("--agent-id ag_cmd"));
@@ -237,17 +237,17 @@ fn hook_script_emits_permission_decision_protocol() {
         let _ = stream.read(&mut buffer).unwrap();
     });
 
-    let old_socket = std::env::var_os("CCB_SOCKET");
+    let old_socket = std::env::var_os("AH_SOCKET");
     unsafe {
-        std::env::set_var("CCB_SOCKET", &socket_path);
+        std::env::set_var("AH_SOCKET", &socket_path);
     }
     let env = collect_spawn_env(&get_manifest("claude"), &Default::default());
-    restore_env("CCB_SOCKET", old_socket.as_ref());
+    restore_env("AH_SOCKET", old_socket.as_ref());
 
     assert!(
         env.iter()
-            .any(|(key, value)| key == "CCB_SOCKET" && value == socket_path.to_str().unwrap()),
-        "provider env must pass CCB_SOCKET through so hooks can reach ccbd"
+            .any(|(key, value)| key == "AH_SOCKET" && value == socket_path.to_str().unwrap()),
+        "provider env must pass AH_SOCKET through so hooks can reach ah"
     );
 
     let stdout = json!({
@@ -619,7 +619,7 @@ fn antigravity_hook_push_injection_writes_global_named_stop_hook_and_preserves_s
     assert!(invocation_hook.get("matcher").is_none());
     assert_eq!(hook["type"], "command");
     assert_eq!(hook["timeout"], 5);
-    assert!(command.contains("CCB_SOCKET="));
+    assert!(command.contains("AH_SOCKET="));
     assert!(command.contains("agent notify --agent-id"));
     assert!(command.contains("--agent-id ag_antigravity_push"));
     assert!(command.contains("--event stop"));
@@ -1093,7 +1093,7 @@ impl HostFixture {
         unsafe {
             std::env::set_var("HOME", host_home.path());
             std::env::set_var("XDG_CACHE_HOME", cache_home.path());
-            std::env::set_var("USER", "__ccbd_pr4c_no_passwd_user__");
+            std::env::set_var("USER", "__ah_pr4c_no_passwd_user__");
         }
         let host_home_path = host_home.path().to_path_buf();
         Self {

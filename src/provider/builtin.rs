@@ -1,4 +1,4 @@
-//! Built-in ah rule resources embedded into the ccbd binary.
+//! Built-in ah rule resources embedded into the ah binary.
 
 pub const MASTER_KERNEL: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),

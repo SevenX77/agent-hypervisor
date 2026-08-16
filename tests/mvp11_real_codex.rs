@@ -80,7 +80,7 @@ impl Drop for RealHarness {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_codex_spawn_ask_flow() {
-    if std::env::var("CCB_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
+    if std::env::var("AH_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
         return;
     }
     let h = RealHarness::new();

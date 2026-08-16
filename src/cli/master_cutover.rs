@@ -181,7 +181,7 @@ mod tests {
                         "session_id": "sess_cutover",
                         "pane_id": "%42",
                         "attach_command": "ah attach master --session sess_cutover",
-                        "tmux_attach_command": "tmux -S /tmp/ahd.sock attach -t master_ccbd-rust",
+                        "tmux_attach_command": "tmux -S /tmp/ahd.sock attach -t master_agent-hypervisor",
                         "handoff_path": "/tmp/state/cutovers/cutover-sess_cutover/handoff.md",
                     })),
                     other => Err(CliError::InvalidResponse(format!(
@@ -229,7 +229,7 @@ mod tests {
         config.providers.claude.shared_credentials_dir = Some(shared_credentials_dir);
         MasterCutoverOptions {
             config,
-            project_root: PathBuf::from("/home/sevenx/coding/ccbd-rust"),
+            project_root: PathBuf::from("/home/sevenx/coding/agent-hypervisor"),
             state_dir: tmp.path().join("state"),
             socket_path: tmp.path().join("state").join("ahd.sock"),
             old_home: tmp.path().join("old-home"),
@@ -349,7 +349,7 @@ mod tests {
             .expect("master cutover call");
         assert_eq!(
             request.1.get("cwd").and_then(Value::as_str),
-            Some("/home/sevenx/coding/ccbd-rust")
+            Some("/home/sevenx/coding/agent-hypervisor")
         );
         assert!(request.1.get("old_home").is_some());
         assert_eq!(
@@ -389,6 +389,10 @@ mod tests {
                 .contains("ah attach master --session sess_cutover")
         );
         assert!(summary.tmux_attach_command.contains("tmux -S"));
-        assert!(summary.tmux_attach_command.contains("master_ccbd-rust"));
+        assert!(
+            summary
+                .tmux_attach_command
+                .contains("master_agent-hypervisor")
+        );
     }
 }

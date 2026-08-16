@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::provider::builtin::{self, BuiltinSkillScope};
 use crate::provider::extensions::{
     ExtensionConfig, HookGroup, HookItem, McpServerConfig, McpTransport,
@@ -92,7 +92,7 @@ pub fn prepare_home_layout(
     provider: &str,
     sandbox_dir: &Path,
     workspace_path: &Path,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_role(
         provider,
         sandbox_dir,
@@ -106,7 +106,7 @@ pub fn prepare_home_layout_with_claude_credentials(
     sandbox_dir: &Path,
     workspace_path: &Path,
     claude_shared_credentials_dir: Option<&Path>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_role_and_claude_credentials(
         provider,
         sandbox_dir,
@@ -121,7 +121,7 @@ pub fn prepare_home_layout_with_role(
     sandbox_dir: &Path,
     workspace_path: &Path,
     role: HomeLayoutRole,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_extensions(
         provider,
         sandbox_dir,
@@ -138,7 +138,7 @@ pub fn prepare_home_layout_with_role_and_claude_credentials(
     workspace_path: &Path,
     role: HomeLayoutRole,
     claude_shared_credentials_dir: Option<&Path>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials(
         provider,
         sandbox_dir,
@@ -158,7 +158,7 @@ pub fn prepare_home_layout_with_extensions(
     role: HomeLayoutRole,
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_extensions_for_slot(
         provider,
         sandbox_dir,
@@ -178,7 +178,7 @@ pub fn prepare_home_layout_with_extensions_for_slot(
     slot_id: &str,
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials(
         provider,
         sandbox_dir,
@@ -201,7 +201,7 @@ pub fn prepare_home_layout_with_extensions_for_slot_and_claude_credentials(
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
     claude_shared_credentials_dir: Option<&Path>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     let source_home = materialization_source_home()?;
     let home_root = sandbox_home_for_sandbox_dir(sandbox_dir)?;
     let workspace_key = workspace_trust_key(workspace_path);
@@ -264,7 +264,7 @@ fn prepare_claude_overrides(
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
     shared_credentials_dir: Option<&Path>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     let layout = ClaudeHomeLayout::for_home(home_root);
     fs::create_dir_all(&layout.claude_dir)
         .map_err(|err| home_err("create claude dir", &layout.claude_dir, err))?;
@@ -317,7 +317,7 @@ fn prepare_codex_overrides(
     slot_id: &str,
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     let codex_home = home_root.join(".codex");
     prepare_managed_codex_home(
         source_home,
@@ -344,7 +344,7 @@ fn prepare_antigravity_overrides(
     slot_id: &str,
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
-) -> Result<HomeOverrides, CcbdError> {
+) -> Result<HomeOverrides, AhError> {
     let layout = AntigravityHomeLayout::for_home(home_root);
     fs::create_dir_all(&layout.antigravity_dir).map_err(|err| {
         home_err(
@@ -392,7 +392,7 @@ fn prepare_antigravity_overrides(
 fn copy_antigravity_hooks_if_missing(
     source_home: &Path,
     layout: &AntigravityHomeLayout,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let source_hooks = source_home.join(".gemini/config/hooks.json");
     if source_hooks.is_file() && !layout.hooks_path.exists() {
         if let Some(parent) = layout.hooks_path.parent() {
@@ -409,7 +409,7 @@ fn materialize_antigravity_hooks(
     source_home: &Path,
     layout: &AntigravityHomeLayout,
     ctx: &HookPushContext,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     copy_antigravity_hooks_if_missing(source_home, layout)?;
     let mut root = read_json_object(&layout.hooks_path).unwrap_or_default();
     inject_antigravity_hook_push(&mut root, ctx);
@@ -420,7 +420,7 @@ fn merge_antigravity_hooks(
     source_home: &Path,
     layout: &AntigravityHomeLayout,
     hooks: &[MaterializedHook],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     copy_antigravity_hooks_if_missing(source_home, layout)?;
     let mut root = read_json_object(&layout.hooks_path).unwrap_or_default();
     let named_hook = object_entry(&mut root, "ah-bundle");
@@ -459,9 +459,7 @@ fn merge_antigravity_hooks(
     write_json_object(&layout.hooks_path, &root)
 }
 
-fn materialize_antigravity_json_hooks_gate(
-    layout: &AntigravityHomeLayout,
-) -> Result<(), CcbdError> {
+fn materialize_antigravity_json_hooks_gate(layout: &AntigravityHomeLayout) -> Result<(), AhError> {
     for path in [&layout.config_path, &layout.config_settings_path] {
         let mut root = read_json_object(path).unwrap_or_default();
         root.insert("enableJsonHooks".to_string(), Value::Bool(true));
@@ -500,7 +498,7 @@ fn materialize_antigravity_settings(
     source_home: &Path,
     layout: &AntigravityHomeLayout,
     workspace_key: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let source_settings = source_home.join(".gemini/antigravity-cli/settings.json");
     if source_settings.is_file() {
         fs::copy(&source_settings, &layout.settings_path)
@@ -530,7 +528,7 @@ fn materialize_antigravity_settings(
 fn materialize_antigravity_onboarding(
     source_home: &Path,
     layout: &AntigravityHomeLayout,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     fs::create_dir_all(&layout.cache_dir).map_err(|err| {
         home_err(
             "create antigravity onboarding cache",
@@ -562,7 +560,7 @@ fn materialize_builtin_rules(
     project_root: &Path,
     slot_id: &str,
     bundle_layers: &[String],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     // Role rules land wherever the provider declares a rules target. The master
     // role is not special-cased by provider name: a master on any provider with
     // a rules target receives the master kernel, which is what teaches it the
@@ -578,7 +576,7 @@ fn builtin_rules_target(provider: &str, home_root: &Path) -> Option<PathBuf> {
     crate::provider::adapter(provider).and_then(|adapter| adapter.rules_target(home_root))
 }
 
-fn write_builtin_rules(path: &Path, content: &str) -> Result<(), CcbdError> {
+fn write_builtin_rules(path: &Path, content: &str) -> Result<(), AhError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| home_err("create builtin rules parent", parent, err))?;
@@ -607,7 +605,7 @@ fn composed_rules_for_slot(
     project_root: &Path,
     slot_id: &str,
     bundle_layers: &[String],
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let kernel = role_kernel(role);
     let default = role_default_rules(role);
     let override_path = project_root.join(".ah/rules").join(format!("{slot_id}.md"));
@@ -701,7 +699,7 @@ fn materialize_trust(
     source_home: &Path,
     layout: &ClaudeHomeLayout,
     workspace_key: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let source_trust = source_home.join(".claude.json");
     if !layout.trust_path.exists() && source_trust.is_file() {
         copy_if_missing(&source_trust, &layout.trust_path);
@@ -731,7 +729,7 @@ pub fn build_ah_hook_command(ctx: &HookPushContext, event: &str) -> HookItem {
     HookItem {
         hook_type: "command".to_string(),
         command: format!(
-            "CCB_SOCKET={socket} {ah_bin} agent notify --agent-id {} --event {event} --provider {} --lifecycle-id {} --socket {socket} --hook-json{hook_debug_log}",
+            "AH_SOCKET={socket} {ah_bin} agent notify --agent-id {} --event {event} --provider {} --lifecycle-id {} --socket {socket} --hook-json{hook_debug_log}",
             ctx.agent_id, ctx.provider, ctx.lifecycle_id
         ),
         timeout: Some(hook_timeout_for_provider(&ctx.provider)),
@@ -843,11 +841,11 @@ fn materialize_claude_hooks(
     source_home: &Path,
     layout: &ClaudeHomeLayout,
     hooks: &HashMap<String, Vec<HookGroup>>,
-) -> Result<Vec<MaterializedHook>, CcbdError> {
+) -> Result<Vec<MaterializedHook>, AhError> {
     materialize_hooks(source_home, &layout.claude_dir.join("hooks"), hooks)
 }
 
-fn resolve_skills(project_root: &Path, skills: &[String]) -> Result<Vec<ResolvedSkill>, CcbdError> {
+fn resolve_skills(project_root: &Path, skills: &[String]) -> Result<Vec<ResolvedSkill>, AhError> {
     if skills.is_empty() {
         return Ok(Vec::new());
     }
@@ -858,7 +856,7 @@ fn resolve_skills(project_root: &Path, skills: &[String]) -> Result<Vec<Resolved
 fn resolve_provider_skills(
     project_root: &Path,
     extensions: &ExtensionConfig,
-) -> Result<Vec<ResolvedSkill>, CcbdError> {
+) -> Result<Vec<ResolvedSkill>, AhError> {
     reject_builtin_skill_names(
         extensions.skills.iter().map(String::as_str),
         "project skill",
@@ -878,13 +876,13 @@ fn resolve_provider_skills(
 fn reject_builtin_skill_names<'a>(
     names: impl IntoIterator<Item = &'a str>,
     source: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for name in names {
         if builtin::BUILTIN_SKILLS
             .iter()
             .any(|skill| skill.name == name)
         {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!(
                     "skill name {name:?} is reserved by an ah builtin skill; rename the {source}"
                 ),
@@ -897,14 +895,14 @@ fn reject_builtin_skill_names<'a>(
 fn materialize_claude_skills(
     layout: &ClaudeHomeLayout,
     skills: &[ResolvedSkill],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for item in plan_claude_skill_materialization(&layout.claude_dir, skills) {
         force_symlink(&item.source_dir, &item.target_dir)?;
     }
     Ok(())
 }
 
-fn materialize_codex_skills(codex_home: &Path, skills: &[ResolvedSkill]) -> Result<(), CcbdError> {
+fn materialize_codex_skills(codex_home: &Path, skills: &[ResolvedSkill]) -> Result<(), AhError> {
     for item in plan_codex_skill_materialization(codex_home, skills) {
         force_symlink(&item.source_dir, &item.target_dir)?;
     }
@@ -914,14 +912,14 @@ fn materialize_codex_skills(codex_home: &Path, skills: &[ResolvedSkill]) -> Resu
 fn materialize_antigravity_skills(
     layout: &AntigravityHomeLayout,
     skills: &[ResolvedSkill],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for skill in skills {
         force_symlink(&skill.source_dir, &layout.skills_dir.join(&skill.name))?;
     }
     Ok(())
 }
 
-fn materialize_builtin_skills(skills_dir: &Path, role: HomeLayoutRole) -> Result<(), CcbdError> {
+fn materialize_builtin_skills(skills_dir: &Path, role: HomeLayoutRole) -> Result<(), AhError> {
     let skills: Vec<_> = builtin::BUILTIN_SKILLS
         .iter()
         .filter(|skill| match skill.scope {
@@ -956,11 +954,11 @@ fn materialize_builtin_skills(skills_dir: &Path, role: HomeLayoutRole) -> Result
     Ok(())
 }
 
-fn materialize_unwired_provider_skills(provider: &str, skills: &[String]) -> Result<(), CcbdError> {
+fn materialize_unwired_provider_skills(provider: &str, skills: &[String]) -> Result<(), AhError> {
     if skills.is_empty() {
         return Ok(());
     }
-    Err(CcbdError::EnvironmentNotSupported {
+    Err(AhError::EnvironmentNotSupported {
         details: format!("skills injection target is not wired for provider {provider:?}"),
     })
 }
@@ -969,21 +967,21 @@ fn materialize_hooks(
     source_home: &Path,
     target_dir: &Path,
     hooks: &HashMap<String, Vec<HookGroup>>,
-) -> Result<Vec<MaterializedHook>, CcbdError> {
+) -> Result<Vec<MaterializedHook>, AhError> {
     let mut materialized = Vec::new();
     for (event, groups) in hooks {
         for group in groups {
             for item in &group.hooks {
                 let source = resolve_extension_source(source_home, &item.command);
                 if !source.is_file() {
-                    return Err(CcbdError::EnvironmentNotSupported {
+                    return Err(AhError::EnvironmentNotSupported {
                         details: format!("hook script not found: {}", source.display()),
                     });
                 }
                 let file_name =
                     source
                         .file_name()
-                        .ok_or_else(|| CcbdError::EnvironmentNotSupported {
+                        .ok_or_else(|| AhError::EnvironmentNotSupported {
                             details: format!("hook script has no filename: {}", source.display()),
                         })?;
                 let target = target_dir.join(file_name);
@@ -1007,7 +1005,7 @@ fn materialize_claude_settings(
     provider_settings: &Map<String, Value>,
     hooks: &[MaterializedHook],
     plugins: &[ResolvedPlugin],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     ensure_json_file(&layout.settings_path)?;
     let mut settings = read_json_object(&layout.settings_path).unwrap_or_default();
     merge_provider_settings(&mut settings, provider_settings);
@@ -1082,10 +1080,10 @@ fn inject_claude_hooks(settings: &mut Map<String, Value>, hooks: &[MaterializedH
 fn materialize_claude_plugins(
     layout: &ClaudeHomeLayout,
     plugins: &[ResolvedPlugin],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     for plugin in plugins {
         if !plugin.cache_dir.is_dir() {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!(
                     "claude plugin cache not found for {}: {}",
                     plugin.name,
@@ -1114,10 +1112,10 @@ fn prepare_managed_codex_home(
     slot_id: &str,
     extensions: &ExtensionConfig,
     hook_push_ctx: Option<&HookPushContext>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     fs::create_dir_all(codex_home).map_err(|err| home_err("create codex home", codex_home, err))?;
     let Some(home_root) = codex_home.parent() else {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!("codex home has no parent: {}", codex_home.display()),
         });
     };
@@ -1134,7 +1132,7 @@ fn prepare_managed_codex_home(
         .map_err(|err| home_err("create codex sessions", &session_root, err))?;
     let target_config = codex_home.join("config.toml");
     if !target_config.exists() {
-        fs::write(&target_config, "# ccb agent-local codex config\n")
+        fs::write(&target_config, "# ah agent-local codex config\n")
             .map_err(|err| home_err("write codex config", &target_config, err))?;
     }
     ensure_codex_workspace_trust(&target_config, workspace_key)?;
@@ -1183,7 +1181,7 @@ fn prepare_managed_codex_home(
     Ok(())
 }
 
-fn merge_codex_hooks(codex_home: &Path, hooks: &[MaterializedHook]) -> Result<(), CcbdError> {
+fn merge_codex_hooks(codex_home: &Path, hooks: &[MaterializedHook]) -> Result<(), AhError> {
     let hooks_path = codex_home.join("hooks.json");
     let mut root = read_codex_hooks_for_hook_push(&hooks_path);
     let hooks_root = object_entry(&mut root, "hooks");
@@ -1261,7 +1259,7 @@ fn merge_codex_hooks(codex_home: &Path, hooks: &[MaterializedHook]) -> Result<()
     write_json_object(&hooks_path, &root)
 }
 
-fn enable_codex_hooks(path: &Path) -> Result<(), CcbdError> {
+fn enable_codex_hooks(path: &Path) -> Result<(), AhError> {
     let mut root = read_codex_config_for_hook_push(path);
     if !root.is_table() {
         tracing::warn!(
@@ -1277,7 +1275,7 @@ fn enable_codex_hooks(path: &Path) -> Result<(), CcbdError> {
     write_codex_config(path, &root)
 }
 
-fn merge_codex_hook_push(codex_home: &Path, ctx: &HookPushContext) -> Result<(), CcbdError> {
+fn merge_codex_hook_push(codex_home: &Path, ctx: &HookPushContext) -> Result<(), AhError> {
     let hooks_path = codex_home.join("hooks.json");
     let mut root = read_codex_hooks_for_hook_push(&hooks_path);
     let hooks_root = object_entry(&mut root, "hooks");
@@ -1380,13 +1378,10 @@ fn read_codex_hooks_for_hook_push(path: &Path) -> Map<String, Value> {
     }
 }
 
-fn materialize_codex_plugins(
-    codex_home: &Path,
-    plugins: &[ResolvedPlugin],
-) -> Result<(), CcbdError> {
+fn materialize_codex_plugins(codex_home: &Path, plugins: &[ResolvedPlugin]) -> Result<(), AhError> {
     for plugin in plugins {
         if !plugin.cache_dir.is_dir() {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!(
                     "codex plugin cache not found for {}: {}",
                     plugin.name,
@@ -1402,7 +1397,7 @@ fn materialize_codex_plugins(
     Ok(())
 }
 
-fn enable_codex_plugins(path: &Path, plugins: &[ResolvedPlugin]) -> Result<(), CcbdError> {
+fn enable_codex_plugins(path: &Path, plugins: &[ResolvedPlugin]) -> Result<(), AhError> {
     if plugins.is_empty() {
         return Ok(());
     }
@@ -1426,7 +1421,7 @@ fn materialize_claude_mcp(
     layout: &ClaudeHomeLayout,
     workspace_key: &str,
     servers: &[McpServerConfig],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let servers = filter_mcp_for_provider("claude", servers)?;
     if servers.is_empty() {
         return Ok(());
@@ -1447,7 +1442,7 @@ fn materialize_claude_mcp(
     Ok(())
 }
 
-fn render_claude_mcp_server<F>(server: &McpServerConfig, lookup: &F) -> Result<Value, CcbdError>
+fn render_claude_mcp_server<F>(server: &McpServerConfig, lookup: &F) -> Result<Value, AhError>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
@@ -1498,7 +1493,7 @@ where
     Ok(Value::Object(value))
 }
 
-fn materialize_codex_mcp(path: &Path, servers: &[McpServerConfig]) -> Result<(), CcbdError> {
+fn materialize_codex_mcp(path: &Path, servers: &[McpServerConfig]) -> Result<(), AhError> {
     let servers = filter_mcp_for_provider("codex", servers)?;
     if servers.is_empty() {
         return Ok(());
@@ -1551,7 +1546,7 @@ fn materialize_codex_mcp(path: &Path, servers: &[McpServerConfig]) -> Result<(),
 fn materialize_antigravity_mcp(
     layout: &AntigravityHomeLayout,
     servers: &[McpServerConfig],
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let servers = filter_mcp_for_provider("antigravity", servers)?;
     if servers.is_empty() {
         return Ok(());
@@ -1567,10 +1562,7 @@ fn materialize_antigravity_mcp(
     write_json_object(&layout.mcp_config_path, &root)
 }
 
-fn render_antigravity_mcp_server<F>(
-    server: &McpServerConfig,
-    lookup: &F,
-) -> Result<Value, CcbdError>
+fn render_antigravity_mcp_server<F>(server: &McpServerConfig, lookup: &F) -> Result<Value, AhError>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
@@ -1626,7 +1618,7 @@ where
 fn filter_mcp_for_provider<'a>(
     provider: &str,
     servers: &'a [McpServerConfig],
-) -> Result<Vec<&'a McpServerConfig>, CcbdError> {
+) -> Result<Vec<&'a McpServerConfig>, AhError> {
     let mut supported = Vec::new();
     for server in servers {
         if mcp_transport_supported(provider, server.transport) {
@@ -1639,7 +1631,7 @@ fn filter_mcp_for_provider<'a>(
                 "skipping optional unsupported bundle MCP server"
             );
         } else {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!(
                     "bundle MCP server {:?} uses unsupported transport {:?} for provider {provider}",
                     server.name, server.transport
@@ -1662,7 +1654,7 @@ fn resolve_secret_map<F>(
     map: &HashMap<String, String>,
     server_name: &str,
     lookup: &F,
-) -> Result<Map<String, Value>, CcbdError>
+) -> Result<Map<String, Value>, AhError>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
@@ -1679,7 +1671,7 @@ where
 fn resolve_secret_toml_map(
     map: &HashMap<String, String>,
     server_name: &str,
-) -> Result<toml::map::Map<String, TomlValue>, CcbdError> {
+) -> Result<toml::map::Map<String, TomlValue>, AhError> {
     let mut resolved = toml::map::Map::new();
     for (key, value) in map {
         resolved.insert(
@@ -1702,7 +1694,7 @@ fn resolve_secret_placeholders<F>(
     value: &str,
     server_name: &str,
     lookup: &F,
-) -> Result<String, CcbdError>
+) -> Result<String, AhError>
 where
     F: Fn(&str) -> Result<String, std::env::VarError>,
 {
@@ -1712,14 +1704,14 @@ where
         output.push_str(&rest[..start]);
         let after = &rest[start + 2..];
         let Some(end) = after.find('}') else {
-            return Err(CcbdError::EnvironmentNotSupported {
+            return Err(AhError::EnvironmentNotSupported {
                 details: format!(
                     "bundle MCP server {server_name:?} contains an invalid environment placeholder"
                 ),
             });
         };
         let var = &after[..end];
-        let resolved = lookup(var).map_err(|_| CcbdError::EnvironmentNotSupported {
+        let resolved = lookup(var).map_err(|_| AhError::EnvironmentNotSupported {
             details: format!(
                 "bundle MCP server {server_name:?} requires {var}, not set in current environment"
             ),
@@ -1733,11 +1725,11 @@ where
 
 /// The directory every sandbox home is created under. `ah reclaim` walks it to
 /// find homes no state directory points at any more.
-pub fn sandbox_home_root() -> Result<PathBuf, CcbdError> {
+pub fn sandbox_home_root() -> Result<PathBuf, AhError> {
     Ok(xdg_cache_root()?.join("ah/sandboxes"))
 }
 
-pub fn sandbox_home_for_sandbox_dir(sandbox_dir: &Path) -> Result<PathBuf, CcbdError> {
+pub fn sandbox_home_for_sandbox_dir(sandbox_dir: &Path) -> Result<PathBuf, AhError> {
     let sandbox_path = sandbox_dir
         .canonicalize()
         .unwrap_or_else(|_| sandbox_dir.to_path_buf());
@@ -1771,14 +1763,14 @@ fn workspace_trust_key(workspace_path: &Path) -> String {
         .to_string()
 }
 
-fn xdg_cache_root() -> Result<PathBuf, CcbdError> {
+fn xdg_cache_root() -> Result<PathBuf, AhError> {
     if let Some(cache) = std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         return Ok(PathBuf::from(cache));
     }
     Ok(env_home()?.join(".cache"))
 }
 
-fn materialization_source_home() -> Result<PathBuf, CcbdError> {
+fn materialization_source_home() -> Result<PathBuf, AhError> {
     let env_home = env_home()?;
     let passwd_home = std::env::var("USER")
         .ok()
@@ -1787,7 +1779,7 @@ fn materialization_source_home() -> Result<PathBuf, CcbdError> {
 }
 
 fn resolve_materialization_source_home(env_home: PathBuf, passwd_home: Option<PathBuf>) -> PathBuf {
-    if is_ccb_sandbox_home(&env_home)
+    if is_ah_sandbox_home(&env_home)
         && let Some(passwd_home) = passwd_home
     {
         return passwd_home;
@@ -1795,9 +1787,9 @@ fn resolve_materialization_source_home(env_home: PathBuf, passwd_home: Option<Pa
     env_home
 }
 
-pub(crate) fn is_ccb_sandbox_home(path: &Path) -> bool {
+pub(crate) fn is_ah_sandbox_home(path: &Path) -> bool {
     let path = path.to_string_lossy();
-    path.contains("/.cache/ccb/sandboxes/") || path.contains("/.cache/ah/sandboxes/")
+    path.contains("/.cache/ah/sandboxes/") || path.contains("/.cache/ah/sandboxes/")
 }
 
 fn passwd_home_for_user(user: &str) -> Option<PathBuf> {
@@ -1821,11 +1813,11 @@ fn passwd_home_for_user(user: &str) -> Option<PathBuf> {
     })
 }
 
-fn env_home() -> Result<PathBuf, CcbdError> {
+fn env_home() -> Result<PathBuf, AhError> {
     std::env::var_os("HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .ok_or_else(|| CcbdError::EnvironmentNotSupported {
+        .ok_or_else(|| AhError::EnvironmentNotSupported {
             details: "HOME is not set for provider home materialization".into(),
         })
 }
@@ -1858,29 +1850,28 @@ fn home_env<const N: usize>(
     env
 }
 
-pub(crate) fn validate_claude_shared_credentials_dir(path: &Path) -> Result<PathBuf, CcbdError> {
+pub(crate) fn validate_claude_shared_credentials_dir(path: &Path) -> Result<PathBuf, AhError> {
     if path.as_os_str().is_empty() || path.as_os_str().to_string_lossy().trim().is_empty() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: "providers.claude.shared_credentials_dir must be non-empty".into(),
         });
     }
     if !path.is_absolute() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!(
                 "providers.claude.shared_credentials_dir must be absolute: {}",
                 path.display()
             ),
         });
     }
-    let metadata =
-        fs::symlink_metadata(path).map_err(|err| CcbdError::EnvironmentNotSupported {
-            details: format!(
-                "providers.claude.shared_credentials_dir is not usable: {}: {err}",
-                path.display()
-            ),
-        })?;
+    let metadata = fs::symlink_metadata(path).map_err(|err| AhError::EnvironmentNotSupported {
+        details: format!(
+            "providers.claude.shared_credentials_dir is not usable: {}: {err}",
+            path.display()
+        ),
+    })?;
     if metadata.file_type().is_symlink() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!(
                 "providers.claude.shared_credentials_dir must not be a symlink: {}",
                 path.display()
@@ -1888,7 +1879,7 @@ pub(crate) fn validate_claude_shared_credentials_dir(path: &Path) -> Result<Path
         });
     }
     if !metadata.is_dir() {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!(
                 "providers.claude.shared_credentials_dir must be a directory: {}",
                 path.display()
@@ -1896,7 +1887,7 @@ pub(crate) fn validate_claude_shared_credentials_dir(path: &Path) -> Result<Path
         });
     }
     if let Some(mount) = windows_interop_mount_for_path(path, &read_mount_table()) {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!(
                 "providers.claude.shared_credentials_dir is on a Windows interop filesystem \
                  ({} mounted at {}): {}. A token refresh rewrites this store in place, which \
@@ -1977,10 +1968,10 @@ pub(crate) fn windows_interop_mount_for_path(
 fn claude_home_env(
     home_root: &Path,
     shared_credentials_dir: Option<&Path>,
-) -> Result<HashMap<String, String>, CcbdError> {
+) -> Result<HashMap<String, String>, AhError> {
     let mut env = home_env(home_root, [("CLAUDE_CONFIG_DIR", ".claude")]);
     let shared_credentials_dir =
-        shared_credentials_dir.ok_or_else(|| CcbdError::EnvironmentNotSupported {
+        shared_credentials_dir.ok_or_else(|| AhError::EnvironmentNotSupported {
             details: "providers.claude.shared_credentials_dir is required for Claude".into(),
         })?;
     let shared_credentials_dir = validate_claude_shared_credentials_dir(shared_credentials_dir)?;
@@ -1991,7 +1982,7 @@ fn claude_home_env(
     Ok(env)
 }
 
-fn ensure_trust_file(path: &Path) -> Result<(), CcbdError> {
+fn ensure_trust_file(path: &Path) -> Result<(), AhError> {
     if path.exists() {
         return Ok(());
     }
@@ -2001,7 +1992,7 @@ fn ensure_trust_file(path: &Path) -> Result<(), CcbdError> {
     fs::write(path, "{}\n").map_err(|err| home_err("write trust file", path, err))
 }
 
-fn ensure_claude_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), CcbdError> {
+fn ensure_claude_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), AhError> {
     let mut root = read_json_object(path).unwrap_or_default();
     root.insert("trusted".to_string(), Value::Bool(true));
     let projects = object_entry(&mut root, "projects");
@@ -2041,7 +2032,7 @@ fn object_entry<'a>(map: &'a mut Map<String, Value>, key: &str) -> &'a mut Map<S
         .expect("value was normalized to object")
 }
 
-fn ensure_codex_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), CcbdError> {
+fn ensure_codex_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), AhError> {
     let data = fs::read_to_string(path).unwrap_or_default();
     let mut root = data
         .parse::<TomlValue>()
@@ -2078,7 +2069,7 @@ fn ensure_codex_workspace_trust(path: &Path, workspace_key: &str) -> Result<(), 
 /// model and worked while every ah seat spawned on the default model and hit
 /// the usage limit. Seat-local values win; the host's choice is a default, so
 /// a bundle or operator override inside the sandbox stays authoritative.
-fn inherit_codex_model_settings(source_home: &Path, target_config: &Path) -> Result<(), CcbdError> {
+fn inherit_codex_model_settings(source_home: &Path, target_config: &Path) -> Result<(), AhError> {
     const MODEL_KEYS: [&str; 2] = ["model", "model_reasoning_effort"];
 
     let source_path = source_home.join(".codex/config.toml");
@@ -2143,14 +2134,14 @@ fn remove_legacy_workspace_toml_key(
     }
 }
 
-fn write_codex_config(path: &Path, root: &TomlValue) -> Result<(), CcbdError> {
-    let data = toml::to_string_pretty(root).map_err(|err| CcbdError::EnvironmentNotSupported {
+fn write_codex_config(path: &Path, root: &TomlValue) -> Result<(), AhError> {
+    let data = toml::to_string_pretty(root).map_err(|err| AhError::EnvironmentNotSupported {
         details: format!("serialize codex config {}: {err}", path.display()),
     })?;
     fs::write(path, data).map_err(|err| home_err("write codex config", path, err))
 }
 
-fn ensure_json_file(path: &Path) -> Result<(), CcbdError> {
+fn ensure_json_file(path: &Path) -> Result<(), AhError> {
     if path.exists() {
         return Ok(());
     }
@@ -2271,9 +2262,9 @@ fn copy_auth_file(
     Ok(())
 }
 
-fn force_symlink(source: &Path, target: &Path) -> Result<(), CcbdError> {
+fn force_symlink(source: &Path, target: &Path) -> Result<(), AhError> {
     let Some(parent) = target.parent() else {
-        return Err(CcbdError::EnvironmentNotSupported {
+        return Err(AhError::EnvironmentNotSupported {
             details: format!("symlink target has no parent: {}", target.display()),
         });
     };
@@ -2293,7 +2284,7 @@ fn force_symlink(source: &Path, target: &Path) -> Result<(), CcbdError> {
     #[cfg(not(unix))]
     {
         let _ = source;
-        Err(CcbdError::EnvironmentNotSupported {
+        Err(AhError::EnvironmentNotSupported {
             details: "provider extension symlinks require unix".into(),
         })
     }
@@ -2307,15 +2298,14 @@ fn read_json_object(path: &Path) -> Option<Map<String, Value>> {
     }
 }
 
-fn write_json_object(path: &Path, payload: &Map<String, Value>) -> Result<(), CcbdError> {
+fn write_json_object(path: &Path, payload: &Map<String, Value>) -> Result<(), AhError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(|err| home_err("create json parent", parent, err))?;
     }
-    let data = serde_json::to_string_pretty(payload).map_err(|err| {
-        CcbdError::EnvironmentNotSupported {
+    let data =
+        serde_json::to_string_pretty(payload).map_err(|err| AhError::EnvironmentNotSupported {
             details: format!("serialize json {}: {err}", path.display()),
-        }
-    })? + "\n";
+        })? + "\n";
     fs::write(path, data).map_err(|err| home_err("write json object", path, err))
 }
 
@@ -2326,8 +2316,8 @@ fn same_resolved_path(left: &Path, right: &Path) -> bool {
     }
 }
 
-fn home_err(action: &str, path: &Path, err: std::io::Error) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn home_err(action: &str, path: &Path, err: std::io::Error) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: format!("{action} {}: {err}", path.display()),
     }
 }
@@ -2407,7 +2397,7 @@ model_reasoning_effort = \"low\"
         let inherit_target = temp.path().join("seat-config.toml");
         std::fs::write(
             &inherit_target,
-            "# ccb agent-local codex config
+            "# ah agent-local codex config
 ",
         )
         .unwrap();
@@ -2456,8 +2446,8 @@ model_reasoning_effort = \"low\"
     }
 
     #[test]
-    fn test_materialization_source_home_uses_passwd_home_from_nested_ccb_sandbox() {
-        let env_home = PathBuf::from("/home/user/.cache/ccb/sandboxes/abc123");
+    fn test_materialization_source_home_uses_passwd_home_from_nested_ah_sandbox() {
+        let env_home = PathBuf::from("/home/user/.cache/ah/sandboxes/abc123");
         let passwd_home = PathBuf::from("/home/user");
         let resolved = resolve_materialization_source_home(env_home, Some(passwd_home.clone()));
 

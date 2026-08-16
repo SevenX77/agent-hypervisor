@@ -1,6 +1,6 @@
 //! Windows process monitor handle stubs for the M0 compile gate.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::collections::HashMap;
 use std::marker::PhantomData;
 use std::sync::{Arc, LazyLock, Mutex};
@@ -35,15 +35,15 @@ impl MonitorHandle {
 pub static PIDFD_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, MonitorHandle>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-pub fn pidfd_open(_pid: i32) -> Result<MonitorHandle, CcbdError> {
-    Err(CcbdError::EnvironmentNotSupported {
+pub fn pidfd_open(_pid: i32) -> Result<MonitorHandle, AhError> {
+    Err(AhError::EnvironmentNotSupported {
         details: "Windows process handle monitoring is not implemented until M1".to_string(),
     })
 }
 
-pub fn pidfd_send_sigkill(handle: BorrowedMonitorHandle<'_>) -> Result<(), CcbdError> {
+pub fn pidfd_send_sigkill(handle: BorrowedMonitorHandle<'_>) -> Result<(), AhError> {
     let _ = handle.raw;
-    Err(CcbdError::EnvironmentNotSupported {
+    Err(AhError::EnvironmentNotSupported {
         details: "Windows process termination through monitor handle is not implemented until M1"
             .to_string(),
     })

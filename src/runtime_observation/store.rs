@@ -1,5 +1,5 @@
 use crate::db::common::map_db_error;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::runtime_observation::{EvidenceSource, ProviderObservation, ProviderObservationKind};
 use rusqlite::{Connection, OptionalExtension, params};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -25,7 +25,7 @@ pub(crate) fn append_for_agent_sync(
     source: EvidenceSource,
     kind: ProviderObservationKind,
     observed_at_ms: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let identity = conn
         .query_row(
             "SELECT session_id, provider, lifecycle_id FROM agents WHERE id = ?1",
@@ -40,10 +40,10 @@ pub(crate) fn append_for_agent_sync(
         )
         .optional()
         .map_err(|err| map_db_error("query provider observation identity", err))?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_owned()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_owned()))?;
 
     if identity.2 != expected_lifecycle_id {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "stale provider observation for agent {agent_id}: expected lifecycle {}, got {expected_lifecycle_id}",
             identity.2
         )));
@@ -61,7 +61,7 @@ pub(crate) fn append_for_agent_sync(
         kind,
     };
     let observation_json = serde_json::to_string(&observation).map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("serialize provider observation: {err}"))
+        AhError::DbConstraintViolation(format!("serialize provider observation: {err}"))
     })?;
 
     let changes = conn
@@ -91,7 +91,7 @@ pub(crate) fn append_for_agent_sync(
             )
             .map_err(|err| map_db_error("query duplicate provider observation", err))?;
         if existing != observation_json {
-            return Err(CcbdError::DbConstraintViolation(format!(
+            return Err(AhError::DbConstraintViolation(format!(
                 "provider observation id {observation_id:?} was reused with different content"
             )));
         }
@@ -108,7 +108,7 @@ pub(crate) fn append_for_current_lifecycle_sync(
     source: EvidenceSource,
     kind: ProviderObservationKind,
     observed_at_ms: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let lifecycle_id = conn
         .query_row(
             "SELECT lifecycle_id FROM agents WHERE id = ?1",
@@ -117,7 +117,7 @@ pub(crate) fn append_for_current_lifecycle_sync(
         )
         .optional()
         .map_err(|err| map_db_error("query current provider lifecycle", err))?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_owned()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.to_owned()))?;
     append_for_agent_sync(
         conn,
         observation_id,
@@ -135,7 +135,7 @@ pub(crate) fn query_scope_sync(
     agent_id: &str,
     lifecycle_id: &str,
     turn_id: Option<&str>,
-) -> Result<Vec<ProviderObservation>, CcbdError> {
+) -> Result<Vec<ProviderObservation>, AhError> {
     let mut statement = conn
         .prepare(
             "SELECT observation_json
@@ -157,7 +157,7 @@ pub(crate) fn query_scope_sync(
         .into_iter()
         .map(|json| {
             serde_json::from_str::<ProviderObservation>(&json).map_err(|err| {
-                CcbdError::DbConstraintViolation(format!(
+                AhError::DbConstraintViolation(format!(
                     "decode provider observation for agent {agent_id}: {err}"
                 ))
             })

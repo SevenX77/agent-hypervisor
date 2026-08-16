@@ -4,7 +4,7 @@ use ah::db;
 use ah::db::agents::{insert_agent, query_agent_state};
 use ah::db::sessions::insert_session;
 use ah::db::state_machine::mark_agent_unknown;
-use ah::error::CcbdError;
+use ah::error::AhError;
 use ah::rpc::Ctx;
 use ah::rpc::handlers::{
     handle_agent_assert_state, handle_agent_discard_evidence, handle_agent_kill, handle_agent_read,
@@ -439,10 +439,10 @@ async fn ac6_assert_state_boundaries() {
     .await
     .unwrap_err();
 
-    assert!(matches!(missing, CcbdError::DbEvidenceNotFound { .. }));
-    assert!(matches!(mismatch, CcbdError::DbEvidenceNotFound { .. }));
-    assert!(matches!(wrong_state, CcbdError::AgentWrongState { .. }));
-    assert!(matches!(invalid, CcbdError::IpcInvalidRequest(_)));
+    assert!(matches!(missing, AhError::DbEvidenceNotFound { .. }));
+    assert!(matches!(mismatch, AhError::DbEvidenceNotFound { .. }));
+    assert!(matches!(wrong_state, AhError::AgentWrongState { .. }));
+    assert!(matches!(invalid, AhError::IpcInvalidRequest(_)));
 }
 
 #[tokio::test(flavor = "multi_thread")]

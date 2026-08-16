@@ -178,9 +178,7 @@ fn resolve_anthropic_api_key() -> Option<String> {
     std::env::var("ANTHROPIC_API_KEY")
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| {
-            config_api_key_from_path(std::env::var_os("CCB_CONFIG_PATH").map(PathBuf::from))
-        })
+        .or_else(|| config_api_key_from_path(std::env::var_os("AH_CONFIG_PATH").map(PathBuf::from)))
         .or_else(|| config_api_key_from_path(find_cwd_config()))
         .or_else(|| config_api_key_from_path(home_config_path()))
 }
@@ -190,7 +188,7 @@ fn resolve_anthropic_base_url() -> String {
         .ok()
         .and_then(non_empty_trimmed)
         .or_else(|| {
-            config_base_url_from_path(std::env::var_os("CCB_CONFIG_PATH").map(PathBuf::from))
+            config_base_url_from_path(std::env::var_os("AH_CONFIG_PATH").map(PathBuf::from))
         })
         .or_else(|| config_base_url_from_path(find_cwd_config()))
         .or_else(|| config_base_url_from_path(home_config_path()))
@@ -256,7 +254,7 @@ fn find_cwd_config() -> Option<PathBuf> {
 fn home_config_path() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
-        .map(|home| home.join(".ccb").join("config.toml"))
+        .map(|home| home.join(".ah").join("config.toml"))
         .filter(|path| path.is_file())
 }
 

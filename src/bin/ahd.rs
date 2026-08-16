@@ -153,7 +153,7 @@ async fn main() -> ExitCode {
 
 fn migrate_legacy_db_files(dir: &Path) -> io::Result<()> {
     for suffix in ["", "-wal", "-shm"] {
-        let old_path = dir.join(format!("ccbd.sqlite{suffix}"));
+        let old_path = dir.join(format!("ah.sqlite{suffix}"));
         let new_path = dir.join(format!("ahd.sqlite{suffix}"));
         if old_path.exists() && !new_path.exists() {
             std::fs::rename(&old_path, &new_path)?;

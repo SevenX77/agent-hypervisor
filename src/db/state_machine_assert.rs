@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::db::common::{map_db_error, spawn_db};
 use crate::db::state_machine::{STATE_UNKNOWN, STATE_WAITING_FOR_ACK};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use serde_json::json;
 
@@ -14,7 +14,7 @@ pub(crate) fn assert_state_to_idle_sync(
     db: &Db,
     agent_id: &str,
     evidence_id: &str,
-) -> Result<AssertStateOutcome, CcbdError> {
+) -> Result<AssertStateOutcome, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -28,11 +28,11 @@ pub(crate) fn assert_state_to_idle_sync(
         )
         .optional()
         .map_err(|err| map_db_error("query assert evidence", err))?
-        .ok_or_else(|| CcbdError::DbEvidenceNotFound {
+        .ok_or_else(|| AhError::DbEvidenceNotFound {
             details: format!("evidence_id={evidence_id}"),
         })?;
     if evidence_agent_id != agent_id {
-        return Err(CcbdError::DbEvidenceNotFound {
+        return Err(AhError::DbEvidenceNotFound {
             details: "agent_id mismatch".into(),
         });
     }
@@ -46,10 +46,10 @@ pub(crate) fn assert_state_to_idle_sync(
         .optional()
         .map_err(|err| map_db_error("query assert agent", err))?;
     let Some((current_state, state_version)) = current else {
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
     if current_state != STATE_UNKNOWN && current_state != STATE_WAITING_FOR_ACK {
-        return Err(CcbdError::AgentWrongState { current_state });
+        return Err(AhError::AgentWrongState { current_state });
     }
 
     let changes = tx
@@ -68,7 +68,7 @@ pub(crate) fn assert_state_to_idle_sync(
             .optional()
             .map_err(|err| map_db_error("requery assert agent", err))?
             .unwrap_or_else(|| "MISSING".to_string());
-        return Err(CcbdError::AgentWrongState { current_state });
+        return Err(AhError::AgentWrongState { current_state });
     }
 
     tx.execute(
@@ -102,7 +102,7 @@ pub async fn assert_state_to_idle(
     db: Db,
     agent_id: String,
     evidence_id: String,
-) -> Result<AssertStateOutcome, CcbdError> {
+) -> Result<AssertStateOutcome, AhError> {
     let result = spawn_db("state_machine_assert::assert_state_to_idle", move || {
         assert_state_to_idle_sync(&db, &agent_id, &evidence_id)
     })
@@ -156,7 +156,7 @@ mod tests {
             let evidence_id = seed_unknown_with_evidence(db, "a_assert");
             assert!(matches!(
                 assert_state_to_idle_sync(db, "a_assert", "missing").unwrap_err(),
-                crate::error::CcbdError::DbEvidenceNotFound { .. }
+                crate::error::AhError::DbEvidenceNotFound { .. }
             ));
             {
                 let conn = db.conn();
@@ -165,14 +165,14 @@ mod tests {
             }
             assert!(matches!(
                 assert_state_to_idle_sync(db, "a_other", &evidence_id).unwrap_err(),
-                crate::error::CcbdError::DbEvidenceNotFound { .. }
+                crate::error::AhError::DbEvidenceNotFound { .. }
             ));
             db.conn()
                 .execute("UPDATE agents SET state='BUSY' WHERE id='a_assert'", [])
                 .unwrap();
             assert!(matches!(
                 assert_state_to_idle_sync(db, "a_assert", &evidence_id).unwrap_err(),
-                crate::error::CcbdError::AgentWrongState { .. }
+                crate::error::AhError::AgentWrongState { .. }
             ));
             db.conn()
                 .execute("UPDATE agents SET state='UNKNOWN' WHERE id='a_assert'", [])

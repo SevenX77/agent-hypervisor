@@ -1,6 +1,6 @@
 use crate::db::Db;
 use crate::db::common::map_db_error;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 
 pub const MASTER_CUTOVERS_DDL: &str = r#"
@@ -71,7 +71,7 @@ pub fn claim_master_cutover(
     ah_state_dir: &str,
     ah_socket_path: &str,
     handoff_path: &str,
-) -> Result<MasterCutoverClaim, CcbdError> {
+) -> Result<MasterCutoverClaim, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -123,7 +123,7 @@ pub fn update_master_cutover_state(
     id: &str,
     expected_state: &str,
     next_state: &str,
-) -> Result<MasterCutoverUpdate, CcbdError> {
+) -> Result<MasterCutoverUpdate, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -154,7 +154,7 @@ pub fn update_master_cutover_spawn_metadata(
     new_master_pid: i64,
     new_master_generation: i64,
     new_master_pane_id: &str,
-) -> Result<MasterCutoverUpdate, CcbdError> {
+) -> Result<MasterCutoverUpdate, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -191,7 +191,7 @@ pub fn mark_master_cutover_ack_ready(
     db: &Db,
     id: &str,
     readiness_mode: &str,
-) -> Result<MasterCutoverUpdate, CcbdError> {
+) -> Result<MasterCutoverUpdate, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -215,14 +215,14 @@ pub fn release_master_cutover(
     db: &Db,
     id: &str,
     expected_state: &str,
-) -> Result<MasterCutoverUpdate, CcbdError> {
+) -> Result<MasterCutoverUpdate, AhError> {
     update_master_cutover_state(db, id, expected_state, "RELEASED")
 }
 
 pub fn get_active_master_cutover(
     db: &Db,
     session_id: &str,
-) -> Result<Option<MasterCutover>, CcbdError> {
+) -> Result<Option<MasterCutover>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT id,
@@ -264,7 +264,7 @@ pub fn get_active_master_cutover(
     .map_err(|err| map_db_error("query active master cutover", err))
 }
 
-pub fn get_master_cutover(db: &Db, id: &str) -> Result<Option<MasterCutover>, CcbdError> {
+pub fn get_master_cutover(db: &Db, id: &str) -> Result<Option<MasterCutover>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT id,
@@ -303,7 +303,7 @@ pub fn get_master_cutover(db: &Db, id: &str) -> Result<Option<MasterCutover>, Cc
     .map_err(|err| map_db_error("query master cutover", err))
 }
 
-pub fn master_cutover_has_inflight_state(db: &Db, session_id: &str) -> Result<bool, CcbdError> {
+pub fn master_cutover_has_inflight_state(db: &Db, session_id: &str) -> Result<bool, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT 1 FROM master_cutovers

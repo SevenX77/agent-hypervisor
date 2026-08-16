@@ -8,18 +8,18 @@ use crate::db::learned_rules::{
     CursorAnchor, LearnedRule, LearnedRuleCategory, ReplyExtractionSpec, RuleFingerprint,
     insert_learned_rule_sync, validate_learn_rule,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::rpc::Ctx;
 use serde_json::{Value, json};
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub async fn handle_agent_resolve_prompt(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_resolve_prompt(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?.to_string();
     let action_value = params
         .get("action")
         .cloned()
-        .ok_or_else(|| CcbdError::IpcInvalidRequest("missing field 'action'".to_string()))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest("missing field 'action'".to_string()))?;
     let save_to_kb = optional_bool(&params, "save_to_kb", false)?;
     tracing::info!(
         agent_id,
@@ -30,9 +30,9 @@ pub async fn handle_agent_resolve_prompt(params: Value, ctx: &Ctx) -> Result<Val
     let actions = crate::prompt_handler::resolve::normalize_action_value(action_value)?;
     let agent = query_agent(ctx.db.clone(), agent_id.clone())
         .await?
-        .ok_or_else(|| CcbdError::AgentNotFound(agent_id.clone()))?;
+        .ok_or_else(|| AhError::AgentNotFound(agent_id.clone()))?;
     let pane_id = crate::agent_io::pane_id(&agent_id)
-        .ok_or_else(|| CcbdError::PtyIoError(format!("tmux pane not registered for {agent_id}")))?;
+        .ok_or_else(|| AhError::PtyIoError(format!("tmux pane not registered for {agent_id}")))?;
     let io = crate::prompt_handler::runner::TmuxPromptIo::new((*ctx.tmux_server).clone());
     let result = crate::prompt_handler::resolve::resolve_prompt_with_io(
         crate::prompt_handler::resolve::ResolvePromptRequest {
@@ -61,7 +61,7 @@ pub async fn handle_agent_resolve_prompt(params: Value, ctx: &Ctx) -> Result<Val
     }))
 }
 
-pub async fn handle_agent_learn_rule(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_agent_learn_rule(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let agent_id = required_str(&params, "agent_id")?.to_string();
     let category = LearnedRuleCategory::parse(required_str(&params, "category")?)?;
     let fingerprint = parse_rule_fingerprint(&params)?;
@@ -75,11 +75,11 @@ pub async fn handle_agent_learn_rule(params: Value, ctx: &Ctx) -> Result<Value, 
         Some(value) => {
             let provider = value
                 .as_str()
-                .ok_or_else(|| CcbdError::IpcInvalidRequest("invalid field 'provider'".into()))?;
+                .ok_or_else(|| AhError::IpcInvalidRequest("invalid field 'provider'".into()))?;
             let provider = crate::provider::manifest::canonicalize_provider_name(provider);
             if let Some(agent) = &agent {
                 if provider != agent.provider {
-                    return Err(CcbdError::IpcInvalidRequest(format!(
+                    return Err(AhError::IpcInvalidRequest(format!(
                         "provider {provider:?} does not match agent provider {:?}",
                         agent.provider
                     )));
@@ -93,28 +93,29 @@ pub async fn handle_agent_learn_rule(params: Value, ctx: &Ctx) -> Result<Value, 
             .unwrap_or_else(|| "unknown".to_string()),
     };
 
-    let action = match params.get("action") {
-        Some(Value::Null) | None => None,
-        Some(value) => Some(serde_json::from_value(value.clone()).map_err(|err| {
-            CcbdError::IpcInvalidRequest(format!("invalid field 'action': {err}"))
-        })?),
-    };
+    let action =
+        match params.get("action") {
+            Some(Value::Null) | None => None,
+            Some(value) => Some(serde_json::from_value(value.clone()).map_err(|err| {
+                AhError::IpcInvalidRequest(format!("invalid field 'action': {err}"))
+            })?),
+        };
     let cursor_anchor = optional_json_field::<CursorAnchor>(&params, "cursor_anchor")?;
     let extraction = optional_json_field::<ReplyExtractionSpec>(&params, "extraction")?;
     if action.is_some() {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "action must be null for learned rules".to_string(),
         ));
     }
     if category != LearnedRuleCategory::ReplyExtraction && extraction.is_some() {
-        return Err(CcbdError::IpcInvalidRequest(
+        return Err(AhError::IpcInvalidRequest(
             "extraction is only allowed for ReplyExtraction learned rules".to_string(),
         ));
     }
     let source_event_seq_id = match params.get("source_event_seq_id") {
         Some(Value::Null) | None => None,
         Some(value) => Some(value.as_i64().ok_or_else(|| {
-            CcbdError::IpcInvalidRequest("invalid field 'source_event_seq_id'".to_string())
+            AhError::IpcInvalidRequest("invalid field 'source_event_seq_id'".to_string())
         })?),
     };
 

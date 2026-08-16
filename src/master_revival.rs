@@ -8,7 +8,7 @@ use crate::db::master_recovery::{
     update_master_recovery_phase_sync,
 };
 use crate::db::system::MasterDeathSessionActivity;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{OptionalExtension, params};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -71,7 +71,7 @@ pub fn classify_master_death(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<MasterDeathDecision, CcbdError> {
+) -> Result<MasterDeathDecision, AhError> {
     let row = {
         let conn = db.conn();
         conn.query_row(
@@ -109,7 +109,7 @@ pub fn try_claim_master_transition(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<MasterTransitionOutcome, CcbdError> {
+) -> Result<MasterTransitionOutcome, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -131,7 +131,7 @@ pub fn try_claim_master_transition(
     }
 }
 
-pub fn query_master_runtime(db: &Db, session_id: &str) -> Result<Option<MasterRuntime>, CcbdError> {
+pub fn query_master_runtime(db: &Db, session_id: &str) -> Result<Option<MasterRuntime>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT master_pid, master_generation FROM sessions
@@ -153,7 +153,7 @@ pub(crate) fn master_runtime_matches(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT 1 FROM sessions
@@ -167,7 +167,7 @@ pub(crate) fn master_runtime_matches(
     .optional()
     .map(|value| value.unwrap_or(false))
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("query master revive readiness runtime: {err}"))
+        AhError::DbConstraintViolation(format!("query master revive readiness runtime: {err}"))
     })
 }
 
@@ -176,7 +176,7 @@ pub(crate) fn master_runtime_generation_matches(
     session_id: &str,
     master_pid: i64,
     generation: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT 1 FROM sessions
@@ -189,7 +189,7 @@ pub(crate) fn master_runtime_generation_matches(
     .optional()
     .map(|value| value.unwrap_or(false))
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("query failed revive master runtime fence: {err}"))
+        AhError::DbConstraintViolation(format!("query failed revive master runtime fence: {err}"))
     })
 }
 
@@ -202,7 +202,7 @@ pub(crate) struct MasterRecoveryWindowTiming {
 pub(crate) fn master_recovery_window_timing(
     db: &Db,
     session_id: &str,
-) -> Result<Option<MasterRecoveryWindowTiming>, CcbdError> {
+) -> Result<Option<MasterRecoveryWindowTiming>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT defer_until, created_at FROM master_recovery_windows WHERE session_id = ?1",
@@ -216,14 +216,14 @@ pub(crate) fn master_recovery_window_timing(
     )
     .optional()
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("query master recovery window timing: {err}"))
+        AhError::DbConstraintViolation(format!("query master recovery window timing: {err}"))
     })
 }
 
 pub(crate) fn master_recovery_verifying_window_expected_generation(
     db: &Db,
     session_id: &str,
-) -> Result<Option<i64>, CcbdError> {
+) -> Result<Option<i64>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT expected_generation FROM master_recovery_windows
@@ -233,7 +233,7 @@ pub(crate) fn master_recovery_verifying_window_expected_generation(
     )
     .optional()
     .map_err(|err| {
-        CcbdError::DbConstraintViolation(format!(
+        AhError::DbConstraintViolation(format!(
             "query master recovery verifying window generation: {err}"
         ))
     })
@@ -244,7 +244,7 @@ pub(crate) fn master_recovery_effective_readiness_timeout(
     session_id: &str,
     now: i64,
     configured_timeout_secs: i64,
-) -> Result<Option<i64>, CcbdError> {
+) -> Result<Option<i64>, AhError> {
     let Some(timing) = master_recovery_window_timing(db, session_id)? else {
         return Ok(None);
     };
@@ -264,7 +264,7 @@ pub(crate) fn begin_master_recovery_readiness_wait_for_master_watch(
     readiness_mode: &str,
     readiness_token: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     begin_master_recovery_readiness_wait_sync(
         &conn,
@@ -282,7 +282,7 @@ pub(crate) fn mark_master_recovery_ready_for_master_watch(
     expected_generation: i64,
     ready_reason: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     mark_master_recovery_ready_sync(&conn, session_id, expected_generation, ready_reason, now)
 }
@@ -293,15 +293,12 @@ pub(crate) fn fail_master_recovery_readiness_for_master_watch(
     expected_generation: i64,
     reason: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     fail_master_recovery_readiness_sync(&conn, session_id, expected_generation, reason, now)
 }
 
-pub(crate) fn recovered_workers_ready_sync(
-    db: &Db,
-    agent_ids: &[String],
-) -> Result<bool, CcbdError> {
+pub(crate) fn recovered_workers_ready_sync(db: &Db, agent_ids: &[String]) -> Result<bool, AhError> {
     let conn = db.conn();
     for agent_id in agent_ids {
         let state = conn
@@ -312,7 +309,7 @@ pub(crate) fn recovered_workers_ready_sync(
             )
             .optional()
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!(
+                AhError::DbConstraintViolation(format!(
                     "query recovered worker readiness state: {err}"
                 ))
             })?;
@@ -333,7 +330,7 @@ pub(crate) fn begin_master_recovery_window_for_snapshot(
     expected_generation: i64,
     classification: MasterDeathSessionActivity,
     now: i64,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let conn = db.conn();
     begin_master_recovery_window_sync(
         &conn,
@@ -353,7 +350,7 @@ pub(crate) fn mark_master_recovery_phase(
     expected_generation: i64,
     phase: &str,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     update_master_recovery_phase_sync(&conn, session_id, expected_generation, phase, now)
 }
@@ -363,7 +360,7 @@ pub(crate) fn complete_master_recovery_window_for_master_watch(
     session_id: &str,
     expected_generation: i64,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let conn = db.conn();
     complete_master_recovery_window_sync(&conn, session_id, expected_generation, now)
 }
@@ -373,14 +370,14 @@ pub(crate) fn mark_master_recovery_non_revive_terminal(
     session_id: &str,
     expected_generation: i64,
     now: i64,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     mark_master_recovery_phase(db, session_id, expected_generation, "FAILED", now)
 }
 
 pub(crate) fn mark_session_closed_after_idle_master_death(
     db: &Db,
     session_id: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -394,7 +391,7 @@ pub(crate) fn mark_session_closed_after_idle_master_death(
             params![session_id],
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("mark idle master death failed: {err}"))
+            AhError::DbConstraintViolation(format!("mark idle master death failed: {err}"))
         })?;
     if changes > 0 {
         notify_runtime_inventory_changed();
@@ -406,14 +403,14 @@ pub(crate) fn persist_revived_master_cmd(
     db: &Db,
     session_id: &str,
     master_cmd: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     db.conn()
         .execute(
             "UPDATE sessions SET master_cmd = ?2 WHERE id = ?1",
             params![session_id, master_cmd],
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("persist revived master_cmd: {err}"))
+            AhError::DbConstraintViolation(format!("persist revived master_cmd: {err}"))
         })?;
     Ok(())
 }
@@ -435,7 +432,7 @@ pub fn complete_claimed_master_transition(
     new_pid: i64,
     new_pane_id: &str,
     master_sandbox_home: &std::path::Path,
-) -> Result<Option<ReviveSessionMasterOutcome>, CcbdError> {
+) -> Result<Option<ReviveSessionMasterOutcome>, AhError> {
     warn_if_master_auth_missing(session_id, master_sandbox_home);
     let conn = db.conn();
     let changes = conn
@@ -464,7 +461,7 @@ pub fn complete_claimed_master_transition(
 pub fn revive_session_master(
     db: &Db,
     request: ReviveSessionMasterRequest,
-) -> Result<ReviveSessionMasterOutcome, CcbdError> {
+) -> Result<ReviveSessionMasterOutcome, AhError> {
     if try_claim_master_transition(
         db,
         &request.session_id,
@@ -486,7 +483,7 @@ pub fn revive_session_master(
         &request.new_pane_id,
         &request.master_sandbox_home,
     )?
-    .ok_or_else(|| CcbdError::IpcInvalidRequest("claimed master transition went stale".into()))
+    .ok_or_else(|| AhError::IpcInvalidRequest("claimed master transition went stale".into()))
 }
 
 pub fn query_master_revive_next_retry_at(
@@ -494,7 +491,7 @@ pub fn query_master_revive_next_retry_at(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<Option<i64>, CcbdError> {
+) -> Result<Option<i64>, AhError> {
     let conn = db.conn();
     conn.query_row(
         "SELECT master_next_retry_at FROM sessions
@@ -515,7 +512,7 @@ pub fn record_master_revive_attempt(
     current_pid: i64,
     claimed_generation: i64,
     now: i64,
-) -> Result<MasterReviveAttemptDecision, CcbdError> {
+) -> Result<MasterReviveAttemptDecision, AhError> {
     let (new_count, next_retry_at) = {
         let conn = db.conn();
         let retry_count = conn
@@ -571,7 +568,7 @@ pub fn confirm_master_stable(
     session_id: &str,
     expected_pid: i64,
     expected_generation: i64,
-) -> Result<MasterTransitionOutcome, CcbdError> {
+) -> Result<MasterTransitionOutcome, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -592,7 +589,7 @@ pub fn confirm_master_stable(
     }
 }
 
-pub fn mark_all_sessions_intentional_shutdown(db: &Db) -> Result<usize, CcbdError> {
+pub fn mark_all_sessions_intentional_shutdown(db: &Db) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -642,7 +639,7 @@ pub fn mark_all_sessions_intentional_shutdown(db: &Db) -> Result<usize, CcbdErro
 pub fn fuse_session_after_master_revive_exhausted(
     db: &Db,
     session_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let retry_count = {
         let conn = db.conn();
         conn.query_row(
@@ -719,7 +716,7 @@ pub fn record_spawned_master_runtime(
     session_id: &str,
     pane_id: &str,
     pid: i64,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let conn = db.conn();
     conn.execute(
         "UPDATE sessions
@@ -749,7 +746,7 @@ pub fn record_spawned_master_runtime_after_claim(
     pane_id: &str,
     pid: i64,
     claimed_generation: i64,
-) -> Result<Option<i64>, CcbdError> {
+) -> Result<Option<i64>, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(
@@ -772,7 +769,7 @@ pub fn record_spawned_master_runtime_after_claim(
     }
 }
 
-pub fn mark_session_intentional_killed(db: &Db, session_id: &str) -> Result<usize, CcbdError> {
+pub fn mark_session_intentional_killed(db: &Db, session_id: &str) -> Result<usize, AhError> {
     let conn = db.conn();
     let changes = conn
         .execute(

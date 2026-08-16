@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -23,7 +23,7 @@ pub enum TmuxError {
     Io(#[from] std::io::Error),
 }
 
-impl From<TmuxError> for CcbdError {
+impl From<TmuxError> for AhError {
     fn from(err: TmuxError) -> Self {
         match err {
             TmuxError::BinaryNotFound => Self::TmuxNotFound,

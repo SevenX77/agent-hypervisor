@@ -2,7 +2,7 @@ pub mod pubsub;
 
 use crate::db;
 use crate::db::recovery::RecoveryIntentAction;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::{
     MarkerMatcher, PromptTimerScanContext, TimerKind, parser_registry, registry,
     spawn_marker_timer_task_with_prompt,
@@ -139,14 +139,14 @@ pub fn spawn_orchestrator_task(ctx: Ctx) {
     });
 }
 
-pub(crate) async fn run_once(ctx: &Ctx) -> Result<bool, CcbdError> {
+pub(crate) async fn run_once(ctx: &Ctx) -> Result<bool, AhError> {
     run_once_with_recovery_respawn(ctx, spawn_realign_agent_for_recovery).await
 }
 
 async fn run_once_with_recovery_respawn(
     ctx: &Ctx,
     respawn: RecoveryRespawnFn,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let queued_agent_ids = db::jobs::query_agent_ids_with_queued_jobs(ctx.db.clone()).await?;
     let mut did_work = false;
 
@@ -499,7 +499,7 @@ async fn wait_for_dispatchable_idle(
     agent_id: &str,
     max_wait: Duration,
     poll: Duration,
-) -> Result<DispatchReadiness, CcbdError> {
+) -> Result<DispatchReadiness, AhError> {
     let deadline = tokio::time::Instant::now() + max_wait;
     loop {
         let state = db::agents::query_agent_state(ctx.db.clone(), agent_id.to_string()).await?;
@@ -553,7 +553,7 @@ async fn wait_for_pre_send_dispatchable(
     ctx: &Ctx,
     agent_id: &str,
     job_id: &str,
-) -> Result<DispatchReadiness, CcbdError> {
+) -> Result<DispatchReadiness, AhError> {
     let state = db::agents::query_agent_state(ctx.db.clone(), agent_id.to_string()).await?;
     let Some((state, _)) = state else {
         return Ok(DispatchReadiness::Deferred {
@@ -579,7 +579,7 @@ async fn wait_for_pre_send_dispatchable(
     }
 }
 
-async fn emit_dispatch_deferred(ctx: &Ctx, agent_id: &str, reason: &str) -> Result<(), CcbdError> {
+async fn emit_dispatch_deferred(ctx: &Ctx, agent_id: &str, reason: &str) -> Result<(), AhError> {
     db::events::insert_event(
         ctx.db.clone(),
         agent_id.to_string(),
@@ -602,11 +602,11 @@ fn schedule_dispatch_retry(delay: Duration) {
 }
 
 #[allow(dead_code)]
-async fn run_recovery_once(ctx: &Ctx) -> Result<bool, CcbdError> {
+async fn run_recovery_once(ctx: &Ctx) -> Result<bool, AhError> {
     run_recovery_once_with_respawn(ctx, spawn_realign_agent_for_recovery).await
 }
 
-type RecoveryRespawnFuture<'a> = Pin<Box<dyn Future<Output = Result<(), CcbdError>> + Send + 'a>>;
+type RecoveryRespawnFuture<'a> = Pin<Box<dyn Future<Output = Result<(), AhError>> + Send + 'a>>;
 type RecoveryRespawnFn =
     for<'a> fn(&'a Ctx, &'a str, &'a RealignAgentParams, &'a str) -> RecoveryRespawnFuture<'a>;
 
@@ -638,7 +638,7 @@ fn spawn_realign_agent_for_recovery<'a>(
 async fn run_recovery_once_with_respawn(
     ctx: &Ctx,
     respawn: RecoveryRespawnFn,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     let now = unix_timestamp();
 
     // P0-2: check stable agents and confirm them stable (clear backoff) after N=300 seconds
@@ -651,18 +651,16 @@ async fn run_recovery_once_with_respawn(
                AND (retry_count > 0 OR next_retry_at IS NOT NULL OR retry_exhausted != 0)",
             )
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("prepare query stable agents: {err}"))
+                AhError::DbConstraintViolation(format!("prepare query stable agents: {err}"))
             })?;
         let rows = stmt
             .query_map([], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
             })
-            .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("query stable agents: {err}"))
-            })?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("query stable agents: {err}")))?;
         for r in rows {
             let (id, created_at) = r.map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("collect stable agent: {err}"))
+                AhError::DbConstraintViolation(format!("collect stable agent: {err}"))
             })?;
             if now - created_at >= 300 {
                 crate::db::recovery::confirm_agent_stable_sync(&conn, &id)?;
@@ -686,7 +684,7 @@ async fn run_recovery_once_with_respawn(
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("query recovery candidate: {err}"))
+                AhError::DbConstraintViolation(format!("query recovery candidate: {err}"))
             })?
         };
         if retry_exhausted != 0 || next_retry_at.is_some_and(|retry_at| retry_at > now) {
@@ -811,7 +809,7 @@ async fn recover_crashed_agent_from_snapshot_with_respawn(
     ctx: &Ctx,
     agent_id: &str,
     respawn: RecoveryRespawnFn,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     recover_crashed_agent_from_snapshot_with_respawn_and_intent(ctx, agent_id, respawn, None).await
 }
 
@@ -820,14 +818,14 @@ async fn recover_crashed_agent_from_snapshot_with_respawn_and_intent(
     agent_id: &str,
     respawn: RecoveryRespawnFn,
     captured_intent: Option<crate::db::recovery::AgentRecoveryIntent>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let (agent, stored, backoff) = {
         let conn = ctx.db.conn();
         let agent = db::agents::query_agent_sync(&conn, agent_id)?
-            .ok_or_else(|| CcbdError::AgentNotFound(agent_id.to_string()))?;
+            .ok_or_else(|| AhError::AgentNotFound(agent_id.to_string()))?;
         let stored = crate::db::recovery::query_agent_spawn_spec_sync(&conn, agent_id)?
             .ok_or_else(|| {
-                CcbdError::DbConstraintViolation(format!("missing spawn spec for {agent_id}"))
+                AhError::DbConstraintViolation(format!("missing spawn spec for {agent_id}"))
             })?;
         let backoff: (i64, Option<i64>, i64) = conn
             .query_row(
@@ -837,7 +835,7 @@ async fn recover_crashed_agent_from_snapshot_with_respawn_and_intent(
             )
             .optional()
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("query agent backoff for recovery: {err}"))
+                AhError::DbConstraintViolation(format!("query agent backoff for recovery: {err}"))
             })?
             .unwrap_or((0, None, 0));
         (agent, stored, backoff)
@@ -876,7 +874,7 @@ async fn recover_crashed_agent_from_snapshot_with_respawn_and_intent(
                 "UPDATE agents SET retry_count = ?, next_retry_at = ?, retry_exhausted = ? WHERE id = ?",
                 params![backoff.0, backoff.1, backoff.2, agent_id],
             )
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("restore agent backoff on spawn failure: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("restore agent backoff on spawn failure: {err}")))?;
         }
         if let Some(intent) = captured_intent.as_ref() {
             let conn = ctx.db.conn();
@@ -889,7 +887,7 @@ async fn recover_crashed_agent_from_snapshot_with_respawn_and_intent(
                 "UPDATE agents SET retry_count = ?, next_retry_at = ?, retry_exhausted = ? WHERE id = ?",
                 params![backoff.0, backoff.1, backoff.2, agent_id],
             )
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("restore agent backoff on spawn success: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("restore agent backoff on spawn success: {err}")))?;
         }
         if let Some(intent) = captured_intent.as_ref() {
             let requeued =
@@ -912,7 +910,7 @@ async fn recover_crashed_agent_from_snapshot_with_respawn_and_intent(
     .await
 }
 
-fn session_is_active(ctx: &Ctx, session_id: &str) -> Result<bool, CcbdError> {
+fn session_is_active(ctx: &Ctx, session_id: &str) -> Result<bool, AhError> {
     let conn = ctx.db.conn();
     let status = conn
         .query_row(
@@ -922,7 +920,7 @@ fn session_is_active(ctx: &Ctx, session_id: &str) -> Result<bool, CcbdError> {
         )
         .optional()
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query session status for recovery: {err}"))
+            AhError::DbConstraintViolation(format!("query session status for recovery: {err}"))
         })?;
     Ok(status.as_deref() == Some("ACTIVE"))
 }
@@ -938,7 +936,7 @@ fn self_recovery_event_exists(
     agent_id: &str,
     action: &str,
     reason: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT 1 FROM events \
          WHERE agent_id = ? AND event_type = 'self_recovery_attempt' \
@@ -953,17 +951,17 @@ fn self_recovery_event_exists(
     )
     .optional()
     .map(|value| value.is_some())
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("query recovery event: {err}")))
+    .map_err(|err| AhError::DbConstraintViolation(format!("query recovery event: {err}")))
 }
 
 #[allow(dead_code)] // direct test seam for recovery event/backoff handling
 async fn apply_recovery_spawn_result(
     ctx: &Ctx,
     agent_id: &str,
-    spawn_result: Result<(), CcbdError>,
+    spawn_result: Result<(), AhError>,
     now: i64,
     crash_context: Option<CrashContext>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     apply_recovery_spawn_result_with_action(ctx, agent_id, spawn_result, now, crash_context, None)
         .await
 }
@@ -971,11 +969,11 @@ async fn apply_recovery_spawn_result(
 async fn apply_recovery_spawn_result_with_action(
     ctx: &Ctx,
     agent_id: &str,
-    spawn_result: Result<(), CcbdError>,
+    spawn_result: Result<(), AhError>,
     now: i64,
     crash_context: Option<CrashContext>,
     recovery_action: Option<RecoveryIntentAction>,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     enum RecoveryEvent {
         Recovered {
             retry_count: i64,
@@ -1014,7 +1012,7 @@ async fn apply_recovery_spawn_result_with_action(
                     params![agent_id],
                 )
                 .map_err(|err| {
-                    CcbdError::DbConstraintViolation(format!(
+                    AhError::DbConstraintViolation(format!(
                         "restore crashed recovery state: {err}"
                     ))
                 })?;
@@ -1096,7 +1094,7 @@ async fn emit_self_recovery_attempt_event(
     error: Option<&str>,
     recovered_from: Option<&CrashContext>,
     recovery_action: Option<&RecoveryIntentAction>,
-) -> Result<i64, CcbdError> {
+) -> Result<i64, AhError> {
     let mut payload = json!({
         "agent_id": agent_id,
         "reason": reason,
@@ -1136,7 +1134,7 @@ fn restore_crashed_agent_after_recovery_spawn_failure(
     ctx: &Ctx,
     agent: &crate::db::schema::Agent,
     stored: &crate::db::recovery::StoredAgentSpawnSpec,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let conn = ctx.db.conn();
     let exists: Option<i64> = conn
         .query_row(
@@ -1145,7 +1143,7 @@ fn restore_crashed_agent_after_recovery_spawn_failure(
             |row| row.get(0),
         )
         .optional()
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("query restored agent: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("query restored agent: {err}")))?;
     if exists.is_none() {
         db::agents::insert_agent_sync(
             &conn,
@@ -1163,7 +1161,7 @@ fn restore_crashed_agent_after_recovery_spawn_failure(
             params![stored.config_hash, agent.state_version, agent.id],
         )
         .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("restore crashed agent row: {err}"))
+            AhError::DbConstraintViolation(format!("restore crashed agent row: {err}"))
         })?;
     }
     crate::db::recovery::persist_agent_spawn_spec_sync(&conn, &stored.spec, &stored.config_hash)
@@ -1172,26 +1170,26 @@ fn restore_crashed_agent_after_recovery_spawn_failure(
 fn recovery_event_state(
     conn: &rusqlite::Connection,
     agent_id: &str,
-) -> Result<(i64, Option<i64>, i64), CcbdError> {
+) -> Result<(i64, Option<i64>, i64), AhError> {
     conn.query_row(
         "SELECT retry_count, next_retry_at, state_version FROM agents WHERE id = ?",
         params![agent_id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
-    .map_err(|err| CcbdError::DbConstraintViolation(format!("query recovery event state: {err}")))
+    .map_err(|err| AhError::DbConstraintViolation(format!("query recovery event state: {err}")))
 }
 
-fn recovery_error_message(err: &CcbdError) -> String {
+fn recovery_error_message(err: &AhError) -> String {
     match err {
-        CcbdError::PtyIoError(message) => message.clone(),
-        CcbdError::PtyOpenFailed(message) => message.clone(),
-        CcbdError::EnvironmentNotSupported { details }
-        | CcbdError::SandboxUserNsDisabled { details }
-        | CcbdError::SandboxMountFailed { details }
-        | CcbdError::AgentUnexpectedExit { details }
-        | CcbdError::StartupMarkerTimeout { details }
-        | CcbdError::PtyMarkerTimeout { details } => details.clone(),
-        CcbdError::TmuxCommandFailed { stderr, .. } => stderr.clone(),
+        AhError::PtyIoError(message) => message.clone(),
+        AhError::PtyOpenFailed(message) => message.clone(),
+        AhError::EnvironmentNotSupported { details }
+        | AhError::SandboxUserNsDisabled { details }
+        | AhError::SandboxMountFailed { details }
+        | AhError::AgentUnexpectedExit { details }
+        | AhError::StartupMarkerTimeout { details }
+        | AhError::PtyMarkerTimeout { details } => details.clone(),
+        AhError::TmuxCommandFailed { stderr, .. } => stderr.clone(),
         _ => err.to_string(),
     }
 }
@@ -1206,7 +1204,7 @@ fn unix_timestamp() -> i64 {
 async fn dispatch_queued_job(
     ctx: &Ctx,
     agent_id: &str,
-) -> Result<Option<db::jobs::DispatchedJob>, CcbdError> {
+) -> Result<Option<db::jobs::DispatchedJob>, AhError> {
     db::jobs::dispatch_job_to_agent(
         ctx.db.clone(),
         agent_id.to_string(),
@@ -1228,7 +1226,7 @@ async fn run_dispatch_guard(
     agent_id: &str,
     provider: &str,
     pane_id: TmuxPaneId,
-) -> Result<DispatchGuardOutcome, CcbdError> {
+) -> Result<DispatchGuardOutcome, AhError> {
     if !is_prompt_handling_provider(provider) {
         return Ok(DispatchGuardOutcome::Permit);
     }
@@ -1356,7 +1354,7 @@ async fn resolve_current_dispatch_pane(
     }
 }
 
-fn dispatch_guard_scan_permits_dispatch(result: Result<PromptScanDisposition, CcbdError>) -> bool {
+fn dispatch_guard_scan_permits_dispatch(result: Result<PromptScanDisposition, AhError>) -> bool {
     match result {
         Ok(PromptScanDisposition::NoActionNeeded { .. }) => true,
         Ok(PromptScanDisposition::Handled { depth }) => {
@@ -1482,8 +1480,8 @@ async fn stale_dispatch_failure_already_requeued(
     agent_id: &str,
     job: &db::schema::Job,
     pane_id: &TmuxPaneId,
-    err: &CcbdError,
-) -> Result<bool, CcbdError> {
+    err: &AhError,
+) -> Result<bool, AhError> {
     let current = db::jobs::query_job(ctx.db.clone(), job.id.clone()).await?;
     let Some(current) = current else {
         tracing::warn!(
@@ -1527,8 +1525,8 @@ async fn maybe_requeue_recovered_pane_missing_dispatch(
     agent_id: &str,
     job: &db::schema::Job,
     pane_id: &TmuxPaneId,
-    err: &CcbdError,
-) -> Result<bool, CcbdError> {
+    err: &AhError,
+) -> Result<bool, AhError> {
     if !dispatch_send_error_is_pane_missing(err) {
         return Ok(false);
     }
@@ -1592,9 +1590,9 @@ async fn maybe_requeue_recovered_pane_missing_dispatch(
     Ok(true)
 }
 
-fn dispatch_send_error_is_pane_missing(err: &CcbdError) -> bool {
+fn dispatch_send_error_is_pane_missing(err: &AhError) -> bool {
     match err {
-        CcbdError::TmuxCommandFailed { stderr, .. } => {
+        AhError::TmuxCommandFailed { stderr, .. } => {
             stderr.contains("can't find pane") || stderr.contains("can't find window")
         }
         _ => err.to_string().contains("can't find pane"),
@@ -1617,7 +1615,7 @@ mod tests {
         persist_agent_recovery_intent_sync, persist_agent_spawn_spec_sync,
     };
     use crate::db::sessions::insert_session_sync;
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::prompt_handler::integration::{
         PromptScanDisposition, apply_prompt_pending_unpark_outcome_sync,
     };
@@ -1853,7 +1851,7 @@ mod tests {
         _expected_hash: &'a str,
     ) -> RecoveryRespawnFuture<'a> {
         Box::pin(async {
-            Err(CcbdError::PtyIoError(
+            Err(AhError::PtyIoError(
                 "injected spawn failed after delete".to_string(),
             ))
         })
@@ -2048,7 +2046,7 @@ mod tests {
             PromptScanDisposition::Handled { depth: 1 },
         )));
         assert!(!dispatch_guard_scan_permits_dispatch(Err(
-            crate::error::CcbdError::TmuxCommandFailed {
+            crate::error::AhError::TmuxCommandFailed {
                 cmd: "fake capture".to_string(),
                 stderr: "capture failed".to_string(),
                 exit: 1,
@@ -3049,7 +3047,7 @@ mod tests {
         apply_recovery_spawn_result(
             &ctx,
             "ra2_respawn_fail",
-            Err(CcbdError::PtyIoError("injected spawn failed".to_string())),
+            Err(AhError::PtyIoError("injected spawn failed".to_string())),
             1_000,
             None,
         )
@@ -3192,7 +3190,7 @@ mod tests {
         apply_recovery_spawn_result(
             &ctx,
             "ra2_event",
-            Err(CcbdError::PtyIoError("spawn failed".to_string())),
+            Err(AhError::PtyIoError("spawn failed".to_string())),
             1_000,
             None,
         )

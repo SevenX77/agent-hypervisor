@@ -5,7 +5,7 @@ description: Use when you need to understand or edit ah project configuration, s
 
 # ah configuration surface
 
-ah project configuration starts at `ah.toml`. The loader searches upward from the current directory, unless `CCB_CONFIG_PATH` points at a specific config file. The top-level TOML fields are `version`, `master`, `completion`, `daemon`, `env`, `sandbox`, and `agents`.
+ah project configuration starts at `ah.toml`. The loader searches upward from the current directory, unless `AH_CONFIG_PATH` points at a specific config file. The top-level TOML fields are `version`, `master`, `completion`, `daemon`, `env`, `sandbox`, and `agents`.
 
 ## Project layout
 

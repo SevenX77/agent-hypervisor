@@ -1,8 +1,8 @@
-//! Integration helpers that connect prompt-handler scans to ccbd state and events.
+//! Integration helpers that connect prompt-handler scans to ah state and events.
 
 use crate::db::Db;
 use crate::db::common::{map_db_error, spawn_db};
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::marker::MarkerMatcher;
 use crate::prompt_handler::events::{
     UNKNOWN_PROMPT_DETECTED, UnknownPromptPayload, emit_unknown_prompt_detected, hex_hash,
@@ -85,7 +85,7 @@ pub fn is_prompt_handling_provider(provider: &str) -> bool {
 
 pub async fn scan_prompt_and_apply_outcome(
     request: PromptScanRequest,
-) -> Result<PromptScanDisposition, CcbdError> {
+) -> Result<PromptScanDisposition, AhError> {
     tracing::info!(
         agent_id = %request.agent_id,
         provider = %request.provider,
@@ -98,7 +98,7 @@ pub async fn scan_prompt_and_apply_outcome(
     let provider = request.provider.clone();
     let outcome = tokio::task::spawn_blocking(move || run_prompt_scan(request))
         .await
-        .map_err(|err| CcbdError::DatabaseRuntimePanic {
+        .map_err(|err| AhError::DatabaseRuntimePanic {
             details: format!("prompt scan worker join failed: {err}"),
         })??;
 
@@ -314,7 +314,7 @@ fn transient_unknown_prompt_should_defer(
     }
 }
 
-async fn query_agent_state(db: Db, agent_id: String) -> Result<String, CcbdError> {
+async fn query_agent_state(db: Db, agent_id: String) -> Result<String, AhError> {
     spawn_db("prompt_handler::query_agent_state", move || {
         db.conn()
             .query_row(
@@ -324,14 +324,14 @@ async fn query_agent_state(db: Db, agent_id: String) -> Result<String, CcbdError
             )
             .optional()
             .map_err(|err| map_db_error("query agent state for prompt disposition", err))?
-            .ok_or(CcbdError::AgentNotFound(agent_id))
+            .ok_or(AhError::AgentNotFound(agent_id))
     })
     .await
 }
 
-fn run_prompt_scan(request: PromptScanRequest) -> Result<PromptRunOutcome, CcbdError> {
+fn run_prompt_scan(request: PromptScanRequest) -> Result<PromptRunOutcome, AhError> {
     let kb_path = request.state_dir.join("prompt-cases.json");
-    let kb = load_or_bootstrap_kb(&kb_path).map_err(CcbdError::from)?;
+    let kb = load_or_bootstrap_kb(&kb_path).map_err(AhError::from)?;
     let current_state: String = request
         .db
         .conn()
@@ -342,7 +342,7 @@ fn run_prompt_scan(request: PromptScanRequest) -> Result<PromptRunOutcome, CcbdE
         )
         .optional()
         .map_err(|err| map_db_error("query agent state for prompt scan", err))?
-        .ok_or_else(|| CcbdError::AgentNotFound(request.agent_id.clone()))?;
+        .ok_or_else(|| AhError::AgentNotFound(request.agent_id.clone()))?;
     let io = TmuxPromptIo::new((*request.tmux).clone());
     let ctx = RunnerContext::new(
         &request.agent_id,
@@ -372,7 +372,7 @@ pub async fn prompt_pending_unpark_watcher_loop(ctx: Ctx, interval: Duration) {
 pub async fn prompt_pending_unpark_watcher_tick(
     ctx: &Ctx,
     state: &mut PromptPendingUnparkState,
-) -> Result<PromptPendingUnparkTickResult, CcbdError> {
+) -> Result<PromptPendingUnparkTickResult, AhError> {
     prompt_pending_unpark_watcher_tick_with_before_apply(ctx, state, |_| {}).await
 }
 
@@ -380,7 +380,7 @@ async fn prompt_pending_unpark_watcher_tick_with_before_apply<F>(
     ctx: &Ctx,
     state: &mut PromptPendingUnparkState,
     mut before_apply: F,
-) -> Result<PromptPendingUnparkTickResult, CcbdError>
+) -> Result<PromptPendingUnparkTickResult, AhError>
 where
     F: FnMut(&str),
 {
@@ -497,7 +497,7 @@ where
             };
             let outcome = tokio::task::spawn_blocking(move || run_prompt_scan(request))
                 .await
-                .map_err(|err| CcbdError::DatabaseRuntimePanic {
+                .map_err(|err| AhError::DatabaseRuntimePanic {
                     details: format!("prompt pending auto-unpark worker join failed: {err}"),
                 })??;
             result.scanned += 1;
@@ -556,7 +556,7 @@ pub(crate) fn apply_prompt_pending_unpark_outcome_sync(
     agent_id: &str,
     expected_state_version: i64,
     outcome: PromptRunOutcome,
-) -> Result<PromptPendingUnparkDisposition, CcbdError> {
+) -> Result<PromptPendingUnparkDisposition, AhError> {
     match outcome {
         PromptRunOutcome::NoActionNeeded { depth: 0 } => {
             mark_prompt_pending_idle_unparked_sync(db, agent_id, expected_state_version)
@@ -600,7 +600,7 @@ fn mark_prompt_pending_idle_unparked_sync(
     db: &Db,
     agent_id: &str,
     expected_state_version: i64,
-) -> Result<PromptPendingUnparkDisposition, CcbdError> {
+) -> Result<PromptPendingUnparkDisposition, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -618,7 +618,7 @@ fn mark_prompt_pending_idle_unparked_sync(
         tx.rollback().map_err(|err| {
             map_db_error("rollback prompt pending auto-unpark missing agent", err)
         })?;
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
     if previous_state != crate::db::state_machine::STATE_PROMPT_PENDING
         || state_version != expected_state_version
@@ -669,7 +669,7 @@ pub async fn mark_prompt_pending_and_emit_unknown(
     db: Db,
     agent_id: String,
     payload: UnknownPromptPayload,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("prompt_handler::mark_pending_emit_unknown", move || {
         mark_prompt_pending_and_emit_unknown_sync(&db, &agent_id, &payload)
     })
@@ -680,7 +680,7 @@ pub(crate) fn mark_prompt_pending_and_emit_unknown_sync(
     db: &Db,
     agent_id: &str,
     payload: &UnknownPromptPayload,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction()
@@ -697,7 +697,7 @@ pub(crate) fn mark_prompt_pending_and_emit_unknown_sync(
     let Some((previous_state, state_version)) = current else {
         tx.rollback()
             .map_err(|err| map_db_error("rollback prompt pending missing agent", err))?;
-        return Err(CcbdError::AgentNotFound(agent_id.to_string()));
+        return Err(AhError::AgentNotFound(agent_id.to_string()));
     };
 
     let allowed = [
@@ -707,7 +707,7 @@ pub(crate) fn mark_prompt_pending_and_emit_unknown_sync(
     if !allowed.contains(&previous_state.as_str()) {
         tx.rollback()
             .map_err(|err| map_db_error("rollback prompt pending invalid state", err))?;
-        return Err(CcbdError::AgentWrongState {
+        return Err(AhError::AgentWrongState {
             current_state: previous_state,
         });
     }
@@ -743,7 +743,7 @@ pub(crate) fn mark_prompt_pending_and_emit_unknown_sync(
     .map_err(|err| map_db_error("insert prompt pending state_change", err))?;
 
     let unknown_payload = serde_json::to_string(payload).map_err(|err| {
-        CcbdError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
+        AhError::IpcInvalidRequest(format!("serialize unknown prompt payload: {err}"))
     })?;
     tx.execute(
         "INSERT INTO events (agent_id, request_id, event_type, payload) VALUES (?, NULL, ?, ?)",
@@ -779,7 +779,7 @@ mod tests {
         STATE_BUSY, STATE_IDLE, STATE_PROMPT_PENDING, STATE_SPAWNING, STATE_WAITING_FOR_ACK,
     };
     use crate::db::{Db, init};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::prompt_handler::events::{UNKNOWN_PROMPT_DETECTED, UnknownPromptPayload};
     use crate::prompt_handler::runner::PromptSnapshot;
     use crate::prompt_handler::{PromptCase, PromptFingerprint, PromptKb};
@@ -1357,7 +1357,7 @@ done"#;
 
         let conn = db.conn();
         let agent = query_agent_sync(&conn, "a_waiting").unwrap().unwrap();
-        assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+        assert!(matches!(err, AhError::AgentWrongState { .. }));
         assert_eq!(agent.state, STATE_WAITING_FOR_ACK);
         let events = query_events_since_sync(&conn, "a_waiting", 0).unwrap();
         assert!(events.is_empty());
@@ -1384,7 +1384,7 @@ done"#;
 
         let err = mark_prompt_pending_and_emit_unknown_sync(&db, "a_busy", &payload).unwrap_err();
 
-        assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+        assert!(matches!(err, AhError::AgentWrongState { .. }));
         let conn = db.conn();
         let agent = query_agent_sync(&conn, "a_busy").unwrap().unwrap();
         assert_eq!(agent.state, STATE_BUSY);
@@ -1428,7 +1428,7 @@ done"#;
 
         let err = mark_prompt_pending_and_emit_unknown_sync(&db, "a_wait", &payload).unwrap_err();
 
-        assert!(matches!(err, CcbdError::AgentWrongState { .. }));
+        assert!(matches!(err, AhError::AgentWrongState { .. }));
         let conn = db.conn();
         let agent = query_agent_sync(&conn, "a_wait").unwrap().unwrap();
         assert_eq!(agent.state, STATE_WAITING_FOR_ACK);

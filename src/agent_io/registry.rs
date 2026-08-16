@@ -243,7 +243,7 @@ fn has_live_process_in_session(server: &crate::tmux::TmuxServer, session_name: &
 /// `find_pane_in_session_by_pid_sync` / `target_has_expected_pid_sync`, which never kill on an
 /// ambiguous error. Collapsing every error to `false` (the prior behavior) was fail-OPEN: a
 /// momentary tmux hiccup could reap a session whose panes are still alive.
-fn live_process_assumed_on_list_error(session_name: &str, err: &crate::error::CcbdError) -> bool {
+fn live_process_assumed_on_list_error(session_name: &str, err: &crate::error::AhError) -> bool {
     if crate::tmux::session::tmux_target_missing(err) {
         return false;
     }
@@ -390,7 +390,7 @@ mod tests {
             assert!(!contains(agent_id));
             assert!(!fifo_path.exists());
             assert!(!sandbox.exists());
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         })();
 
         let _ = Command::new("tmux")
@@ -439,7 +439,7 @@ mod tests {
             cleanup_agent_runtime_resources(agent_id, Some(session_id));
 
             assert_eq!(server.get_pane_pid_sync(&live_pane)?, live_pid);
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         })();
 
         let _ = Command::new("tmux")
@@ -494,7 +494,7 @@ mod tests {
             cleanup_agent_runtime_resources(agent_id, Some(session_id));
 
             assert!(!server.session_exists_sync(&session_name)?);
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         })();
 
         let _ = Command::new("tmux")
@@ -600,7 +600,7 @@ mod tests {
                 !server.session_exists_sync(&session_name)?,
                 "orphaned tmux session must be reaped by fallback cleanup (B2 leak)"
             );
-            Ok::<(), crate::error::CcbdError>(())
+            Ok::<(), crate::error::AhError>(())
         })();
 
         let _ = Command::new("tmux")
@@ -624,10 +624,10 @@ mod tests {
     /// because the decision would flip to `false` (reap) instead of `true` (skip).
     #[test]
     fn list_panes_error_is_fail_closed_unless_target_missing() {
-        use crate::error::CcbdError;
+        use crate::error::AhError;
 
         // Genuinely-missing target: session/server gone => no live process => reap is allowed.
-        let missing = CcbdError::TmuxCommandFailed {
+        let missing = AhError::TmuxCommandFailed {
             cmd: "tmux list-panes".to_string(),
             stderr: "can't find session: ah-ag_x".to_string(),
             exit: 1,
@@ -639,7 +639,7 @@ mod tests {
 
         // Non-"missing" transient failure (e.g. interrupted I/O): inconclusive => assume a live
         // process exists => skip the kill (fail-closed).
-        let transient = CcbdError::TmuxCommandFailed {
+        let transient = AhError::TmuxCommandFailed {
             cmd: "tmux list-panes".to_string(),
             stderr: "read error: Interrupted system call".to_string(),
             exit: 1,

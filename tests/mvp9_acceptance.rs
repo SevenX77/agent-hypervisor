@@ -726,7 +726,7 @@ provider = "bash"
     )
     .unwrap();
     let client = HandlerClient { ctx: h.ctx.clone() };
-    let project_root = h.ctx.state_dir.join("ccb-project");
+    let project_root = h.ctx.state_dir.join("ah-project");
     std::fs::create_dir_all(&project_root).unwrap();
 
     let summary = start_project(
@@ -754,7 +754,7 @@ provider = "bash"
         );
     }
     assert!(
-        !sessions.iter().any(|session| session == "ccbd-agents"),
+        !sessions.iter().any(|session| session == "ah-agents"),
         "legacy shared session should not be created; sessions={sessions:?}"
     );
 }
@@ -804,7 +804,7 @@ async fn test_concurrent_agent_spawn_serializes_window_creation() {
         );
     }
     assert!(
-        !sessions.iter().any(|session| session == "ccbd-agents"),
+        !sessions.iter().any(|session| session == "ah-agents"),
         "legacy shared session should not be created; sessions={sessions:?}"
     );
 }
@@ -1170,7 +1170,7 @@ async fn wait_for_job_status(h: &Harness, job_id: &str, expected: &str, timeout:
     panic!("job {job_id} did not reach {expected}");
 }
 
-fn map_rpc_error(err: ah::error::CcbdError) -> CliError {
+fn map_rpc_error(err: ah::error::AhError) -> CliError {
     CliError::Rpc {
         code: -32000,
         message: err.to_string(),

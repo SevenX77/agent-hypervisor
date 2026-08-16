@@ -1,6 +1,6 @@
 //! Platform abstraction boundary for OS-specific process and supervisor behavior.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::path::Path;
 
 pub mod browser;
@@ -62,15 +62,15 @@ pub trait ProcessWatcher {
 }
 
 pub trait ProcessReaper {
-    fn sigkill(identity: &ProcessIdentity) -> Result<(), CcbdError>;
+    fn sigkill(identity: &ProcessIdentity) -> Result<(), AhError>;
 }
 
 pub trait ScopeManager {
-    fn stop_scope(scope: &ScopeHandle) -> Result<(), CcbdError>;
+    fn stop_scope(scope: &ScopeHandle) -> Result<(), AhError>;
 }
 
 pub trait ServiceSupervisor {
-    fn install_or_restart(service_name: &str) -> Result<(), CcbdError>;
+    fn install_or_restart(service_name: &str) -> Result<(), AhError>;
 }
 
 pub trait DaemonIdentity {
@@ -82,7 +82,7 @@ pub trait ProcInfo {
 }
 
 pub trait PlatformDiagnostics {
-    fn check_environment() -> Result<(), CcbdError>;
+    fn check_environment() -> Result<(), AhError>;
     fn socket_dir_for_uid(uid: u32) -> std::path::PathBuf {
         Path::new("/tmp").join(format!("tmux-{uid}"))
     }

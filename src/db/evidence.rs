@@ -1,14 +1,14 @@
 use crate::db::Db;
 use crate::db::common::{map_db_error, spawn_db};
 use crate::db::schema::Evidence;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 pub(crate) fn query_evidence_by_id_sync(
     conn: &Connection,
     evidence_id: &str,
-) -> Result<Option<Evidence>, CcbdError> {
+) -> Result<Option<Evidence>, AhError> {
     conn.query_row(
         "SELECT id, agent_id, event_seq_id, status, job_id, evidence_type, subject_path, payload, created_at FROM evidence WHERE id = ?",
         params![evidence_id],
@@ -37,7 +37,7 @@ pub(crate) fn insert_evidence_record_sync(
     evidence_type: &str,
     subject_path: Option<&str>,
     payload: &Value,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     let evidence_id = format!("evi_{}", uuid::Uuid::new_v4().simple());
     conn.execute(
         "INSERT INTO events (agent_id, request_id, event_type, payload) VALUES (?, NULL, 'evidence_recorded', ?)",
@@ -69,7 +69,7 @@ pub(crate) fn has_job_evidence_sync(
     agent_id: &str,
     job_id: &str,
     evidence_types: &[&str],
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     for evidence_type in evidence_types {
         let exists: bool = conn
             .query_row(
@@ -93,7 +93,7 @@ pub(crate) fn has_job_evidence_for_path_sync(
     job_id: &str,
     evidence_type: &str,
     subject_path: &str,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT EXISTS(
             SELECT 1 FROM evidence
@@ -110,7 +110,7 @@ pub(crate) fn update_evidence_status_sync(
     evidence_id: &str,
     status: &str,
     l3_asserted_state: Option<&str>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     conn.execute(
         "UPDATE evidence SET status = ?, l3_asserted_state = ? WHERE id = ?",
         params![status, l3_asserted_state, evidence_id],
@@ -118,10 +118,10 @@ pub(crate) fn update_evidence_status_sync(
     .map_err(|err| map_db_error("update evidence status", err))
 }
 
-pub(crate) fn discard_evidence_sync(db: &Db, evidence_id: &str) -> Result<(), CcbdError> {
+pub(crate) fn discard_evidence_sync(db: &Db, evidence_id: &str) -> Result<(), AhError> {
     let conn = db.conn();
     if query_evidence_by_id_sync(&conn, evidence_id)?.is_none() {
-        return Err(CcbdError::DbEvidenceNotFound {
+        return Err(AhError::DbEvidenceNotFound {
             details: format!("evidence_id={evidence_id}"),
         });
     }
@@ -132,7 +132,7 @@ pub(crate) fn discard_evidence_sync(db: &Db, evidence_id: &str) -> Result<(), Cc
 pub async fn query_evidence_by_id(
     db: Db,
     evidence_id: String,
-) -> Result<Option<Evidence>, CcbdError> {
+) -> Result<Option<Evidence>, AhError> {
     spawn_db("evidence::query_evidence_by_id", move || {
         let conn = db.conn();
         query_evidence_by_id_sync(&conn, &evidence_id)
@@ -147,7 +147,7 @@ pub async fn insert_evidence_record(
     evidence_type: String,
     subject_path: Option<String>,
     payload: Value,
-) -> Result<String, CcbdError> {
+) -> Result<String, AhError> {
     spawn_db("evidence::insert_evidence_record", move || {
         let conn = db.conn();
         insert_evidence_record_sync(
@@ -167,7 +167,7 @@ pub async fn has_job_evidence_for_path(
     job_id: String,
     evidence_type: String,
     subject_path: String,
-) -> Result<bool, CcbdError> {
+) -> Result<bool, AhError> {
     spawn_db("evidence::has_job_evidence_for_path", move || {
         let conn = db.fresh_conn()?;
         has_job_evidence_for_path_sync(&conn, &job_id, &evidence_type, &subject_path)
@@ -180,7 +180,7 @@ pub async fn update_evidence_status(
     evidence_id: String,
     status: String,
     l3_asserted_state: Option<String>,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("evidence::update_evidence_status", move || {
         let conn = db.conn();
         update_evidence_status_sync(&conn, &evidence_id, &status, l3_asserted_state.as_deref())
@@ -188,7 +188,7 @@ pub async fn update_evidence_status(
     .await
 }
 
-pub async fn discard_evidence(db: Db, evidence_id: String) -> Result<(), CcbdError> {
+pub async fn discard_evidence(db: Db, evidence_id: String) -> Result<(), AhError> {
     spawn_db("evidence::discard_evidence", move || {
         discard_evidence_sync(&db, &evidence_id)
     })

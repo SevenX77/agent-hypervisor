@@ -9,7 +9,7 @@ fn args(command: &std::process::Command) -> Vec<String> {
 }
 
 #[test]
-fn tmux_scope_bindsto_uses_ccbd_service() {
+fn tmux_scope_bindsto_uses_ah_service() {
     let policy = ScopePolicy::Systemd(UnitConfig {
         unit_name: "ahd-tmux-test1234".to_string(),
         slice: "ahd-agents.slice".to_string(),
@@ -20,6 +20,6 @@ fn tmux_scope_bindsto_uses_ccbd_service() {
 
     assert!(args.contains(&"--property=BindsTo=ahd.service".to_string()));
     assert!(args.contains(&"--property=PartOf=ahd.service".to_string()));
-    assert!(!args.contains(&"--property=BindsTo=ccbd-rust.service".to_string()));
-    assert!(!args.contains(&"--property=PartOf=ccbd-rust.service".to_string()));
+    assert!(!args.contains(&"--property=BindsTo=agent-hypervisor.service".to_string()));
+    assert!(!args.contains(&"--property=PartOf=agent-hypervisor.service".to_string()));
 }

@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum CcbdError {
+pub enum AhError {
     #[error("database constraint violation: {0}")]
     DbConstraintViolation(String),
 
@@ -61,8 +61,8 @@ pub enum CcbdError {
     },
 }
 
-impl CcbdError {
-    /// Convert this error into the ccbd JSON-RPC error object.
+impl AhError {
+    /// Convert this error into the ah JSON-RPC error object.
     pub fn to_rpc_error(&self) -> serde_json::Value {
         let (error_code, details, current_state) = match self {
             Self::DbConstraintViolation(_) => ("DB_CONSTRAINT_VIOLATION", None, None),
@@ -115,9 +115,9 @@ impl CcbdError {
 
 #[cfg(test)]
 mod tests {
-    use super::CcbdError;
+    use super::AhError;
 
-    fn assert_rpc_error(error: CcbdError, expected_code: &str, expected_message: &str) {
+    fn assert_rpc_error(error: AhError, expected_code: &str, expected_message: &str) {
         let obj = error.to_rpc_error();
 
         assert_eq!(obj["code"], -32000);
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_agent_not_found_to_rpc_error() {
-        let obj = CcbdError::AgentNotFound("ag_1".into()).to_rpc_error();
+        let obj = AhError::AgentNotFound("ag_1".into()).to_rpc_error();
 
         assert_eq!(obj["code"], -32000);
         assert_eq!(obj["data"]["error_code"], "AGENT_NOT_FOUND");
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_ipc_invalid_request_to_rpc_error() {
-        let obj = CcbdError::IpcInvalidRequest("missing field 'method'".into()).to_rpc_error();
+        let obj = AhError::IpcInvalidRequest("missing field 'method'".into()).to_rpc_error();
 
         assert_eq!(obj["code"], -32000);
         assert_eq!(obj["data"]["error_code"], "IPC_INVALID_REQUEST");
@@ -151,7 +151,7 @@ mod tests {
     #[test]
     fn test_db_constraint_violation_round_trip() {
         assert_rpc_error(
-            CcbdError::DbConstraintViolation("foreign key failed".into()),
+            AhError::DbConstraintViolation("foreign key failed".into()),
             "DB_CONSTRAINT_VIOLATION",
             "foreign key failed",
         );
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn test_agent_not_found_round_trip() {
         assert_rpc_error(
-            CcbdError::AgentNotFound("ag_missing".into()),
+            AhError::AgentNotFound("ag_missing".into()),
             "AGENT_NOT_FOUND",
             "ag_missing",
         );
@@ -168,7 +168,7 @@ mod tests {
 
     #[test]
     fn test_db_evidence_not_found_round_trip() {
-        let obj = CcbdError::DbEvidenceNotFound {
+        let obj = AhError::DbEvidenceNotFound {
             details: "evidence_id=evi_missing".into(),
         }
         .to_rpc_error();
@@ -181,7 +181,7 @@ mod tests {
     #[test]
     fn test_agent_already_exists_round_trip() {
         assert_rpc_error(
-            CcbdError::AgentAlreadyExists("ag_1".into()),
+            AhError::AgentAlreadyExists("ag_1".into()),
             "AGENT_ALREADY_EXISTS",
             "ag_1",
         );
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn test_pty_open_failed_round_trip() {
         assert_rpc_error(
-            CcbdError::PtyOpenFailed("openpty failed".into()),
+            AhError::PtyOpenFailed("openpty failed".into()),
             "PTY_OPEN_FAILED",
             "openpty failed",
         );
@@ -199,7 +199,7 @@ mod tests {
     #[test]
     fn test_pty_io_error_round_trip() {
         assert_rpc_error(
-            CcbdError::PtyIoError("broken pipe".into()),
+            AhError::PtyIoError("broken pipe".into()),
             "PTY_IO_ERROR",
             "broken pipe",
         );
@@ -208,7 +208,7 @@ mod tests {
     #[test]
     fn test_ipc_invalid_request_round_trip() {
         assert_rpc_error(
-            CcbdError::IpcInvalidRequest("bad json".into()),
+            AhError::IpcInvalidRequest("bad json".into()),
             "IPC_INVALID_REQUEST",
             "bad json",
         );
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn test_sandbox_user_ns_disabled_round_trip() {
-        let obj = CcbdError::SandboxUserNsDisabled {
+        let obj = AhError::SandboxUserNsDisabled {
             details: "kernel setting disabled".into(),
         }
         .to_rpc_error();
@@ -228,7 +228,7 @@ mod tests {
 
     #[test]
     fn test_sandbox_mount_failed_round_trip() {
-        let obj = CcbdError::SandboxMountFailed {
+        let obj = AhError::SandboxMountFailed {
             details: "forbidden path".into(),
         }
         .to_rpc_error();
@@ -240,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_environment_not_supported_round_trip() {
-        let obj = CcbdError::EnvironmentNotSupported {
+        let obj = AhError::EnvironmentNotSupported {
             details: "systemd-run missing".into(),
         }
         .to_rpc_error();
@@ -252,7 +252,7 @@ mod tests {
 
     #[test]
     fn test_agent_unexpected_exit_round_trip() {
-        let obj = CcbdError::AgentUnexpectedExit {
+        let obj = AhError::AgentUnexpectedExit {
             details: "pid already dead".into(),
         }
         .to_rpc_error();
@@ -264,7 +264,7 @@ mod tests {
 
     #[test]
     fn test_agent_wrong_state_round_trip() {
-        let obj = CcbdError::AgentWrongState {
+        let obj = AhError::AgentWrongState {
             current_state: "BUSY".into(),
         }
         .to_rpc_error();
@@ -276,7 +276,7 @@ mod tests {
 
     #[test]
     fn test_startup_marker_timeout_round_trip() {
-        let obj = CcbdError::StartupMarkerTimeout {
+        let obj = AhError::StartupMarkerTimeout {
             details: "no prompt".into(),
         }
         .to_rpc_error();
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn test_pty_marker_timeout_round_trip() {
-        let obj = CcbdError::PtyMarkerTimeout {
+        let obj = AhError::PtyMarkerTimeout {
             details: "busy timeout".into(),
         }
         .to_rpc_error();
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_db_runtime_panic_round_trip() {
-        let obj = CcbdError::DatabaseRuntimePanic {
+        let obj = AhError::DatabaseRuntimePanic {
             details: "spawned task panicked: SqliteFailure(BUSY)".into(),
         }
         .to_rpc_error();
@@ -312,13 +312,13 @@ mod tests {
 
     #[test]
     fn test_tmux_not_found_round_trip() {
-        assert_rpc_error(CcbdError::TmuxNotFound, "TMUX_NOT_FOUND", "tmux binary");
+        assert_rpc_error(AhError::TmuxNotFound, "TMUX_NOT_FOUND", "tmux binary");
     }
 
     #[test]
     fn test_tmux_command_failed_round_trip() {
-        let obj = CcbdError::TmuxCommandFailed {
-            cmd: "tmux -L ccbd-test has-session -t nope".into(),
+        let obj = AhError::TmuxCommandFailed {
+            cmd: "tmux -L ah-test has-session -t nope".into(),
             stderr: "no server running".into(),
             exit: 1,
         }
@@ -327,11 +327,6 @@ mod tests {
         assert_eq!(obj["code"], -32000);
         assert_eq!(obj["data"]["error_code"], "TMUX_COMMAND_FAILED");
         assert_eq!(obj["data"]["details"], "no server running");
-        assert!(
-            obj["message"]
-                .as_str()
-                .unwrap()
-                .contains("tmux -L ccbd-test")
-        );
+        assert!(obj["message"].as_str().unwrap().contains("tmux -L ah-test"));
     }
 }

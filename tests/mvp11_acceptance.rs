@@ -128,7 +128,7 @@ async fn test_no_master_pidfd_watch_after_session_create() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_explicit_ccb_kill_triggers_cascade_only() {
+async fn test_explicit_ah_kill_triggers_cascade_only() {
     let Some(h) = Harness::new() else {
         return;
     };

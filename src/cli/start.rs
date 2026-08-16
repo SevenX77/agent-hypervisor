@@ -219,12 +219,12 @@ pub async fn start_project(
                     .await;
                 if let Err(rollback_err) = rollback {
                     return Err(CliError::Config(format!(
-                        "ccb start failed while spawning {agent_id} from {}; session.kill rollback failed after original error ({err}): {rollback_err}",
+                        "ah start failed while spawning {agent_id} from {}; session.kill rollback failed after original error ({err}): {rollback_err}",
                         config_path.display()
                     )));
                 }
                 return Err(CliError::Config(format!(
-                    "ccb start failed while spawning {agent_id} from {}; rolled back session {session_id}: {err}",
+                    "ah start failed while spawning {agent_id} from {}; rolled back session {session_id}: {err}",
                     config_path.display()
                 )));
             }

@@ -123,11 +123,11 @@ fn bind_rpc_listener(socket_path: &Path) -> io::Result<Option<UnixListener>> {
         Ok(listener) => Ok(Some(listener)),
         Err(err) if err.kind() == io::ErrorKind::AddrInUse => {
             if StdUnixStream::connect(socket_path).is_ok() {
-                tracing::warn!(?socket_path, "another ccbd is already running; exiting");
+                tracing::warn!(?socket_path, "another ah is already running; exiting");
                 return Ok(None);
             }
 
-            tracing::warn!(?socket_path, "removing stale ccbd socket before rebinding");
+            tracing::warn!(?socket_path, "removing stale ah socket before rebinding");
             std::fs::remove_file(socket_path)?;
             UnixListener::bind(socket_path).map(Some)
         }

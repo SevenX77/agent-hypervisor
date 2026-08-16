@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::tmux::{TmuxPaneId, TmuxServer};
 use std::sync::Arc;
 
@@ -8,7 +8,7 @@ pub async fn send_text_to_pane(
     provider: &str,
     pane: TmuxPaneId,
     text: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     send_text_to_pane_with_options(tmux, agent_id, provider, pane, text, true).await
 }
 
@@ -19,7 +19,7 @@ pub async fn send_text_to_pane_with_options(
     pane: TmuxPaneId,
     text: String,
     press_enter_after_paste: bool,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     crate::prompt_delivery::deliver_prompt(
         tmux,
         agent_id,
@@ -37,7 +37,7 @@ pub async fn send_slash_command_keystroke(
     provider: &str,
     pane: TmuxPaneId,
     slash_cmd: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     crate::prompt_delivery::deliver_prompt(
         tmux,
         "slash-command",

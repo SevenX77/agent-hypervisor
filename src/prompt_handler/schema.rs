@@ -1,6 +1,6 @@
 //! Schema and validation for the prompt-handler knowledge base.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -28,7 +28,7 @@ pub enum PromptHandlerError {
     Lock(String),
 }
 
-impl From<PromptHandlerError> for CcbdError {
+impl From<PromptHandlerError> for AhError {
     fn from(err: PromptHandlerError) -> Self {
         Self::IpcInvalidRequest(err.to_string())
     }
@@ -281,7 +281,7 @@ mod tests {
               "used_count": 42,
               "created_at": "2026-05-13T00:00:00Z",
               "last_used_at": "2026-05-13T00:00:00Z",
-              "created_by": "ccbd-default",
+              "created_by": "ah-default",
               "regex_flags": ["Dotall", "Multiline"],
               "trigger_state": "WAITING_FOR_ACK"
             }

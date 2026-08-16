@@ -1,6 +1,6 @@
 #![cfg(unix)]
 
-use ah::error::CcbdError;
+use ah::error::AhError;
 use ah::home_materialization::{
     HomeLayoutRole, prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
 };
@@ -153,7 +153,7 @@ fn git_url_plugin_clone_fail_barrier_blocks_start() {
     );
 
     assert!(
-        matches!(result, Err(CcbdError::EnvironmentNotSupported { .. })),
+        matches!(result, Err(AhError::EnvironmentNotSupported { .. })),
         "clone failure must block startup with a typed environment error: {result:?}"
     );
     assert!(
@@ -177,7 +177,7 @@ fn git_url_plugin_clone_fail_barrier_blocks_start() {
 fn git_url_plugin_ssh_private_repo_parses_and_inherits_credentials() {
     let fixture = HostFixture::new();
     let fake_git = fixture.install_fake_git(FakeGitMode::Success);
-    fixture.set_ssh_auth_sock("/tmp/ccbd-pr4d-agent.sock");
+    fixture.set_ssh_auth_sock("/tmp/ah-pr4d-agent.sock");
     let sandbox = tempfile::tempdir().unwrap();
     let workspace = tempfile::tempdir().unwrap();
     let shared_credentials_dir = tempfile::tempdir().unwrap();
@@ -204,7 +204,7 @@ fn git_url_plugin_ssh_private_repo_parses_and_inherits_credentials() {
     assert!(
         invocations
             .iter()
-            .any(|line| line.contains("SSH_AUTH_SOCK=/tmp/ccbd-pr4d-agent.sock")),
+            .any(|line| line.contains("SSH_AUTH_SOCK=/tmp/ah-pr4d-agent.sock")),
         "git subprocess must inherit SSH_AUTH_SOCK: {invocations:?}"
     );
     assert_eq!(
@@ -313,7 +313,7 @@ impl HostFixture {
         unsafe {
             std::env::set_var("HOME", host_home.path());
             std::env::set_var("XDG_CACHE_HOME", cache_home.path());
-            std::env::set_var("USER", "__ccbd_pr4d_no_passwd_user__");
+            std::env::set_var("USER", "__ah_pr4d_no_passwd_user__");
             std::env::remove_var("SSH_AUTH_SOCK");
         }
 

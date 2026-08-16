@@ -33,7 +33,7 @@ impl RealBashHarness {
     fn new() -> Self {
         assert!(
             which::which("bash").is_ok() && which::which("tmux").is_ok(),
-            "real Bash test requires bash and tmux; set CCB_TEST_SKIP_REAL_PROVIDER=1 to opt out"
+            "real Bash test requires bash and tmux; set AH_TEST_SKIP_REAL_PROVIDER=1 to opt out"
         );
         let db_file = tempfile::NamedTempFile::new().unwrap();
         let state_dir = tempfile::TempDir::new().unwrap();
@@ -103,7 +103,7 @@ impl Drop for RealBashHarness {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn scenario_package_handoff_keeps_agent_state_and_bindings_isolated() {
-    if std::env::var("CCB_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
+    if std::env::var("AH_TEST_SKIP_REAL_PROVIDER").as_deref() == Ok("1") {
         return;
     }
 

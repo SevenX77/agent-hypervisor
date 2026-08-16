@@ -11,7 +11,7 @@
 //! directory, because an asset that only exists inside ah's state dir is one
 //! reclaim away from gone.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -86,10 +86,10 @@ impl ArchiveOutcome {
 /// session row before the sandbox is cleaned, and the master-death cleanup in
 /// `ahd` runs without a handle to the session at all. The marker travels with
 /// the sandbox, so every destruction path reads the same answer.
-pub fn write_project_root_marker(sandbox_dir: &Path, project_root: &Path) -> Result<(), CcbdError> {
+pub fn write_project_root_marker(sandbox_dir: &Path, project_root: &Path) -> Result<(), AhError> {
     let marker = sandbox_dir.join(PROJECT_ROOT_MARKER);
     fs::write(&marker, format!("{}\n", project_root.display())).map_err(|err| {
-        CcbdError::SandboxMountFailed {
+        AhError::SandboxMountFailed {
             details: format!("write sandbox project marker {}: {err}", marker.display()),
         }
     })

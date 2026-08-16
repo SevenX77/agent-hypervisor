@@ -1,6 +1,6 @@
 //! pidfd registry and Linux pidfd syscall helpers for MVP2 monitoring.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 
 pub use crate::platform::sys::process::{BorrowedMonitorHandle, MonitorHandle};
 
@@ -10,12 +10,12 @@ pub mod master_watch;
 pub mod session_watch;
 
 /// Open a pidfd for a live process id.
-pub fn pidfd_open(pid: i32) -> Result<MonitorHandle, CcbdError> {
+pub fn pidfd_open(pid: i32) -> Result<MonitorHandle, AhError> {
     crate::platform::sys::process::pidfd_open(pid)
 }
 
 /// Send SIGKILL through a pidfd.
-pub fn pidfd_send_sigkill(pidfd: BorrowedMonitorHandle<'_>) -> Result<(), CcbdError> {
+pub fn pidfd_send_sigkill(pidfd: BorrowedMonitorHandle<'_>) -> Result<(), AhError> {
     crate::platform::sys::process::pidfd_send_sigkill(pidfd)
 }
 
@@ -47,7 +47,7 @@ pub fn list_keys() -> Vec<String> {
 #[cfg(all(test, unix))]
 mod tests {
     use super::{contains, pidfd_open, register, remove, with_borrowed};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use std::os::fd::AsRawFd;
 
     #[test]
@@ -59,7 +59,7 @@ mod tests {
     #[test]
     fn test_pidfd_open_dead_pid_maps_unexpected_exit() {
         let err = pidfd_open(999_999_999).unwrap_err();
-        assert!(matches!(err, CcbdError::AgentUnexpectedExit { .. }));
+        assert!(matches!(err, AhError::AgentUnexpectedExit { .. }));
     }
 
     #[test]

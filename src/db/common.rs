@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::Error as SqlError;
 
 pub(crate) fn is_constraint_error(err: &SqlError) -> bool {
@@ -17,18 +17,18 @@ pub(crate) fn is_unique_constraint_error(err: &SqlError) -> bool {
     )
 }
 
-pub(crate) fn map_db_error(context: &str, err: SqlError) -> CcbdError {
-    CcbdError::DbConstraintViolation(format!("{context}: {err}"))
+pub(crate) fn map_db_error(context: &str, err: SqlError) -> AhError {
+    AhError::DbConstraintViolation(format!("{context}: {err}"))
 }
 
-pub(crate) async fn spawn_db<T, F>(op: &'static str, f: F) -> Result<T, CcbdError>
+pub(crate) async fn spawn_db<T, F>(op: &'static str, f: F) -> Result<T, AhError>
 where
-    F: FnOnce() -> Result<T, CcbdError> + Send + 'static,
+    F: FnOnce() -> Result<T, AhError> + Send + 'static,
     T: Send + 'static,
 {
     tokio::task::spawn_blocking(f)
         .await
-        .map_err(|join_err| CcbdError::DatabaseRuntimePanic {
+        .map_err(|join_err| AhError::DatabaseRuntimePanic {
             details: format!("{op}: {join_err}"),
         })?
 }

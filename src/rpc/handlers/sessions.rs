@@ -9,7 +9,7 @@ use crate::db::system::{
     cascade_kill_session_agents, cascade_kill_session_agents_for_daemon,
     remove_agent_sandbox_dir_sync, session_agent_ids,
 };
-use crate::error::CcbdError;
+use crate::error::AhError;
 use crate::home_materialization::{
     HomeLayoutRole, HookPushContext,
     prepare_home_layout_with_extensions_for_slot_and_claude_credentials,
@@ -50,7 +50,7 @@ pub(super) fn session_window_lock(session_id: &str) -> Arc<AsyncMutex<()>> {
         .clone()
 }
 
-pub async fn handle_session_create(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_session_create(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let project_id = required_str(&params, "project_id")?;
     let absolute_path = required_str(&params, "absolute_path")?;
     let session_id = format!("sess_{}", Uuid::new_v4());
@@ -80,7 +80,7 @@ pub async fn handle_session_create(params: Value, ctx: &Ctx) -> Result<Value, Cc
     Ok(json!({ "session_id": session_id }))
 }
 
-pub async fn handle_session_kill(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_session_kill(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?;
     let force = params
         .get("force")
@@ -88,7 +88,7 @@ pub async fn handle_session_kill(params: Value, ctx: &Ctx) -> Result<Value, Ccbd
         .unwrap_or(false);
     let session = query_session_by_id(ctx.db.clone(), session_id.to_string())
         .await?
-        .ok_or_else(|| CcbdError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
+        .ok_or_else(|| AhError::IpcInvalidRequest(format!("session not found: {session_id}")))?;
     let agent_ids = session_agent_ids(ctx.db.clone(), session_id.to_string()).await?;
 
     if is_terminal_session_status(&session.status) {
@@ -208,13 +208,13 @@ pub(super) fn is_terminal_session_status(status: &str) -> bool {
     matches!(status, "KILLED" | "FAILED" | "CLOSED")
 }
 
-fn mark_terminal_session_killed(db: &crate::db::Db, session_id: &str) -> Result<(), CcbdError> {
+fn mark_terminal_session_killed(db: &crate::db::Db, session_id: &str) -> Result<(), AhError> {
     db.conn()
         .execute(
             "UPDATE sessions SET status = 'KILLED', master_state = 'IDLE' WHERE id = ?1 AND status != 'ACTIVE'",
             [session_id],
         )
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("mark terminal session killed: {err}")))?;
+        .map_err(|err| AhError::DbConstraintViolation(format!("mark terminal session killed: {err}")))?;
     Ok(())
 }
 
@@ -222,24 +222,24 @@ pub(super) fn mark_terminal_session_agents_killed_db_only(
     db: &crate::db::Db,
     session_id: &str,
     reason: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     let mut conn = db.conn();
     let tx = conn.transaction().map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("begin terminal agent cleanup: {err}"))
+        AhError::DbConstraintViolation(format!("begin terminal agent cleanup: {err}"))
     })?;
     let agent_ids = {
         let mut stmt = tx
             .prepare(
                 "SELECT id FROM agents WHERE session_id = ?1 AND state NOT IN ('CRASHED', 'KILLED')",
             )
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("prepare terminal agent cleanup: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("prepare terminal agent cleanup: {err}")))?;
         let rows = stmt
             .query_map([session_id], |row| row.get::<_, String>(0))
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("query terminal agent cleanup: {err}"))
+                AhError::DbConstraintViolation(format!("query terminal agent cleanup: {err}"))
             })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("collect terminal agent cleanup: {err}"))
+            AhError::DbConstraintViolation(format!("collect terminal agent cleanup: {err}"))
         })?
     };
     let mut changed = 0;
@@ -251,14 +251,14 @@ pub(super) fn mark_terminal_session_agents_killed_db_only(
                 |row| row.get::<_, String>(0),
             )
             .map_err(|err| {
-                CcbdError::DbConstraintViolation(format!("query terminal agent state: {err}"))
+                AhError::DbConstraintViolation(format!("query terminal agent state: {err}"))
             })?;
         let rows = tx
             .execute(
                 "UPDATE agents SET state = 'KILLED', state_version = state_version + 1, updated_at = unixepoch() WHERE id = ?1 AND session_id = ?2 AND state NOT IN ('CRASHED', 'KILLED')",
                 (&agent_id, session_id),
             )
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("mark terminal agent killed: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("mark terminal agent killed: {err}")))?;
         if rows == 1 {
             crate::db::jobs::mark_dispatched_jobs_failed_for_agent_conn_collect_sync(
                 &tx, &agent_id, reason,
@@ -273,24 +273,24 @@ pub(super) fn mark_terminal_session_agents_killed_db_only(
                 "INSERT INTO events (agent_id, request_id, event_type, payload) VALUES (?1, NULL, 'state_change', ?2)",
                 (&agent_id, payload),
             )
-            .map_err(|err| CcbdError::DbConstraintViolation(format!("insert terminal killed state_change: {err}")))?;
+            .map_err(|err| AhError::DbConstraintViolation(format!("insert terminal killed state_change: {err}")))?;
             changed += 1;
         }
     }
     tx.commit().map_err(|err| {
-        CcbdError::DbConstraintViolation(format!("commit terminal agent cleanup: {err}"))
+        AhError::DbConstraintViolation(format!("commit terminal agent cleanup: {err}"))
     })?;
     Ok(changed)
 }
 
-fn query_session_master_pid(db: &crate::db::Db, session_id: &str) -> Result<i64, CcbdError> {
+fn query_session_master_pid(db: &crate::db::Db, session_id: &str) -> Result<i64, AhError> {
     db.conn()
         .query_row(
             "SELECT master_pid FROM sessions WHERE id = ?1",
             [session_id],
             |row| row.get(0),
         )
-        .map_err(|err| CcbdError::DbConstraintViolation(format!("query session master pid: {err}")))
+        .map_err(|err| AhError::DbConstraintViolation(format!("query session master pid: {err}")))
 }
 
 pub(super) fn session_anchors_enabled(ctx: &Ctx) -> bool {
@@ -298,7 +298,7 @@ pub(super) fn session_anchors_enabled(ctx: &Ctx) -> bool {
         && (ctx.env_state.unsafe_no_sandbox || ctx.env_state.under_systemd)
 }
 
-fn create_session_anchor(unit_name: &str) -> Result<(), CcbdError> {
+fn create_session_anchor(unit_name: &str) -> Result<(), AhError> {
     let output = Command::new("systemd-run")
         .args([
             "--user",
@@ -307,13 +307,13 @@ fn create_session_anchor(unit_name: &str) -> Result<(), CcbdError> {
             "/usr/bin/true",
         ])
         .output()
-        .map_err(|err| CcbdError::EnvironmentNotSupported {
+        .map_err(|err| AhError::EnvironmentNotSupported {
             details: format!("create session anchor {unit_name}: {err}"),
         })?;
     if output.status.success() {
         return Ok(());
     }
-    Err(CcbdError::EnvironmentNotSupported {
+    Err(AhError::EnvironmentNotSupported {
         details: format!(
             "create session anchor {unit_name} failed: {}",
             String::from_utf8_lossy(&output.stderr).trim()
@@ -373,10 +373,7 @@ pub(super) struct MasterPanePlan {
     pub(super) extensions: ExtensionConfig,
 }
 
-pub async fn handle_session_spawn_master_pane(
-    params: Value,
-    ctx: &Ctx,
-) -> Result<Value, CcbdError> {
+pub async fn handle_session_spawn_master_pane(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let session_id = required_str(&params, "session_id")?;
     let cmd = required_str(&params, "cmd")?;
     let claimed_master_generation = params
@@ -415,11 +412,10 @@ pub async fn handle_session_spawn_master_pane(
     Ok(json!({ "pane_id": outcome.pane_id }))
 }
 
-fn parse_tmux_window_size(params: &Value) -> Result<TmuxWindowSize, CcbdError> {
+fn parse_tmux_window_size(params: &Value) -> Result<TmuxWindowSize, AhError> {
     match params.get("tmux_window_size") {
-        Some(value) => serde_json::from_value(value.clone()).map_err(|err| {
-            CcbdError::IpcInvalidRequest(format!("invalid tmux_window_size: {err}"))
-        }),
+        Some(value) => serde_json::from_value(value.clone())
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid tmux_window_size: {err}"))),
         None => Ok(TmuxWindowSize::Fixed),
     }
 }
@@ -435,30 +431,30 @@ pub(crate) fn merge_seat_env(
     merged
 }
 
-fn parse_env_map(params: &Value, key: &str) -> Result<HashMap<String, String>, CcbdError> {
+fn parse_env_map(params: &Value, key: &str) -> Result<HashMap<String, String>, AhError> {
     match params.get(key) {
         Some(value) => serde_json::from_value::<HashMap<String, String>>(value.clone())
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid {key}: {err}"))),
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid {key}: {err}"))),
         None => Ok(HashMap::new()),
     }
 }
 
-fn parse_extra_env(params: &Value) -> Result<HashMap<String, String>, CcbdError> {
+fn parse_extra_env(params: &Value) -> Result<HashMap<String, String>, AhError> {
     if let Some(value) = params
         .get("extra_env")
         .or_else(|| params.get("extra_env_vars"))
     {
         serde_json::from_value::<HashMap<String, String>>(value.clone())
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid extra_env: {err}")))
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid extra_env: {err}")))
     } else {
         Ok(HashMap::new())
     }
 }
 
-pub(crate) fn optional_pathbuf(params: &Value, key: &str) -> Result<Option<PathBuf>, CcbdError> {
+pub(crate) fn optional_pathbuf(params: &Value, key: &str) -> Result<Option<PathBuf>, AhError> {
     match params.get(key) {
         Some(value) => serde_json::from_value::<Option<PathBuf>>(value.clone())
-            .map_err(|err| CcbdError::IpcInvalidRequest(format!("invalid {key}: {err}"))),
+            .map_err(|err| AhError::IpcInvalidRequest(format!("invalid {key}: {err}"))),
         None => Ok(None),
     }
 }
@@ -466,11 +462,11 @@ pub(crate) fn optional_pathbuf(params: &Value, key: &str) -> Result<Option<PathB
 pub(super) async fn prepare_master_pane_plan(
     ctx: &Ctx,
     params: &SpawnMasterPaneParams,
-) -> Result<MasterPanePlan, CcbdError> {
+) -> Result<MasterPanePlan, AhError> {
     let session = query_session_by_id(ctx.db.clone(), params.session_id.clone())
         .await?
         .ok_or_else(|| {
-            CcbdError::IpcInvalidRequest(format!("session not found: {}", params.session_id))
+            AhError::IpcInvalidRequest(format!("session not found: {}", params.session_id))
         })?;
     let master_cwd: std::path::PathBuf = session.absolute_path.clone().into();
     let provider = params.resolved_provider();
@@ -490,9 +486,7 @@ pub(super) async fn prepare_master_pane_plan(
             [&params.session_id],
             |row| row.get::<_, i64>(0),
         )
-        .map_err(|err| {
-            CcbdError::DbConstraintViolation(format!("query master generation: {err}"))
-        })?
+        .map_err(|err| AhError::DbConstraintViolation(format!("query master generation: {err}")))?
     };
     let mut master_env_vars = build_master_spawn_env_vars(
         &params.session_id,
@@ -593,7 +587,7 @@ pub(crate) fn strip_claude_gateway_env(env: &mut HashMap<String, String>) {
 pub(crate) async fn spawn_master_pane_inner(
     ctx: &Ctx,
     params: SpawnMasterPaneParams,
-) -> Result<SpawnMasterPaneOutcome, CcbdError> {
+) -> Result<SpawnMasterPaneOutcome, AhError> {
     let plan = prepare_master_pane_plan(ctx, &params).await?;
     spawn_prepared_master_pane(ctx, params, plan, true).await
 }
@@ -603,7 +597,7 @@ pub(super) async fn spawn_prepared_master_pane(
     params: SpawnMasterPaneParams,
     plan: MasterPanePlan,
     arm_revival_watch: bool,
-) -> Result<SpawnMasterPaneOutcome, CcbdError> {
+) -> Result<SpawnMasterPaneOutcome, AhError> {
     let master_provider = params.resolved_provider();
     let tmux_cmd = systemd::master_command_with_env(
         &plan.session.project_id,
@@ -729,13 +723,13 @@ pub(super) fn arm_master_revival_watch(
     expected_pid: i64,
     expected_generation: i64,
     master_cmd: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let expected_pid = i32::try_from(expected_pid)
-        .map_err(|_| CcbdError::PtyIoError(format!("invalid master pid: {expected_pid}")))?;
+        .map_err(|_| AhError::PtyIoError(format!("invalid master pid: {expected_pid}")))?;
     let pidfd = monitor::pidfd_open(expected_pid)?;
     let task_fd = pidfd
         .try_clone()
-        .map_err(|err| CcbdError::PtyIoError(format!("clone master pidfd for watcher: {err}")))?;
+        .map_err(|err| AhError::PtyIoError(format!("clone master pidfd for watcher: {err}")))?;
     let key = master_monitor_key(session_id, expected_generation);
     monitor::register(key, pidfd);
     spawn_master_pidfd_watch_task(
@@ -753,7 +747,7 @@ pub(super) fn arm_master_revival_watch(
     Ok(())
 }
 
-pub async fn handle_session_list(params: Value, ctx: &Ctx) -> Result<Value, CcbdError> {
+pub async fn handle_session_list(params: Value, ctx: &Ctx) -> Result<Value, AhError> {
     let all = params.get("all").and_then(Value::as_bool).unwrap_or(false);
     let sessions = list_session_summaries(ctx.db.clone()).await?;
     let sessions = sessions
@@ -973,9 +967,9 @@ mod master_cutover_tests {
         let shared_credentials_dir = tmp.path().join("shared-claude-credentials");
         std::fs::create_dir_all(&shared_credentials_dir).unwrap();
         MasterCutoverRequest {
-            project_id: "ccbd-rust".to_string(),
-            absolute_path: "/home/sevenx/coding/ccbd-rust".to_string(),
-            cwd: PathBuf::from("/home/sevenx/coding/ccbd-rust"),
+            project_id: "agent-hypervisor".to_string(),
+            absolute_path: "/home/sevenx/coding/agent-hypervisor".to_string(),
+            cwd: PathBuf::from("/home/sevenx/coding/agent-hypervisor"),
             old_home: old_home.to_path_buf(),
             old_master_pid: Some(111),
             ah_state_dir: Some(tmp.path().join("state")),
@@ -1013,7 +1007,7 @@ mod master_cutover_tests {
     }
 
     fn seed_old_conversation(old_home: &std::path::Path) {
-        let cwd = PathBuf::from("/home/sevenx/coding/ccbd-rust");
+        let cwd = PathBuf::from("/home/sevenx/coding/agent-hypervisor");
         let source_dir = claude_project_conversation_dir(old_home, &cwd);
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::write(source_dir.join("conversation.jsonl"), b"old conversation").unwrap();
@@ -1235,7 +1229,7 @@ mod master_cutover_tests {
             extra_env: HashMap::from([
                 ("AH_STATE_DIR".to_string(), "/tmp/ah-state".to_string()),
                 (
-                    "CCB_SOCKET".to_string(),
+                    "AH_SOCKET".to_string(),
                     "/tmp/ah-state/ahd.sock".to_string(),
                 ),
                 ("AH_CUTOVER_ID".to_string(), "cutover-1".to_string()),
@@ -1572,7 +1566,7 @@ mod master_cutover_tests {
                     assert_eq!(stored.spec.env["WORKER_ENV"], "1");
                     let seeded = claude_project_conversation_dir(
                         &master_home,
-                        &PathBuf::from("/home/sevenx/coding/ccbd-rust"),
+                        &PathBuf::from("/home/sevenx/coding/agent-hypervisor"),
                     )
                     .join("conversation.jsonl");
                     assert!(seeded.exists(), "seed must land before spawn");
@@ -1612,7 +1606,7 @@ mod master_cutover_tests {
         assert!(
             claude_project_conversation_dir(
                 &master_home,
-                &PathBuf::from("/home/sevenx/coding/ccbd-rust")
+                &PathBuf::from("/home/sevenx/coding/agent-hypervisor")
             )
             .join("conversation.jsonl")
             .exists()
@@ -1977,7 +1971,7 @@ mod master_cutover_tests {
                 let calls = calls_for_spawn.clone();
                 Box::pin(async move {
                     calls.lock().unwrap().push("spawn".to_string());
-                    Err(CcbdError::EnvironmentNotSupported {
+                    Err(AhError::EnvironmentNotSupported {
                         details: "injected spawn failure".to_string(),
                     })
                 })

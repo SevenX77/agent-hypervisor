@@ -1,7 +1,7 @@
 use crate::db::Db;
 use crate::db::common::{map_db_error, spawn_db};
 use crate::db::schema::Session;
-use crate::error::CcbdError;
+use crate::error::AhError;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,7 +24,7 @@ pub(crate) fn insert_session_sync(
     session_id: &str,
     project_id: &str,
     absolute_path: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "INSERT OR IGNORE INTO projects (id, absolute_path) VALUES (?, ?)",
         params![project_id, absolute_path],
@@ -46,7 +46,7 @@ pub(crate) fn create_session_sync(
     session_id: &str,
     project_id: &str,
     absolute_path: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     let mut conn = db.conn();
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -69,7 +69,7 @@ pub(crate) fn create_session_sync(
     Ok(())
 }
 
-pub(crate) fn session_exists_sync(conn: &Connection, session_id: &str) -> Result<bool, CcbdError> {
+pub(crate) fn session_exists_sync(conn: &Connection, session_id: &str) -> Result<bool, AhError> {
     conn.query_row(
         "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
         params![session_id],
@@ -83,7 +83,7 @@ pub(crate) fn session_exists_sync(conn: &Connection, session_id: &str) -> Result
 pub(crate) fn query_session_by_id_sync(
     conn: &Connection,
     session_id: &str,
-) -> Result<Option<Session>, CcbdError> {
+) -> Result<Option<Session>, AhError> {
     conn.query_row(
         "SELECT sessions.id, sessions.project_id, sessions.master_pane_id, sessions.status, \
                 sessions.config_hash, sessions.master_state, sessions.created_at, projects.absolute_path \
@@ -108,7 +108,7 @@ pub(crate) fn query_session_by_id_sync(
     .map_err(|err| map_db_error("query session by id", err))
 }
 
-pub(crate) fn query_active_sessions_sync(conn: &Connection) -> Result<Vec<Session>, CcbdError> {
+pub(crate) fn query_active_sessions_sync(conn: &Connection) -> Result<Vec<Session>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT sessions.id, sessions.project_id, sessions.master_pane_id, \
@@ -141,7 +141,7 @@ pub(crate) fn query_active_sessions_sync(conn: &Connection) -> Result<Vec<Sessio
 pub(crate) fn query_session_by_cwd_sync(
     conn: &Connection,
     absolute_path: &str,
-) -> Result<Option<Session>, CcbdError> {
+) -> Result<Option<Session>, AhError> {
     conn.query_row(
         "SELECT sessions.id, sessions.project_id, sessions.master_pane_id, sessions.status, \
                 sessions.config_hash, sessions.master_state, sessions.created_at, projects.absolute_path \
@@ -172,7 +172,7 @@ pub(crate) fn set_session_master_pane_id_sync(
     conn: &Connection,
     session_id: &str,
     pane_id: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE sessions SET master_pane_id = ? WHERE id = ?",
         params![pane_id, session_id],
@@ -197,7 +197,7 @@ pub(crate) fn apply_master_notify_event_sync(
     event_generation: i64,
     new_state: &str,
     clear_pending_request: bool,
-) -> Result<Option<MasterNotifyTransition>, CcbdError> {
+) -> Result<Option<MasterNotifyTransition>, AhError> {
     let Some((previous_state, request_id, current_generation)) = conn
         .query_row(
             "SELECT master_state, master_pending_tell_request, master_generation \
@@ -258,7 +258,7 @@ pub(crate) async fn apply_master_notify_event(
     event_generation: i64,
     new_state: String,
     clear_pending_request: bool,
-) -> Result<Option<MasterNotifyTransition>, CcbdError> {
+) -> Result<Option<MasterNotifyTransition>, AhError> {
     spawn_db("sessions::apply_master_notify_event", move || {
         let conn = db.conn();
         apply_master_notify_event_sync(
@@ -276,7 +276,7 @@ pub(crate) fn master_tell_begin_sync(
     conn: &Connection,
     session_id: &str,
     request_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     conn.execute(
         "UPDATE sessions
          SET master_pending_tell_request = ?2
@@ -290,7 +290,7 @@ pub(crate) fn master_tell_failed_sync(
     conn: &Connection,
     session_id: &str,
     request_id: &str,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     conn.execute(
         "UPDATE sessions
          SET master_pending_tell_request = NULL
@@ -305,7 +305,7 @@ pub async fn master_tell_begin(
     db: Db,
     session_id: String,
     request_id: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("sessions::master_tell_begin", move || {
         let conn = db.conn();
         master_tell_begin_sync(&conn, &session_id, &request_id)
@@ -317,7 +317,7 @@ pub async fn master_tell_failed(
     db: Db,
     session_id: String,
     request_id: String,
-) -> Result<usize, CcbdError> {
+) -> Result<usize, AhError> {
     spawn_db("sessions::master_tell_failed", move || {
         let conn = db.conn();
         master_tell_failed_sync(&conn, &session_id, &request_id)
@@ -329,7 +329,7 @@ pub(crate) fn update_session_config_hash_sync(
     conn: &Connection,
     session_id: &str,
     config_hash: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE sessions SET config_hash = ? WHERE id = ?",
         params![config_hash, session_id],
@@ -342,7 +342,7 @@ pub(crate) fn update_session_master_cmd_sync(
     conn: &Connection,
     session_id: &str,
     master_cmd: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE sessions SET master_cmd = ?2 WHERE id = ?1",
         params![session_id, master_cmd],
@@ -355,7 +355,7 @@ pub(crate) fn update_session_master_provider_sync(
     conn: &Connection,
     session_id: &str,
     master_provider: &str,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     conn.execute(
         "UPDATE sessions SET master_provider = ?2 WHERE id = ?1",
         params![session_id, master_provider],
@@ -378,7 +378,7 @@ fn notify_runtime_tmux_changed() {
 
 pub(crate) fn list_session_summaries_sync(
     conn: &Connection,
-) -> Result<Vec<SessionSummary>, CcbdError> {
+) -> Result<Vec<SessionSummary>, AhError> {
     let mut stmt = conn
         .prepare(
             "SELECT sessions.id, sessions.project_id, projects.absolute_path, sessions.status, \
@@ -417,7 +417,7 @@ pub async fn insert_session(
     session_id: String,
     project_id: String,
     absolute_path: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::insert_session", move || {
         let conn = db.conn();
         insert_session_sync(&conn, &session_id, &project_id, &absolute_path)
@@ -430,14 +430,14 @@ pub async fn create_session(
     session_id: String,
     project_id: String,
     absolute_path: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::create_session", move || {
         create_session_sync(&db, &session_id, &project_id, &absolute_path)
     })
     .await
 }
 
-pub async fn session_exists(db: Db, session_id: String) -> Result<bool, CcbdError> {
+pub async fn session_exists(db: Db, session_id: String) -> Result<bool, AhError> {
     spawn_db("sessions::session_exists", move || {
         let conn = db.conn();
         session_exists_sync(&conn, &session_id)
@@ -445,7 +445,7 @@ pub async fn session_exists(db: Db, session_id: String) -> Result<bool, CcbdErro
     .await
 }
 
-pub async fn query_session_by_id(db: Db, session_id: String) -> Result<Option<Session>, CcbdError> {
+pub async fn query_session_by_id(db: Db, session_id: String) -> Result<Option<Session>, AhError> {
     spawn_db("sessions::query_session_by_id", move || {
         let conn = db.conn();
         query_session_by_id_sync(&conn, &session_id)
@@ -457,7 +457,7 @@ pub async fn update_session_config_hash(
     db: Db,
     session_id: String,
     config_hash: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::update_session_config_hash", move || {
         let conn = db.conn();
         update_session_config_hash_sync(&conn, &session_id, &config_hash)
@@ -469,7 +469,7 @@ pub async fn update_session_master_cmd(
     db: Db,
     session_id: String,
     master_cmd: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::update_session_master_cmd", move || {
         let conn = db.conn();
         update_session_master_cmd_sync(&conn, &session_id, &master_cmd)
@@ -481,7 +481,7 @@ pub async fn update_session_master_provider(
     db: Db,
     session_id: String,
     master_provider: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::update_session_master_provider", move || {
         let conn = db.conn();
         update_session_master_provider_sync(&conn, &session_id, &master_provider)
@@ -493,7 +493,7 @@ pub async fn set_session_master_pane_id(
     db: Db,
     session_id: String,
     pane_id: String,
-) -> Result<(), CcbdError> {
+) -> Result<(), AhError> {
     spawn_db("sessions::set_session_master_pane_id", move || {
         let conn = db.conn();
         set_session_master_pane_id_sync(&conn, &session_id, &pane_id)
@@ -501,7 +501,7 @@ pub async fn set_session_master_pane_id(
     .await
 }
 
-pub async fn query_active_sessions(db: Db) -> Result<Vec<Session>, CcbdError> {
+pub async fn query_active_sessions(db: Db) -> Result<Vec<Session>, AhError> {
     spawn_db("sessions::query_active_sessions", move || {
         let conn = db.conn();
         query_active_sessions_sync(&conn)
@@ -512,7 +512,7 @@ pub async fn query_active_sessions(db: Db) -> Result<Vec<Session>, CcbdError> {
 pub async fn query_session_by_cwd(
     db: Db,
     absolute_path: String,
-) -> Result<Option<Session>, CcbdError> {
+) -> Result<Option<Session>, AhError> {
     spawn_db("sessions::query_session_by_cwd", move || {
         let conn = db.conn();
         query_session_by_cwd_sync(&conn, &absolute_path)
@@ -520,7 +520,7 @@ pub async fn query_session_by_cwd(
     .await
 }
 
-pub async fn list_session_summaries(db: Db) -> Result<Vec<SessionSummary>, CcbdError> {
+pub async fn list_session_summaries(db: Db) -> Result<Vec<SessionSummary>, AhError> {
     spawn_db("sessions::list_session_summaries", move || {
         let conn = db.conn();
         list_session_summaries_sync(&conn)

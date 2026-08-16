@@ -1,4 +1,4 @@
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -12,7 +12,7 @@ pub struct ProviderManifest {
     pub resume_args: &'static [&'static str],
     /// Host environment variable names allowed into the sandbox.
     pub env_passthrough: &'static [&'static str],
-    /// Environment variables injected by ccbd. These override passthrough.
+    /// Environment variables injected by ah. These override passthrough.
     pub injected_env_vars: &'static [(&'static str, &'static str)],
     pub readiness_timeout_s: u32,
     pub requires_home_materialization: bool,
@@ -116,29 +116,29 @@ pub const ENV_PASSTHROUGH: &[&str] = &[
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "ANTHROPIC_BASE_URL",
-    "CCB_BACKEND_ENV",
-    "CCB_CCBD_MIN_POLL_INTERVAL_S",
-    "CCB_CLAUDE_READY_TIMEOUT_S",
-    "CCB_DEBUG",
-    "CCB_GEMINI_READY_TIMEOUT_S",
-    "CCB_KEEPER_PID",
-    "CCB_KEEPER_PING_TIMEOUT_S",
-    "CCB_LANG",
-    "CCB_MASTER_CLAUDE_PID",
-    "CCB_PER_AGENT_SUBCGROUP",
-    "CCB_NO_ATTACH",
-    "CCB_REPLY_LANG",
-    "CCB_JOB_ID",
-    "CCB_SOCKET",
-    "CCB_STDIN_ENCODING",
-    "CCB_TMUX_ENTER_DELAY",
-    "CCB_TMUX_SECOND_ENTER_DELAY",
-    "CCB_TMUX_SOCKET",
-    "CCB_TMUX_SOCKET_PATH",
-    "CCB_VERIFY_DELIVERY",
-    "CCB_VERIFY_POST_DELAY_MS",
-    "CCB_VERIFY_RETRY_KEYCODES",
-    "CCB_VERSION",
+    "AH_BACKEND_ENV",
+    "AH_MIN_POLL_INTERVAL_S",
+    "AH_CLAUDE_READY_TIMEOUT_S",
+    "AH_DEBUG",
+    "AH_GEMINI_READY_TIMEOUT_S",
+    "AH_KEEPER_PID",
+    "AH_KEEPER_PING_TIMEOUT_S",
+    "AH_LANG",
+    "AH_MASTER_CLAUDE_PID",
+    "AH_PER_AGENT_SUBCGROUP",
+    "AH_NO_ATTACH",
+    "AH_REPLY_LANG",
+    "AH_JOB_ID",
+    "AH_SOCKET",
+    "AH_STDIN_ENCODING",
+    "AH_TMUX_ENTER_DELAY",
+    "AH_TMUX_SECOND_ENTER_DELAY",
+    "AH_TMUX_SOCKET",
+    "AH_TMUX_SOCKET_PATH",
+    "AH_VERIFY_DELIVERY",
+    "AH_VERIFY_POST_DELAY_MS",
+    "AH_VERIFY_RETRY_KEYCODES",
+    "AH_VERSION",
     "CLAUDE_CODE_OAUTH_TOKEN",
     "GEMINI_API_KEY",
     "GOOGLE_API_BASE",
@@ -185,27 +185,27 @@ pub const ENV_PASSTHROUGH: &[&str] = &[
 ];
 
 pub const CLAUDE_INJECTED_ENV: &[(&str, &str)] = &[
-    ("CCB_CLAUDE_SKILLS", "true"),
-    ("CCB_CLAUDE_READY_TIMEOUT_S", "60.0"),
-    ("CCB_CLAUDE_MD_MODE", "route"),
-    ("CCB_REPLY_LANG", "zh"),
-    ("CCB_LANG", "zh"),
-    ("CCB_CTX_TRANSFER_LAST_N", "20"),
-    ("CCB_CTX_TRANSFER_ENABLED", "true"),
+    ("AH_CLAUDE_SKILLS", "true"),
+    ("AH_CLAUDE_READY_TIMEOUT_S", "60.0"),
+    ("AH_CLAUDE_MD_MODE", "route"),
+    ("AH_REPLY_LANG", "zh"),
+    ("AH_LANG", "zh"),
+    ("AH_CTX_TRANSFER_LAST_N", "20"),
+    ("AH_CTX_TRANSFER_ENABLED", "true"),
 ];
 
 pub const CODEX_INJECTED_ENV: &[(&str, &str)] = &[
-    ("CCB_TMUX_ENTER_DELAY", "0.5"),
-    ("CCB_TMUX_SECOND_ENTER_DELAY", "0.0"),
+    ("AH_TMUX_ENTER_DELAY", "0.5"),
+    ("AH_TMUX_SECOND_ENTER_DELAY", "0.0"),
 ];
 
-pub const ANTIGRAVITY_INJECTED_ENV: &[(&str, &str)] = &[("CCB_GEMINI_READY_TIMEOUT_S", "60.0")];
+pub const ANTIGRAVITY_INJECTED_ENV: &[(&str, &str)] = &[("AH_GEMINI_READY_TIMEOUT_S", "60.0")];
 
 // Reserved for future provider wiring; no opencode manifest is added in G11.1.
-pub const OPENCODE_INJECTED_ENV: &[(&str, &str)] = &[("CCB_SESSION_ID", "<session_id>")];
+pub const OPENCODE_INJECTED_ENV: &[(&str, &str)] = &[("AH_SESSION_ID", "<session_id>")];
 pub const PANE_LOG_INJECTED_ENV: &[(&str, &str)] = &[
-    ("CCB_PANE_LOG_POLL_INTERVAL", "2.0"),
-    ("CCB_SYNC_TIMEOUT", "3600"),
+    ("AH_PANE_LOG_POLL_INTERVAL", "2.0"),
+    ("AH_SYNC_TIMEOUT", "3600"),
 ];
 
 pub fn canonicalize_provider_name(raw: &str) -> &str {
@@ -216,7 +216,7 @@ pub fn get_manifest(provider: &str) -> ProviderManifest {
     try_get_manifest(provider).unwrap_or_else(|err| panic!("{err}"))
 }
 
-pub fn try_get_manifest(provider: &str) -> Result<ProviderManifest, CcbdError> {
+pub fn try_get_manifest(provider: &str) -> Result<ProviderManifest, AhError> {
     crate::provider::adapter(provider)
         .map(|adapter| adapter.manifest())
         .ok_or_else(|| unknown_provider_error(provider))
@@ -248,8 +248,8 @@ pub fn unknown_provider_message(provider: &str) -> String {
     )
 }
 
-fn unknown_provider_error(provider: &str) -> CcbdError {
-    CcbdError::EnvironmentNotSupported {
+fn unknown_provider_error(provider: &str) -> AhError {
+    AhError::EnvironmentNotSupported {
         details: unknown_provider_message(provider),
     }
 }
@@ -627,10 +627,10 @@ mod tests {
             std::env::set_var("ANTHROPIC_API_KEY", "host-key");
             std::env::set_var("ANTHROPIC_AUTH_TOKEN", "host-token");
             std::env::set_var("ANTHROPIC_BASE_URL", "https://api.anthropic.com");
-            std::env::set_var("CCB_CLAUDE_MD_MODE", "host-mode");
+            std::env::set_var("AH_CLAUDE_MD_MODE", "host-mode");
         }
         let mut extra = HashMap::new();
-        extra.insert("CCB_CLAUDE_MD_MODE".to_string(), "extra-mode".to_string());
+        extra.insert("AH_CLAUDE_MD_MODE".to_string(), "extra-mode".to_string());
         extra.insert(
             "ANTHROPIC_AUTH_TOKEN".to_string(),
             crate::claude_gateway::fake_worker_jwt("worker-a"),
@@ -655,13 +655,13 @@ mod tests {
             "ANTHROPIC_BASE_URL".to_string(),
             "http://localhost:49152".to_string()
         )));
-        assert!(env.contains(&("CCB_CLAUDE_MD_MODE".to_string(), "extra-mode".to_string())));
+        assert!(env.contains(&("AH_CLAUDE_MD_MODE".to_string(), "extra-mode".to_string())));
 
         unsafe {
             std::env::remove_var("ANTHROPIC_API_KEY");
             std::env::remove_var("ANTHROPIC_AUTH_TOKEN");
             std::env::remove_var("ANTHROPIC_BASE_URL");
-            std::env::remove_var("CCB_CLAUDE_MD_MODE");
+            std::env::remove_var("AH_CLAUDE_MD_MODE");
         }
     }
 }

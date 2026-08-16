@@ -37,7 +37,7 @@ async fn main() -> ExitCode {
 
     let socket_name = compute_socket_name(&state_dir);
     let mut policy = scope::detect_scope_policy_with_daemon_unit(&socket_name, None);
-    if let Ok(wrapper_scope) = std::env::var("CCBD_TEST_WRAPPER_SCOPE") {
+    if let Ok(wrapper_scope) = std::env::var("AH_TEST_WRAPPER_SCOPE") {
         policy = ScopePolicy::Systemd(UnitConfig {
             unit_name: scope::unit_name_for_socket(&socket_name),
             slice: "ahd-agents.slice".to_string(),

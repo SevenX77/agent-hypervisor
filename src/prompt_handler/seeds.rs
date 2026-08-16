@@ -27,7 +27,7 @@ fn codex_update_case() -> PromptCase {
         used_count: 0,
         created_at: None,
         last_used_at: None,
-        created_by: Some("ccbd-default".to_string()),
+        created_by: Some("ah-default".to_string()),
         regex_flags: vec!["Dotall".to_string(), "CaseInsensitive".to_string()],
         trigger_state: None,
     }
@@ -54,7 +54,7 @@ fn trust_path_case() -> PromptCase {
         used_count: 0,
         created_at: None,
         last_used_at: None,
-        created_by: Some("ccbd-default".to_string()),
+        created_by: Some("ah-default".to_string()),
         regex_flags: vec!["Dotall".to_string(), "CaseInsensitive".to_string()],
         trigger_state: None,
     }

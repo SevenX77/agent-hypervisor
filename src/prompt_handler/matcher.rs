@@ -185,7 +185,7 @@ fn ordered_cases(kb: &PromptKb) -> Vec<&PromptCase> {
 }
 
 fn is_default_case(case: &PromptCase) -> bool {
-    case.created_by.as_deref() == Some("ccbd-default")
+    case.created_by.as_deref() == Some("ah-default")
 }
 
 fn is_startup_notification_case(case: &PromptCase) -> bool {

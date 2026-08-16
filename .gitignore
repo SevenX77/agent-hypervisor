@@ -9,10 +9,7 @@ Cargo.lock.bak
 # Claude Code project-level state (per-project, not source)
 .claude/
 
-# CCB daemon runtime state (per-machine, not source)
-.ccb/
-
-# ccbd-rust daemon runtime state + dev/abort snapshots (per-machine, not source)
+# Agent Hypervisor daemon runtime state + dev/abort snapshots (per-machine, not source)
 # Matches .ah/, .ah.tmp-*, .ah.aborted-*, .ah.archive-* etc.
 .ah*
 !.ah/

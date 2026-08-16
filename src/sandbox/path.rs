@@ -1,9 +1,9 @@
 //! Sandbox filesystem path resolution.
 
-use crate::error::CcbdError;
+use crate::error::AhError;
 use std::path::{Path, PathBuf};
 
-/// Resolve and create the per-agent sandbox directory below the ccbd state dir.
+/// Resolve and create the per-agent sandbox directory below the ah state dir.
 ///
 /// `project_root` is recorded next to the sandbox so destruction can hand the
 /// provider's session records back to the project that owns them (decision
@@ -14,12 +14,12 @@ pub fn resolve_sandbox_dir(
     session_id: &str,
     agent_id: &str,
     project_root: &Path,
-) -> Result<PathBuf, CcbdError> {
+) -> Result<PathBuf, AhError> {
     validate_id_charset("session_id", session_id)?;
     validate_id_charset("agent_id", agent_id)?;
 
     let sandbox_dir = state_dir.join("sandboxes").join(session_id).join(agent_id);
-    std::fs::create_dir_all(&sandbox_dir).map_err(|err| CcbdError::SandboxMountFailed {
+    std::fs::create_dir_all(&sandbox_dir).map_err(|err| AhError::SandboxMountFailed {
         details: format!("create sandbox dir {}: {err}", sandbox_dir.display()),
     })?;
     crate::sandbox::session_archive::write_project_root_marker(&sandbox_dir, project_root)?;
@@ -126,13 +126,13 @@ fn split_sandbox_dir_ids(sandbox_dir: &Path) -> (String, String) {
     (session_id, agent_id)
 }
 
-fn validate_id_charset(field: &str, value: &str) -> Result<(), CcbdError> {
+fn validate_id_charset(field: &str, value: &str) -> Result<(), AhError> {
     if value.is_empty()
         || !value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
-        return Err(CcbdError::IpcInvalidRequest(format!(
+        return Err(AhError::IpcInvalidRequest(format!(
             "invalid {field} for sandbox path: {value}"
         )));
     }
@@ -142,7 +142,7 @@ fn validate_id_charset(field: &str, value: &str) -> Result<(), CcbdError> {
 #[cfg(test)]
 mod tests {
     use super::{SandboxDirGuard, resolve_sandbox_dir};
-    use crate::error::CcbdError;
+    use crate::error::AhError;
     use crate::home_materialization::sandbox_home_for_sandbox_dir;
 
     #[test]
@@ -193,8 +193,8 @@ mod tests {
         let traversal =
             resolve_sandbox_dir(tmp.path(), "../escape", "ag_1", tmp.path()).unwrap_err();
 
-        assert!(matches!(empty, CcbdError::IpcInvalidRequest(_)));
-        assert!(matches!(traversal, CcbdError::IpcInvalidRequest(_)));
+        assert!(matches!(empty, AhError::IpcInvalidRequest(_)));
+        assert!(matches!(traversal, AhError::IpcInvalidRequest(_)));
     }
 
     #[test]
@@ -202,7 +202,7 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let err = resolve_sandbox_dir(tmp.path(), "sess_abc", "../escape", tmp.path()).unwrap_err();
 
-        assert!(matches!(err, CcbdError::IpcInvalidRequest(_)));
+        assert!(matches!(err, AhError::IpcInvalidRequest(_)));
     }
 
     #[test]
